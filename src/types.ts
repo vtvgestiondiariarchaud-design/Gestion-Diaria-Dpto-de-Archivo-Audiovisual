@@ -17,6 +17,11 @@ export interface Worker {
   role: UserRole;
   cedula?: string;
   password?: string;
+  mealsPreference?: {
+    desayuno: boolean;
+    almuerzo: boolean;
+    cena: boolean;
+  };
 }
 
 export type ShiftType = 'pool' | 'manana' | 'tarde' | 'noche' | 'libre';

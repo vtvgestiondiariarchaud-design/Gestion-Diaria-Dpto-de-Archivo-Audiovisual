@@ -2,11 +2,20 @@ import { createClient } from '@supabase/supabase-js';
 import { Division, Worker, ShiftAssignment, ShiftChangeRequest, ShiftType } from './types';
 
 // Read values from env if available
-const meta = import.meta as any;
-const SUPABASE_URL = meta.env?.VITE_SUPABASE_URL || '';
-const SUPABASE_ANON_KEY = meta.env?.VITE_SUPABASE_ANON_KEY || '';
+// @ts-ignore
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
+// @ts-ignore
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
 export const isSupabaseConfigured = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+
+export let supabaseConnectionStatus: 'connected' | 'error' | 'not_configured' = isSupabaseConfigured ? 'connected' : 'not_configured';
+export let lastSupabaseError: string | null = null;
+
+export function setSupabaseConnectionStatus(status: 'connected' | 'error' | 'not_configured', errorMsg: string | null = null) {
+  supabaseConnectionStatus = status;
+  lastSupabaseError = errorMsg;
+}
 
 // Real client (will be initialized if configured)
 export const supabase = isSupabaseConfigured 
@@ -61,7 +70,8 @@ create table if not exists workers (
   division_id text references divisions(id) on delete set null,
   role text not null default 'worker',
   cedula text,
-  password text
+  password text,
+  meals_preference text
 );
 
 -- 3. Crear tabla de asignaciones de turnos
@@ -94,14 +104,19 @@ insert into divisions (id, name, description) values
 ('div_ingesta', 'Ingesta', 'Recepción, control de calidad, transferencia y almacenamiento primario de contenidos y aportes de corresponsalías.')
 on conflict (id) do nothing;
 
--- 6. Habilitar seguridad de nivel de fila (RLS) - opcional
--- alter table divisions enable row level security;
--- alter table workers enable row level security;
--- alter table shift_assignments enable row level security;
--- alter table shift_change_requests enable row level security;
+-- 6. DESACTIVAR RLS (Row-Level Security) para permitir lectura/escritura directa
+-- NOTA: Supabase habilita RLS por defecto si creas tablas desde su interfaz visual.
+-- Ejecutar estas líneas garantiza que la aplicación web pueda sincronizar los datos de inmediato:
+alter table divisions disable row level security;
+alter table workers disable row level security;
+alter table shift_assignments disable row level security;
+alter table shift_change_requests disable row level security;
 
--- NOTA: Para un prototipo rápido, puedes crear políticas libres o desactivar RLS temporalmente
--- en cada tabla para permitir lectura y escritura directa desde la app.
+-- O bien, si prefieres mantener RLS activo, puedes crear políticas permisivas de acceso público:
+-- create policy "Permitir todo divisions" on divisions for all using (true) with check (true);
+-- create policy "Permitir todo workers" on workers for all using (true) with check (true);
+-- create policy "Permitir todo shift_assignments" on shift_assignments for all using (true) with check (true);
+-- create policy "Permitir todo shift_change_requests" on shift_change_requests for all using (true) with check (true);
 `;
 };
 
@@ -150,32 +165,93 @@ export const db = {
   // Divisions
   async fetchDivisions(): Promise<Division[]> {
     if (supabase) {
-      const { data, error } = await supabase.from('divisions').select('*');
-      if (error) {
-        console.error('Error fetching divisions from Supabase:', error);
+      try {
+        const { data, error } = await supabase.from('divisions').select('*');
+        if (error) {
+          console.warn('Error fetching divisions from Supabase (graceful fallback to local):', error);
+          setSupabaseConnectionStatus('error', error.message);
+          return getLocalDb.getDivisions();
+        }
+        if (data && data.length === 0) {
+          console.log('Seeding default divisions to Supabase...');
+          const payload = DEFAULT_DIVISIONS.map(d => ({
+            id: d.id,
+            name: d.name,
+            description: d.description,
+            coordinator_id: d.coordinatorId,
+            coordinator_name: d.coordinatorName
+          }));
+          const { error: seedError } = await supabase.from('divisions').insert(payload);
+          if (seedError) {
+            console.warn('Warning/Info seeding divisions to Supabase (graceful fallback to local):', seedError);
+            setSupabaseConnectionStatus('error', seedError.message);
+            const errStr = JSON.stringify(seedError).toLowerCase();
+            const isColumnError = seedError.code === '42703' || errStr.includes('coordinator_') || errStr.includes('column');
+            if (isColumnError) {
+              console.warn('Retrying divisions seed without coordinator_id/coordinator_name columns...');
+              const fallbackPayload = DEFAULT_DIVISIONS.map(d => ({
+                id: d.id,
+                name: d.name,
+                description: d.description
+              }));
+              const { error: retrySeedError } = await supabase.from('divisions').insert(fallbackPayload);
+              if (retrySeedError) {
+                console.warn('Warning/Info seeding divisions fallback:', retrySeedError);
+                return getLocalDb.getDivisions();
+              } else {
+                setSupabaseConnectionStatus('connected');
+                return DEFAULT_DIVISIONS;
+              }
+            } else {
+              console.warn('Fallo al sembrar divisiones debido a políticas de seguridad (RLS) u otra restricción de base de datos. Usando almacenamiento local.');
+              return getLocalDb.getDivisions();
+            }
+          }
+        }
+        setSupabaseConnectionStatus('connected');
+        return data.map(item => ({
+          id: item.id,
+          name: item.name,
+          description: item.description || '',
+          coordinatorId: item.coordinator_id || null,
+          coordinatorName: item.coordinator_name || null
+        }));
+      } catch (err: any) {
+        console.warn('Exception inside fetchDivisions:', err);
+        setSupabaseConnectionStatus('error', err.message || String(err));
         return getLocalDb.getDivisions();
       }
-      return data.map(item => ({
-        id: item.id,
-        name: item.name,
-        description: item.description || '',
-        coordinatorId: item.coordinator_id || null,
-        coordinatorName: item.coordinator_name || null
-      }));
     }
     return getLocalDb.getDivisions();
   },
 
   async createDivision(division: Division): Promise<void> {
     if (supabase) {
-      const { error } = await supabase.from('divisions').insert([{
+      const payload: any = {
         id: division.id,
         name: division.name,
         description: division.description,
         coordinator_id: division.coordinatorId,
         coordinator_name: division.coordinatorName
-      }]);
-      if (error) console.error('Error creating division in Supabase:', error);
+      };
+      const { error } = await supabase.from('divisions').insert([payload]);
+      if (error) {
+        console.error('Error creating division in Supabase:', error);
+        const errStr = JSON.stringify(error).toLowerCase();
+        const isColumnError = error.code === '42703' || errStr.includes('coordinator_') || errStr.includes('column');
+        if (isColumnError) {
+          console.warn('Retrying createDivision without coordinator columns...');
+          delete payload.coordinator_id;
+          delete payload.coordinator_name;
+          const { error: retryErr } = await supabase.from('divisions').insert([payload]);
+          if (retryErr) {
+            console.error('Error during retry createDivision:', retryErr);
+            throw new Error(`Fallo al crear división: ${retryErr.message}`);
+          }
+        } else {
+          throw new Error(`Fallo al crear división: ${error.message}`);
+        }
+      }
     } else {
       const divs = getLocalDb.getDivisions();
       divs.push(division);
@@ -185,16 +261,36 @@ export const db = {
 
   async updateDivision(division: Division): Promise<void> {
     if (supabase) {
+      const payload: any = {
+        name: division.name,
+        description: division.description,
+        coordinator_id: division.coordinatorId,
+        coordinator_name: division.coordinatorName
+      };
       const { error } = await supabase
         .from('divisions')
-        .update({
-          name: division.name,
-          description: division.description,
-          coordinator_id: division.coordinatorId,
-          coordinator_name: division.coordinatorName
-        })
+        .update(payload)
         .eq('id', division.id);
-      if (error) console.error('Error updating division in Supabase:', error);
+      if (error) {
+        console.error('Error updating division in Supabase:', error);
+        const errStr = JSON.stringify(error).toLowerCase();
+        const isColumnError = error.code === '42703' || errStr.includes('coordinator_') || errStr.includes('column');
+        if (isColumnError) {
+          console.warn('Retrying updateDivision without coordinator columns...');
+          delete payload.coordinator_id;
+          delete payload.coordinator_name;
+          const { error: retryErr } = await supabase
+            .from('divisions')
+            .update(payload)
+            .eq('id', division.id);
+          if (retryErr) {
+            console.error('Error during retry updateDivision:', retryErr);
+            throw new Error(`Fallo al actualizar división: ${retryErr.message}`);
+          }
+        } else {
+          throw new Error(`Fallo al actualizar división: ${error.message}`);
+        }
+      }
     } else {
       const divs = getLocalDb.getDivisions();
       const updated = divs.map(d => d.id === division.id ? division : d);
@@ -280,28 +376,46 @@ export const db = {
   // Workers
   async fetchWorkers(): Promise<Worker[]> {
     if (supabase) {
-      const { data, error } = await supabase.from('workers').select('*');
-      if (error) {
-        console.error('Error fetching workers from Supabase:', error);
+      try {
+        const { data, error } = await supabase.from('workers').select('*');
+        if (error) {
+          console.warn('Error fetching workers from Supabase:', error);
+          setSupabaseConnectionStatus('error', error.message);
+          return getLocalDb.getWorkers();
+        }
+        return data.map(w => {
+          let mealsPreferenceObj = undefined;
+          if (w.meals_preference) {
+            try {
+              mealsPreferenceObj = JSON.parse(w.meals_preference);
+            } catch (e) {
+              console.warn('Error parsing meals_preference JSON:', e);
+            }
+          }
+          return {
+            id: w.id,
+            name: w.name,
+            email: w.email,
+            cargo: w.cargo,
+            divisionId: w.division_id,
+            role: w.role as any,
+            cedula: w.cedula,
+            password: w.password || '',
+            mealsPreference: mealsPreferenceObj
+          };
+        });
+      } catch (err: any) {
+        console.warn('Exception inside fetchWorkers:', err);
+        setSupabaseConnectionStatus('error', err.message || String(err));
         return getLocalDb.getWorkers();
       }
-      return data.map(w => ({
-        id: w.id,
-        name: w.name,
-        email: w.email,
-        cargo: w.cargo,
-        divisionId: w.division_id,
-        role: w.role as any,
-        cedula: w.cedula,
-        password: w.password || ''
-      }));
     }
     return getLocalDb.getWorkers();
   },
 
   async registerWorker(worker: Worker): Promise<void> {
     if (supabase) {
-      const { error } = await supabase.from('workers').insert([{
+      const payload: any = {
         id: worker.id,
         name: worker.name,
         email: worker.email,
@@ -309,9 +423,70 @@ export const db = {
         division_id: worker.divisionId,
         role: worker.role,
         cedula: worker.cedula,
-        password: worker.password
-      }]);
-      if (error) console.error('Error registering worker to Supabase:', error);
+        password: worker.password,
+        meals_preference: worker.mealsPreference ? JSON.stringify(worker.mealsPreference) : null
+      };
+
+      const executeInsert = async (currentPayload: any): Promise<void> => {
+        const { error } = await supabase.from('workers').insert([currentPayload]);
+        if (error) {
+          console.warn('Error registering worker in Supabase, checking columns...', error);
+          const errStr = JSON.stringify(error).toLowerCase();
+          const isColumnError = error.code === '42703' || errStr.includes('column') || errStr.includes('schema cache');
+          if (isColumnError) {
+            let modified = false;
+            if (errStr.includes('cedula') && 'cedula' in currentPayload) {
+              console.warn('Pruning missing "cedula" column and retrying...');
+              delete currentPayload.cedula;
+              modified = true;
+            }
+            if (errStr.includes('meals_preference') && 'meals_preference' in currentPayload) {
+              console.warn('Pruning missing "meals_preference" column and retrying...');
+              delete currentPayload.meals_preference;
+              modified = true;
+            }
+            if (errStr.includes('password') && 'password' in currentPayload) {
+              console.warn('Pruning missing "password" column and retrying...');
+              delete currentPayload.password;
+              modified = true;
+            }
+            if (errStr.includes('role') && 'role' in currentPayload) {
+              console.warn('Pruning missing "role" column and retrying...');
+              delete currentPayload.role;
+              modified = true;
+            }
+
+            if (!modified) {
+              // Forced progressive pruning fallback if error is generic
+              if ('meals_preference' in currentPayload) {
+                delete currentPayload.meals_preference;
+                modified = true;
+              } else if ('cedula' in currentPayload) {
+                delete currentPayload.cedula;
+                modified = true;
+              } else if ('password' in currentPayload) {
+                delete currentPayload.password;
+                modified = true;
+              } else if ('role' in currentPayload) {
+                delete currentPayload.role;
+                modified = true;
+              }
+            }
+
+            if (modified) {
+              return executeInsert(currentPayload);
+            }
+          }
+          throw error;
+        }
+      };
+
+      try {
+        await executeInsert(payload);
+      } catch (err: any) {
+        console.error('Fatal error registering worker:', err);
+        throw new Error(`Fallo al registrar en Supabase: ${err.message || String(err)}. Verifica la estructura de la tabla 'workers' o que coincidan las columnas.`);
+      }
     } else {
       const workers = getLocalDb.getWorkers();
       // Avoid duplicates
@@ -324,19 +499,80 @@ export const db = {
 
   async updateWorker(worker: Worker): Promise<void> {
     if (supabase) {
-      const { error } = await supabase
-        .from('workers')
-        .update({
-          name: worker.name,
-          email: worker.email,
-          cargo: worker.cargo,
-          division_id: worker.divisionId,
-          role: worker.role,
-          cedula: worker.cedula,
-          password: worker.password
-        })
-        .eq('id', worker.id);
-      if (error) console.error('Error updating worker in Supabase:', error);
+      const payload: any = {
+        name: worker.name,
+        email: worker.email,
+        cargo: worker.cargo,
+        division_id: worker.divisionId,
+        role: worker.role,
+        cedula: worker.cedula,
+        password: worker.password,
+        meals_preference: worker.mealsPreference ? JSON.stringify(worker.mealsPreference) : null
+      };
+
+      const executeUpdate = async (currentPayload: any): Promise<void> => {
+        const { error } = await supabase
+          .from('workers')
+          .update(currentPayload)
+          .eq('id', worker.id);
+        if (error) {
+          console.warn('Error updating worker in Supabase, checking columns...', error);
+          const errStr = JSON.stringify(error).toLowerCase();
+          const isColumnError = error.code === '42703' || errStr.includes('column') || errStr.includes('schema cache');
+          if (isColumnError) {
+            let modified = false;
+            if (errStr.includes('cedula') && 'cedula' in currentPayload) {
+              console.warn('Pruning missing "cedula" column and retrying...');
+              delete currentPayload.cedula;
+              modified = true;
+            }
+            if (errStr.includes('meals_preference') && 'meals_preference' in currentPayload) {
+              console.warn('Pruning missing "meals_preference" column and retrying...');
+              delete currentPayload.meals_preference;
+              modified = true;
+            }
+            if (errStr.includes('password') && 'password' in currentPayload) {
+              console.warn('Pruning missing "password" column and retrying...');
+              delete currentPayload.password;
+              modified = true;
+            }
+            if (errStr.includes('role') && 'role' in currentPayload) {
+              console.warn('Pruning missing "role" column and retrying...');
+              delete currentPayload.role;
+              modified = true;
+            }
+
+            if (!modified) {
+              // Forced progressive pruning fallback if error is generic
+              if ('meals_preference' in currentPayload) {
+                delete currentPayload.meals_preference;
+                modified = true;
+              } else if ('cedula' in currentPayload) {
+                delete currentPayload.cedula;
+                modified = true;
+              } else if ('password' in currentPayload) {
+                delete currentPayload.password;
+                modified = true;
+              } else if ('role' in currentPayload) {
+                delete currentPayload.role;
+                modified = true;
+              }
+            }
+
+            if (modified) {
+              return executeUpdate(currentPayload);
+            }
+          }
+          throw error;
+        }
+      };
+
+      try {
+        await executeUpdate(payload);
+      } catch (err: any) {
+        console.error('Fatal error updating worker:', err);
+        throw new Error(`Fallo al actualizar en Supabase: ${err.message || String(err)}`);
+      }
     } else {
       const workers = getLocalDb.getWorkers();
       const updated = workers.map(w => w.id === worker.id ? worker : w);
@@ -346,8 +582,20 @@ export const db = {
 
   async updateWorkerRole(workerId: string, role: string): Promise<void> {
     if (supabase) {
-      const { error } = await supabase.from('workers').update({ role }).eq('id', workerId);
-      if (error) console.error('Error updating worker role in Supabase:', error);
+      try {
+        const { error } = await supabase.from('workers').update({ role }).eq('id', workerId);
+        if (error) {
+          console.warn('Error updating worker role in Supabase (graceful fallback):', error);
+          const workers = getLocalDb.getWorkers();
+          const updated = workers.map(w => w.id === workerId ? { ...w, role: role as any } : w);
+          getLocalDb.saveWorkers(updated);
+        }
+      } catch (e) {
+        console.warn('Exception updating worker role in Supabase (graceful fallback):', e);
+        const workers = getLocalDb.getWorkers();
+        const updated = workers.map(w => w.id === workerId ? { ...w, role: role as any } : w);
+        getLocalDb.saveWorkers(updated);
+      }
     } else {
       const workers = getLocalDb.getWorkers();
       const updated = workers.map(w => w.id === workerId ? { ...w, role: role as any } : w);
@@ -358,18 +606,25 @@ export const db = {
   // Shift Assignments
   async fetchAssignments(): Promise<ShiftAssignment[]> {
     if (supabase) {
-      const { data, error } = await supabase.from('shift_assignments').select('*');
-      if (error) {
-        console.error('Error fetching shift assignments from Supabase:', error);
+      try {
+        const { data, error } = await supabase.from('shift_assignments').select('*');
+        if (error) {
+          console.warn('Error fetching shift assignments from Supabase:', error);
+          setSupabaseConnectionStatus('error', error.message);
+          return getLocalDb.getAssignments();
+        }
+        return data.map(a => ({
+          id: a.id,
+          workerId: a.worker_id,
+          divisionId: a.division_id,
+          date: a.date,
+          shiftType: a.shift_type as any
+        }));
+      } catch (err: any) {
+        console.warn('Exception inside fetchAssignments:', err);
+        setSupabaseConnectionStatus('error', err.message || String(err));
         return getLocalDb.getAssignments();
       }
-      return data.map(a => ({
-        id: a.id,
-        workerId: a.worker_id,
-        divisionId: a.division_id,
-        date: a.date,
-        shiftType: a.shift_type as any
-      }));
     }
     return getLocalDb.getAssignments();
   },
@@ -414,23 +669,30 @@ export const db = {
   // Shift Change Requests
   async fetchRequests(): Promise<ShiftChangeRequest[]> {
     if (supabase) {
-      const { data, error } = await supabase.from('shift_change_requests').select('*').order('created_at', { ascending: false });
-      if (error) {
-        console.error('Error fetching shift requests from Supabase:', error);
+      try {
+        const { data, error } = await supabase.from('shift_change_requests').select('*').order('created_at', { ascending: false });
+        if (error) {
+          console.warn('Error fetching shift requests from Supabase:', error);
+          setSupabaseConnectionStatus('error', error.message);
+          return getLocalDb.getRequests();
+        }
+        return data.map(r => ({
+          id: r.id,
+          requesterId: r.requester_id,
+          requesterName: r.requester_name,
+          targetWorkerId: r.target_worker_id,
+          targetWorkerName: r.target_worker_name,
+          divisionId: r.division_id,
+          date: r.date,
+          reason: r.reason,
+          status: r.status as any,
+          createdAt: r.created_at
+        }));
+      } catch (err: any) {
+        console.warn('Exception inside fetchRequests:', err);
+        setSupabaseConnectionStatus('error', err.message || String(err));
         return getLocalDb.getRequests();
       }
-      return data.map(r => ({
-        id: r.id,
-        requesterId: r.requester_id,
-        requesterName: r.requester_name,
-        targetWorkerId: r.target_worker_id,
-        targetWorkerName: r.target_worker_name,
-        divisionId: r.division_id,
-        date: r.date,
-        reason: r.reason,
-        status: r.status as any,
-        createdAt: r.created_at
-      }));
     }
     return getLocalDb.getRequests();
   },

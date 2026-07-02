@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 
 import { Division, Worker, ShiftAssignment, ShiftChangeRequest, UserRole } from './types';
-import { db, DEFAULT_DIVISIONS, isSupabaseConfigured } from './supabaseClient';
+import { db, DEFAULT_DIVISIONS, isSupabaseConfigured, supabaseConnectionStatus, lastSupabaseError } from './supabaseClient';
 
 import TrelloBoard from './components/TrelloBoard';
 import ComedorLogistics from './components/ComedorLogistics';
@@ -64,6 +64,10 @@ export default function App() {
   const [assignments, setAssignments] = useState<ShiftAssignment[]>([]);
   const [requests, setRequests] = useState<ShiftChangeRequest[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [dbStatus, setDbStatus] = useState<'connected' | 'error' | 'not_configured'>(
+    isSupabaseConfigured ? 'connected' : 'not_configured'
+  );
+  const [dbError, setDbError] = useState<string | null>(null);
 
   // Authentication & Session
   const [currentSession, setCurrentSession] = useState<{
@@ -101,18 +105,64 @@ export default function App() {
   const [newUsername, setNewUsername] = useState('');
   const [newCedula, setNewCedula] = useState('');
 
-  // Individual food preference states
-  const [mealsPreferences, setMealsPreferences] = useState<Record<string, { desayuno: boolean; almuerzo: boolean; cena: boolean }>>(() => {
-    const saved = localStorage.getItem('vtv_meals_preferences');
-    return saved ? JSON.parse(saved) : {};
-  });
-
-  const handleUpdateMealsPreference = (workerId: string, prefs: { desayuno: boolean; almuerzo: boolean; cena: boolean }) => {
-    setMealsPreferences(prev => {
-      const updated = { ...prev, [workerId]: prefs };
-      localStorage.setItem('vtv_meals_preferences', JSON.stringify(updated));
-      return updated;
+  // Individual food preference states derived dynamically from workers' profiles
+  const mealsPreferences = useMemo(() => {
+    const prefs: Record<string, { desayuno: boolean; almuerzo: boolean; cena: boolean }> = {};
+    
+    // 1. Load preferences stored on each worker in the DB
+    workers.forEach(w => {
+      if (w.mealsPreference) {
+        prefs[w.id] = w.mealsPreference;
+      }
     });
+
+    // 2. Overlay / merge local storage as fallback for instant reactivity
+    try {
+      const saved = localStorage.getItem('vtv_meals_preferences');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        Object.keys(parsed).forEach(id => {
+          if (!prefs[id]) {
+            prefs[id] = parsed[id];
+          }
+        });
+      }
+    } catch (e) {
+      console.error('Error parsing local meals preferences:', e);
+    }
+
+    return prefs;
+  }, [workers]);
+
+  const handleUpdateMealsPreference = async (workerId: string, prefs: { desayuno: boolean; almuerzo: boolean; cena: boolean }) => {
+    // Save to local storage for local persistence & fast feedback
+    try {
+      const saved = localStorage.getItem('vtv_meals_preferences');
+      const parsed = saved ? JSON.parse(saved) : {};
+      parsed[workerId] = prefs;
+      localStorage.setItem('vtv_meals_preferences', JSON.stringify(parsed));
+    } catch (e) {
+      console.error(e);
+    }
+
+    // Instantly update workers state so the UI updates without a network round-trip delay
+    const updatedWorkers = workers.map(w => {
+      if (w.id === workerId) {
+        return { ...w, mealsPreference: prefs };
+      }
+      return w;
+    });
+    setWorkers(updatedWorkers);
+
+    // Save to the database (Supabase or localDB fallback)
+    const targetWorker = updatedWorkers.find(w => w.id === workerId);
+    if (targetWorker) {
+      try {
+        await db.updateWorker(targetWorker);
+      } catch (err) {
+        console.error('Error persisting meal preference updates to database:', err);
+      }
+    }
   };
 
   // Toast Notification State
@@ -145,9 +195,14 @@ export default function App() {
       setWorkers(fetchedWorkers);
       setAssignments(fetchedAssignments);
       setRequests(fetchedRequests);
-    } catch (e) {
+
+      setDbStatus(supabaseConnectionStatus);
+      setDbError(lastSupabaseError);
+    } catch (e: any) {
       console.error('Error synchronizing database data:', e);
       addNotification('Error de Conexión', 'No se pudo sincronizar con la base de datos.', 'info');
+      setDbStatus('error');
+      setDbError(e?.message || String(e));
     } finally {
       setLoading(false);
     }
@@ -470,12 +525,29 @@ export default function App() {
             </div>
 
             {/* Cloud Status */}
-            <div className="flex items-center justify-center gap-2 py-1.5 px-3 bg-slate-900/60 rounded-xl border border-white/5 font-mono text-[10px] uppercase font-bold text-center">
-              <span className={`w-2 h-2 rounded-full ${isSupabaseConfigured ? 'bg-cyan-400 animate-pulse' : 'bg-amber-400'}`} />
-              {isSupabaseConfigured ? (
-                <span className="text-cyan-400">Canal Seguro Supabase Cloud Activo</span>
-              ) : (
-                <span className="text-amber-400">Almacenamiento Local (Listo para Supabase)</span>
+            <div className="flex flex-col items-center gap-2 w-full">
+              <div className="flex items-center justify-center gap-2 py-1.5 px-3 bg-slate-900/60 rounded-xl border border-white/5 font-mono text-[10px] uppercase font-bold text-center w-full">
+                <span className={`w-2 h-2 rounded-full ${
+                  dbStatus === 'connected' ? 'bg-cyan-400 animate-pulse' :
+                  dbStatus === 'error' ? 'bg-amber-400 animate-pulse' : 'bg-slate-600'
+                }`} />
+                {dbStatus === 'connected' ? (
+                  <span className="text-cyan-400">Canal Seguro Supabase Cloud Activo</span>
+                ) : dbStatus === 'error' ? (
+                  <span className="text-amber-400">Modo Local (Supabase con Error RLS o de Tablas)</span>
+                ) : (
+                  <span className="text-slate-400">Almacenamiento Local (Listo para Supabase)</span>
+                )}
+              </div>
+              
+              {dbStatus === 'error' && (
+                <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-2xl text-[11px] text-slate-300 w-full text-center leading-normal">
+                  <span className="text-amber-400 font-bold block mb-1">⚠️ Error de Permiso (RLS) en Supabase</span>
+                  La conexión de red con Supabase es correcta, pero el motor rechazó la operación de siembra debido a políticas de seguridad activas en tus tablas.
+                  <div className="mt-2 text-[10px] text-cyan-300 font-mono">
+                    Para solucionarlo de inmediato: ejecuta el script SQL actualizado que desactiva RLS en el SQL Editor de tu Supabase.
+                  </div>
+                </div>
               )}
             </div>
 
@@ -895,6 +967,30 @@ export default function App() {
                 <span>Planos BD y Código</span>
               </button>
             </div>
+
+            {/* RLS policy violation / schema error warning banner */}
+            {dbStatus === 'error' && (
+              <motion.div 
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                className="p-4 bg-amber-500/10 border border-amber-500/25 rounded-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4 text-xs text-slate-300 leading-relaxed mb-4"
+              >
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="text-amber-400 shrink-0 mt-0.5" size={18} />
+                  <div>
+                    <span className="text-amber-400 font-bold block mb-0.5">⚠️ Sincronización en la Nube Pausada por Políticas RLS en Supabase</span>
+                    La conexión con la URL de tu Supabase es correcta, pero el servidor rechazó guardar la información debido a políticas de seguridad activas en tus tablas (Row-Level Security).
+                    <span className="text-white font-medium block mt-1">La aplicación ha cambiado al Almacenamiento Local de forma automática para que puedas interactuar y registrar todo al 100% sin perder datos.</span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setActiveTab('blueprint')}
+                  className="px-4 py-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded-xl font-bold transition-all whitespace-nowrap shrink-0 self-stretch md:self-auto text-center cursor-pointer"
+                >
+                  Ver Solución SQL 🛠️
+                </button>
+              </motion.div>
+            )}
 
             {/* Core Tab Render Switcher */}
             <div className="min-h-[500px]">
