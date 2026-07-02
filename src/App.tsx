@@ -101,6 +101,20 @@ export default function App() {
   const [newUsername, setNewUsername] = useState('');
   const [newCedula, setNewCedula] = useState('');
 
+  // Individual food preference states
+  const [mealsPreferences, setMealsPreferences] = useState<Record<string, { desayuno: boolean; almuerzo: boolean; cena: boolean }>>(() => {
+    const saved = localStorage.getItem('vtv_meals_preferences');
+    return saved ? JSON.parse(saved) : {};
+  });
+
+  const handleUpdateMealsPreference = (workerId: string, prefs: { desayuno: boolean; almuerzo: boolean; cena: boolean }) => {
+    setMealsPreferences(prev => {
+      const updated = { ...prev, [workerId]: prefs };
+      localStorage.setItem('vtv_meals_preferences', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
   // Toast Notification State
   const [notifications, setNotifications] = useState<NotificationToast[]>([]);
 
@@ -926,6 +940,8 @@ export default function App() {
                         setSelectedDateStr={setSelectedDateStr}
                         operationalDates={operationalDates}
                         onAddOperationalDate={handleAddOperationalDate}
+                        mealsPreferences={mealsPreferences}
+                        onUpdateMealsPreference={handleUpdateMealsPreference}
                       />
                     )}
 
