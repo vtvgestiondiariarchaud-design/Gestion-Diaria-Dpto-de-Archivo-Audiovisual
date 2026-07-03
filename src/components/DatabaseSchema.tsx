@@ -232,12 +232,12 @@ export function calcularLogisticaComedor(
               </div>
             </div>
 
-            <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-2xl flex items-start gap-3">
-              <AlertCircle size={18} className="text-amber-400 shrink-0 mt-0.5" />
+            <div className="p-4 bg-cyan-500/10 border border-cyan-500/20 rounded-2xl flex items-start gap-3">
+              <AlertCircle size={18} className="text-cyan-400 shrink-0 mt-0.5" />
               <div className="space-y-1">
-                <h5 className="font-bold text-xs text-amber-300">Modo Local Fallback Autónomo</h5>
+                <h5 className="font-bold text-xs text-cyan-300">Conexión Directa a Base de Datos Requerida</h5>
                 <p className="text-[11px] text-slate-300 leading-relaxed">
-                  Actualmente, al no haber credenciales configuradas, la aplicación opera en **Modo Local Inteligente**. Almacena todos los registros de personal, guardias, e intercambios en la base de datos de almacenamiento local de tu navegador. Esto garantiza que la aplicación sea **100% interactiva de inmediato**, para que puedas probar el flujo completo de registro y asignación antes de conectar Supabase.
+                  Esta aplicación está configurada para funcionar **exclusivamente con Supabase**. No se almacenan datos locales temporales para garantizar la consistencia en la nube de VTV. Si aún no has enlazado tu base de datos, ve al panel de **Ajustes (Settings)** en AI Studio y define las claves URL y Anon Key.
                 </p>
               </div>
             </div>

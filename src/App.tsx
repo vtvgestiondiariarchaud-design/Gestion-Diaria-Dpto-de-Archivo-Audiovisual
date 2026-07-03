@@ -534,18 +534,18 @@ export default function App() {
                 {dbStatus === 'connected' ? (
                   <span className="text-cyan-400">Canal Seguro Supabase Cloud Activo</span>
                 ) : dbStatus === 'error' ? (
-                  <span className="text-amber-400">Modo Local (Supabase con Error RLS o de Tablas)</span>
+                  <span className="text-amber-400">Error de Conexión (Supabase con Error o Tablas faltantes)</span>
                 ) : (
-                  <span className="text-slate-400">Almacenamiento Local (Listo para Supabase)</span>
+                  <span className="text-slate-400">Supabase Desconectado / Sin Configurar</span>
                 )}
               </div>
               
               {dbStatus === 'error' && (
                 <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-2xl text-[11px] text-slate-300 w-full text-center leading-normal">
-                  <span className="text-amber-400 font-bold block mb-1">⚠️ Error de Permiso (RLS) en Supabase</span>
-                  La conexión de red con Supabase es correcta, pero el motor rechazó la operación de siembra debido a políticas de seguridad activas en tus tablas.
+                  <span className="text-amber-400 font-bold block mb-1">⚠️ Error en la Base de Datos Supabase</span>
+                  Ocurrió un error al cargar o guardar los datos. Asegúrate de haber creado las tablas de la base de datos ejecutando el script SQL actualizado y desactivado RLS.
                   <div className="mt-2 text-[10px] text-cyan-300 font-mono">
-                    Para solucionarlo de inmediato: ejecuta el script SQL actualizado que desactiva RLS en el SQL Editor de tu Supabase.
+                    Para solucionarlo de inmediato: copia y ejecuta el script SQL actualizado en el SQL Editor de tu Supabase.
                   </div>
                 </div>
               )}
