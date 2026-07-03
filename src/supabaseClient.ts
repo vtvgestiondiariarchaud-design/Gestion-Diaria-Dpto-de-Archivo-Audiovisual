@@ -49,8 +49,18 @@ export const DEFAULT_DIVISIONS: Division[] = [
 
 // Helper to generate a clean SQL Script for the user to run in Supabase SQL Editor
 export const getSupabaseSQLScript = (): string => {
-  return `-- SQL SCRIPT PARA CONFIGURAR TU BASE DE DATOS EN SUPABASE
--- Ejecuta este script en el SQL Editor de tu proyecto de Supabase
+  return `-- SQL SCRIPT ULTRA-ROBUSTO PARA CONFIGURAR TU BASE DE DATOS EN SUPABASE
+-- Copia y ejecuta todo este script completo en el SQL Editor de tu proyecto de Supabase.
+-- ¡Soluciona todos los problemas de RLS, columnas faltantes o conflictos de claves externas!
+
+-- =========================================================================
+-- OPCIÓN RECOMENDADA: SI DESEAS LIMPIAR LA BASE DE DATOS Y EMPEZAR DESDE CERO,
+-- DESCOMENTA LAS SIGUIENTES 4 LÍNEAS ANTES DE EJECUTAR EL SCRIPT:
+-- =========================================================================
+-- drop table if exists shift_change_requests cascade;
+-- drop table if exists shift_assignments cascade;
+-- drop table if exists workers cascade;
+-- drop table if exists divisions cascade;
 
 -- 1. Crear tabla de divisiones
 create table if not exists divisions (
@@ -61,7 +71,7 @@ create table if not exists divisions (
   coordinator_name text
 );
 
--- Migraciones automáticas por si las tablas ya existían sin estas columnas
+-- Garantizar columnas correctas si la tabla ya existía
 alter table divisions add column if not exists description text;
 alter table divisions add column if not exists coordinator_id text;
 alter table divisions add column if not exists coordinator_name text;
@@ -79,13 +89,14 @@ create table if not exists workers (
   meals_preference text
 );
 
--- Migraciones automáticas por si la tabla ya existía sin estas columnas (¡Vital para el error de columna 'cedula'!)
+-- Garantizar columnas correctas si la tabla ya existía
 alter table workers add column if not exists role text not null default 'worker';
 alter table workers add column if not exists cedula text;
 alter table workers add column if not exists password text;
 alter table workers add column if not exists meals_preference text;
+alter table workers add column if not exists division_id text references divisions(id) on delete set null;
 
--- 3. Crear tabla de asignaciones de turnos
+-- 3. Crear tabla de asignaciones de turnos (shift_assignments)
 create table if not exists shift_assignments (
   id text primary key,
   worker_id text references workers(id) on delete cascade,
@@ -94,10 +105,12 @@ create table if not exists shift_assignments (
   shift_type text not null
 );
 
--- Migraciones automáticas por si la tabla ya existía
+-- Garantizar columnas correctas si la tabla ya existía
 alter table shift_assignments add column if not exists shift_type text;
+alter table shift_assignments add column if not exists worker_id text references workers(id) on delete cascade;
+alter table shift_assignments add column if not exists division_id text references divisions(id) on delete cascade;
 
--- 4. Crear tabla de solicitudes de intercambio de guardia
+-- 4. Crear tabla de solicitudes de cambio de guardia (shift_change_requests)
 create table if not exists shift_change_requests (
   id text primary key,
   requester_id text references workers(id) on delete cascade,
@@ -111,24 +124,32 @@ create table if not exists shift_change_requests (
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
--- Migraciones automáticas por si la tabla ya existía
+-- Garantizar columnas correctas si la tabla ya existía
 alter table shift_change_requests add column if not exists status text not null default 'pending';
 alter table shift_change_requests add column if not exists created_at timestamp with time zone default timezone('utc'::text, now());
 
--- 5. Insertar divisiones por defecto de VTV
+-- 5. Insertar divisiones por defecto de VTV (Evita duplicados)
 insert into divisions (id, name, description) values
 ('div_archivo_prensa', 'Archivo de Prensa', 'Gestión, clasificación y resguardo del material audiovisual y notas informativas del área de prensa y noticias.'),
 ('div_archivo_programacion', 'Archivo de Programacion', 'Catalogación, digitalización e inventario de programas, documentales y transmisiones especiales de la planta televisiva.'),
 ('div_ingesta', 'Ingesta', 'Recepción, control de calidad, transferencia y almacenamiento primario de contenidos y aportes de corresponsalías.')
-on conflict (id) do nothing;
+on conflict (id) do update set 
+  name = excluded.name,
+  description = excluded.description;
 
--- 6. DESACTIVAR RLS (Row-Level Security) para garantizar acceso de lectura/escritura directo
--- NOTA: Supabase habilita RLS por defecto si creas tablas desde su interfaz visual.
--- Ejecutar estas líneas garantiza que la aplicación web pueda sincronizar los datos de inmediato:
+-- 6. DESACTIVAR DE MANERA ABSOLUTA EL ROW-LEVEL SECURITY (RLS)
+-- Esto garantiza que la web pueda conectarse directamente, leer y escribir datos sin bloqueos.
 alter table divisions disable row level security;
 alter table workers disable row level security;
 alter table shift_assignments disable row level security;
 alter table shift_change_requests disable row level security;
+
+-- 7. CONCEDER PERMISOS TOTALES DE LECTURA Y ESCRITURA AL ROL PÚBLICO (ANON) Y AUTENTICADO
+-- ¡Medida de seguridad extra para evitar denegación de permisos de API en Supabase!
+grant all privileges on table divisions to anon, authenticated, postgres;
+grant all privileges on table workers to anon, authenticated, postgres;
+grant all privileges on table shift_assignments to anon, authenticated, postgres;
+grant all privileges on table shift_change_requests to anon, authenticated, postgres;
 `;
 };
 
