@@ -17,10 +17,20 @@ export function setSupabaseConnectionStatus(status: 'connected' | 'error' | 'not
   lastSupabaseError = errorMsg;
 }
 
-// Real client (will be initialized if configured)
-export const supabase = isSupabaseConfigured 
+// Real client (will be initialized if configured, can be re-assigned dynamically)
+export let supabase = isSupabaseConfigured 
   ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) 
   : null;
+
+export function initSupabaseClient(url: string, key: string) {
+  if (url && key) {
+    supabase = createClient(url, key);
+    setSupabaseConnectionStatus('connected');
+  } else {
+    supabase = null;
+    setSupabaseConnectionStatus('not_configured');
+  }
+}
 
 // Default initial divisions that should always exist for registration
 export const DEFAULT_DIVISIONS: Division[] = [
@@ -86,7 +96,8 @@ create table if not exists workers (
   role text not null default 'worker',
   cedula text,
   password text,
-  meals_preference text
+  meals_preference text,
+  must_change_password boolean default false
 );
 
 -- Garantizar columnas correctas si la tabla ya existía
@@ -95,6 +106,7 @@ alter table workers add column if not exists cedula text;
 alter table workers add column if not exists password text;
 alter table workers add column if not exists meals_preference text;
 alter table workers add column if not exists division_id text references divisions(id) on delete set null;
+alter table workers add column if not exists must_change_password boolean default false;
 
 -- 3. Crear tabla de asignaciones de turnos (shift_assignments)
 create table if not exists shift_assignments (
@@ -403,6 +415,7 @@ export const db = {
         role: w.role as any,
         cedula: w.cedula,
         password: w.password || '',
+        mustChangePassword: w.must_change_password === true || w.must_change_password === 'true',
         mealsPreference: mealsPreferenceObj
       };
     });
@@ -421,7 +434,8 @@ export const db = {
       role: worker.role,
       cedula: worker.cedula,
       password: worker.password,
-      meals_preference: worker.mealsPreference ? JSON.stringify(worker.mealsPreference) : null
+      meals_preference: worker.mealsPreference ? JSON.stringify(worker.mealsPreference) : null,
+      must_change_password: worker.mustChangePassword || false
     };
 
     const executeInsert = async (currentPayload: any): Promise<void> => {
@@ -432,6 +446,11 @@ export const db = {
         const isColumnError = error.code === '42703' || errStr.includes('column') || errStr.includes('schema cache');
         if (isColumnError) {
           let modified = false;
+          if (errStr.includes('must_change_password') && 'must_change_password' in currentPayload) {
+            console.warn('Pruning missing "must_change_password" column and retrying...');
+            delete currentPayload.must_change_password;
+            modified = true;
+          }
           if (errStr.includes('cedula') && 'cedula' in currentPayload) {
             console.warn('Pruning missing "cedula" column and retrying...');
             delete currentPayload.cedula;
@@ -455,7 +474,10 @@ export const db = {
 
           if (!modified) {
             // Forced progressive pruning fallback if error is generic
-            if ('meals_preference' in currentPayload) {
+            if ('must_change_password' in currentPayload) {
+              delete currentPayload.must_change_password;
+              modified = true;
+            } else if ('meals_preference' in currentPayload) {
               delete currentPayload.meals_preference;
               modified = true;
             } else if ('cedula' in currentPayload) {
@@ -498,7 +520,8 @@ export const db = {
       role: worker.role,
       cedula: worker.cedula,
       password: worker.password,
-      meals_preference: worker.mealsPreference ? JSON.stringify(worker.mealsPreference) : null
+      meals_preference: worker.mealsPreference ? JSON.stringify(worker.mealsPreference) : null,
+      must_change_password: worker.mustChangePassword !== undefined ? worker.mustChangePassword : false
     };
 
     const executeUpdate = async (currentPayload: any): Promise<void> => {
@@ -512,6 +535,11 @@ export const db = {
         const isColumnError = error.code === '42703' || errStr.includes('column') || errStr.includes('schema cache');
         if (isColumnError) {
           let modified = false;
+          if (errStr.includes('must_change_password') && 'must_change_password' in currentPayload) {
+            console.warn('Pruning missing "must_change_password" column and retrying...');
+            delete currentPayload.must_change_password;
+            modified = true;
+          }
           if (errStr.includes('cedula') && 'cedula' in currentPayload) {
             console.warn('Pruning missing "cedula" column and retrying...');
             delete currentPayload.cedula;
@@ -535,7 +563,10 @@ export const db = {
 
           if (!modified) {
             // Forced progressive pruning fallback if error is generic
-            if ('meals_preference' in currentPayload) {
+            if ('must_change_password' in currentPayload) {
+              delete currentPayload.must_change_password;
+              modified = true;
+            } else if ('meals_preference' in currentPayload) {
               delete currentPayload.meals_preference;
               modified = true;
             } else if ('cedula' in currentPayload) {

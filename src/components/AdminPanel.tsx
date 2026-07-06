@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Trash, Edit2, Shield, UserCheck, Settings, AlertCircle, Layers, Check } from 'lucide-react';
+import { Plus, Trash, Edit2, Shield, UserCheck, Settings, AlertCircle, Layers, Check, KeyRound } from 'lucide-react';
 import { Division, Worker, UserRole } from '../types';
 
 interface AdminPanelProps {
@@ -115,6 +115,30 @@ export default function AdminPanel({
       } y pertenece a ${divId === 'none' ? 'ninguna división' : (divisions.find(d => d.id === divId)?.name || 'su división')}.`,
       'success'
     );
+  };
+
+  const handleResetPassword = (workerId: string) => {
+    const targetWorker = workers.find(w => w.id === workerId);
+    if (!targetWorker) return;
+
+    if (confirm(`¿Estás seguro de restablecer la contraseña de ${targetWorker.name}?\nSe colocará la contraseña provisional "12345678" y se le exigirá cambiarla al iniciar sesión.`)) {
+      const updatedWorkers = workers.map(w => {
+        if (w.id === workerId) {
+          return {
+            ...w,
+            password: '12345678',
+            mustChangePassword: true
+          };
+        }
+        return w;
+      });
+      onUpdateWorkers(updatedWorkers);
+      onAddNotification(
+        'Contraseña Restablecida',
+        `La contraseña de ${targetWorker.name} ahora es "12345678".`,
+        'success'
+      );
+    }
   };
 
   return (
@@ -315,6 +339,26 @@ export default function AdminPanel({
                           <option value="superadmin">Gerente</option>
                         </select>
                       </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-1.5 border-t border-white/5">
+                      <span className="text-[9px] text-slate-400">
+                        {worker.mustChangePassword ? (
+                          <span className="text-amber-400 font-semibold flex items-center gap-1">
+                            ⚠️ Cambio pendiente
+                          </span>
+                        ) : (
+                          <span className="text-emerald-400 font-medium">Contraseña Activa</span>
+                        )}
+                      </span>
+                      <button
+                        onClick={() => handleResetPassword(worker.id)}
+                        className="flex items-center gap-1 px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 hover:border-amber-500/30 rounded-lg text-[9px] font-bold text-amber-300 transition-all cursor-pointer"
+                        title="Restablecer contraseña a 12345678"
+                      >
+                        <KeyRound size={10} />
+                        <span>Reiniciar</span>
+                      </button>
                     </div>
                   </div>
                 );

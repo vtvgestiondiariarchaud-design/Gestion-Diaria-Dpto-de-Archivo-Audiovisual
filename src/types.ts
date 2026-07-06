@@ -17,6 +17,7 @@ export interface Worker {
   role: UserRole;
   cedula?: string;
   password?: string;
+  mustChangePassword?: boolean;
   mealsPreference?: {
     desayuno: boolean;
     almuerzo: boolean;

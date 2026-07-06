@@ -105,6 +105,10 @@ export default function App() {
   const [newUsername, setNewUsername] = useState('');
   const [newCedula, setNewCedula] = useState('');
 
+  // Forced password change state
+  const [forceNewPassword, setForceNewPassword] = useState('');
+  const [forceConfirmPassword, setForceConfirmPassword] = useState('');
+
   // Individual food preference states derived dynamically from workers' profiles
   const mealsPreferences = useMemo(() => {
     const prefs: Record<string, { desayuno: boolean; almuerzo: boolean; cena: boolean }> = {};
@@ -186,6 +190,20 @@ export default function App() {
   const syncData = async () => {
     setLoading(true);
     try {
+      // Intentar obtener configuración en caliente del backend (Render, etc.) para evitar re-compilaciones
+      try {
+        const configRes = await fetch('/api/config');
+        if (configRes.ok) {
+          const configData = await configRes.json();
+          if (configData.supabaseUrl && configData.supabaseAnonKey) {
+            const { initSupabaseClient } = await import('./supabaseClient');
+            initSupabaseClient(configData.supabaseUrl, configData.supabaseAnonKey);
+          }
+        }
+      } catch (err) {
+        console.warn('Configuración dinámica no disponible, usando variables de entorno estáticas:', err);
+      }
+
       const fetchedDivisions = await db.fetchDivisions();
       const fetchedWorkers = await db.fetchWorkers();
       const fetchedAssignments = await db.fetchAssignments();
@@ -364,6 +382,52 @@ export default function App() {
     }
   };
 
+  const handleForceChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentSession) return;
+
+    const newPass = forceNewPassword.trim();
+    const confPass = forceConfirmPassword.trim();
+
+    if (newPass.length < 8) {
+      addNotification('Contraseña muy corta', 'La nueva contraseña debe tener al menos 8 caracteres.', 'info');
+      return;
+    }
+
+    if (newPass === '12345678') {
+      addNotification('Contraseña no permitida', 'No puedes usar la contraseña provisional "12345678" como tu contraseña definitiva.', 'info');
+      return;
+    }
+
+    if (newPass !== confPass) {
+      addNotification('Contraseñas no coinciden', 'La nueva contraseña y su confirmación no coinciden.', 'info');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const latestWorkers = await db.fetchWorkers();
+      const currentWorker = latestWorkers.find(w => w.id === currentSession.userId);
+      if (currentWorker) {
+        currentWorker.password = newPass;
+        currentWorker.mustChangePassword = false;
+        await db.updateWorker(currentWorker);
+        
+        addNotification('Contraseña Actualizada', 'Tu contraseña ha sido actualizada correctamente. Ya puedes acceder al sistema.', 'success');
+        setForceNewPassword('');
+        setForceConfirmPassword('');
+        await syncData();
+      } else {
+        addNotification('Error', 'No se encontró tu registro de usuario.', 'info');
+      }
+    } catch (err) {
+      console.error(err);
+      addNotification('Error', 'Fallo al actualizar la contraseña.', 'info');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleChangeUsername = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentSession) return;
@@ -460,7 +524,13 @@ export default function App() {
       for (const w of updated) {
         const old = workers.find(o => o.id === w.id);
         if (old) {
-          if (old.role !== w.role || old.divisionId !== w.divisionId || old.name !== w.name) {
+          if (
+            old.role !== w.role || 
+            old.divisionId !== w.divisionId || 
+            old.name !== w.name ||
+            old.password !== w.password ||
+            old.mustChangePassword !== w.mustChangePassword
+          ) {
             await db.updateWorker(w);
           }
         }
@@ -498,6 +568,9 @@ export default function App() {
     }
     await syncData();
   };
+
+  const currentUserObj = currentSession ? workers.find(w => w.id === currentSession.userId) : null;
+  const isPasswordChangeRequired = currentUserObj?.mustChangePassword === true;
 
   return (
     <div className="min-h-screen text-slate-100 font-sans relative overflow-x-hidden selection:bg-cyan-500/30 selection:text-cyan-300">
@@ -720,6 +793,70 @@ export default function App() {
             <div className="pt-2 border-t border-white/5 text-[10px] text-slate-400 text-center leading-relaxed">
               Venezolana de Televisión • Canal de Integridad de Guardias
             </div>
+          </motion.div>
+        </div>
+      ) : isPasswordChangeRequired ? (
+        /* FORCE PASSWORD CHANGE FORM */
+        <div className="min-h-screen flex items-center justify-center p-4 relative z-10">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="w-full max-w-md p-6 glass border-white/15 rounded-3xl shadow-2xl relative overflow-hidden space-y-6"
+          >
+            <div className="text-center space-y-3">
+              <div className="inline-flex w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 items-center justify-center shadow-lg">
+                <KeyRound className="text-amber-400" size={24} />
+              </div>
+              <div className="space-y-1">
+                <h2 className="text-xl font-bold text-white tracking-tight">Cambio de Contraseña Requerido</h2>
+                <p className="text-xs text-slate-400">Tu contraseña ha sido restablecida por un administrador. Debes cambiarla para poder continuar.</p>
+              </div>
+            </div>
+
+            <form onSubmit={handleForceChangePassword} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-[10px] uppercase font-bold text-slate-400">Nueva Contraseña:</label>
+                <input
+                  type="password"
+                  required
+                  placeholder="Mínimo 8 caracteres"
+                  value={forceNewPassword}
+                  onChange={(e) => setForceNewPassword(e.target.value)}
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-cyan-500 transition-all placeholder:text-slate-600"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] uppercase font-bold text-slate-400">Confirmar Nueva Contraseña:</label>
+                <input
+                  type="password"
+                  required
+                  placeholder="Repite la contraseña"
+                  value={forceConfirmPassword}
+                  onChange={(e) => setForceConfirmPassword(e.target.value)}
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-cyan-500 transition-all placeholder:text-slate-600"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-2.5 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-amber-500/10"
+              >
+                {loading ? <Loader2 size={14} className="animate-spin" /> : 'Actualizar Contraseña'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setCurrentSession(null);
+                  localStorage.removeItem('vtv_real_session');
+                }}
+                className="w-full py-2 bg-white/5 hover:bg-white/10 text-slate-300 rounded-xl text-xs font-medium transition-all cursor-pointer"
+              >
+                Cerrar Sesión
+              </button>
+            </form>
           </motion.div>
         </div>
       ) : (
