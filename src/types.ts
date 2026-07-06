@@ -18,6 +18,7 @@ export interface Worker {
   cedula?: string;
   password?: string;
   mustChangePassword?: boolean;
+  fixedShift?: ShiftType;
   mealsPreference?: {
     desayuno: boolean;
     almuerzo: boolean;

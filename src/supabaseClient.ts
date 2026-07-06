@@ -97,7 +97,8 @@ create table if not exists workers (
   cedula text,
   password text,
   meals_preference text,
-  must_change_password boolean default false
+  must_change_password boolean default false,
+  fixed_shift text default 'pool'
 );
 
 -- Garantizar columnas correctas si la tabla ya existía
@@ -107,6 +108,7 @@ alter table workers add column if not exists password text;
 alter table workers add column if not exists meals_preference text;
 alter table workers add column if not exists division_id text references divisions(id) on delete set null;
 alter table workers add column if not exists must_change_password boolean default false;
+alter table workers add column if not exists fixed_shift text default 'pool';
 
 -- 3. Crear tabla de asignaciones de turnos (shift_assignments)
 create table if not exists shift_assignments (
@@ -416,6 +418,7 @@ export const db = {
         cedula: w.cedula,
         password: w.password || '',
         mustChangePassword: w.must_change_password === true || w.must_change_password === 'true',
+        fixedShift: (w.fixed_shift || 'pool') as any,
         mealsPreference: mealsPreferenceObj
       };
     });
@@ -435,7 +438,8 @@ export const db = {
       cedula: worker.cedula,
       password: worker.password,
       meals_preference: worker.mealsPreference ? JSON.stringify(worker.mealsPreference) : null,
-      must_change_password: worker.mustChangePassword || false
+      must_change_password: worker.mustChangePassword || false,
+      fixed_shift: worker.fixedShift || 'pool'
     };
 
     const executeInsert = async (currentPayload: any): Promise<void> => {
@@ -446,6 +450,11 @@ export const db = {
         const isColumnError = error.code === '42703' || errStr.includes('column') || errStr.includes('schema cache');
         if (isColumnError) {
           let modified = false;
+          if (errStr.includes('fixed_shift') && 'fixed_shift' in currentPayload) {
+            console.warn('Pruning missing "fixed_shift" column and retrying...');
+            delete currentPayload.fixed_shift;
+            modified = true;
+          }
           if (errStr.includes('must_change_password') && 'must_change_password' in currentPayload) {
             console.warn('Pruning missing "must_change_password" column and retrying...');
             delete currentPayload.must_change_password;
@@ -521,7 +530,8 @@ export const db = {
       cedula: worker.cedula,
       password: worker.password,
       meals_preference: worker.mealsPreference ? JSON.stringify(worker.mealsPreference) : null,
-      must_change_password: worker.mustChangePassword !== undefined ? worker.mustChangePassword : false
+      must_change_password: worker.mustChangePassword !== undefined ? worker.mustChangePassword : false,
+      fixed_shift: worker.fixedShift || 'pool'
     };
 
     const executeUpdate = async (currentPayload: any): Promise<void> => {
@@ -535,6 +545,11 @@ export const db = {
         const isColumnError = error.code === '42703' || errStr.includes('column') || errStr.includes('schema cache');
         if (isColumnError) {
           let modified = false;
+          if (errStr.includes('fixed_shift') && 'fixed_shift' in currentPayload) {
+            console.warn('Pruning missing "fixed_shift" column and retrying...');
+            delete currentPayload.fixed_shift;
+            modified = true;
+          }
           if (errStr.includes('must_change_password') && 'must_change_password' in currentPayload) {
             console.warn('Pruning missing "must_change_password" column and retrying...');
             delete currentPayload.must_change_password;
@@ -563,7 +578,10 @@ export const db = {
 
           if (!modified) {
             // Forced progressive pruning fallback if error is generic
-            if ('must_change_password' in currentPayload) {
+            if ('fixed_shift' in currentPayload) {
+              delete currentPayload.fixed_shift;
+              modified = true;
+            } else if ('must_change_password' in currentPayload) {
               delete currentPayload.must_change_password;
               modified = true;
             } else if ('meals_preference' in currentPayload) {

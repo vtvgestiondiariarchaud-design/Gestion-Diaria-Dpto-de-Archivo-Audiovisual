@@ -26,6 +26,7 @@ export default function ReportGenerator({
 }: ReportGeneratorProps) {
   const [selectedDivisionId, setSelectedDivisionId] = useState<string>('todos');
   const [copied, setCopied] = useState(false);
+  const [isWhatsAppFormat, setIsWhatsAppFormat] = useState(true);
 
   // Get current date formatted based on selectedDateStr
   const currentDateInfo = useMemo(() => {
@@ -49,9 +50,15 @@ export default function ReportGenerator({
 
   // Generate the formatted report text matching the strict specifications
   const reportText = useMemo(() => {
+    const isWa = isWhatsAppFormat;
+
     if (selectedDivisionId === 'todos') {
-      let fullReport = `REPORTE CONSOLIDADO DE GUARDIA - VTV\n`;
-      fullReport += `Día: ${currentDateInfo.dayName} ${currentDateInfo.formattedDate}\n`;
+      let fullReport = isWa 
+        ? `*REPORTE CONSOLIDADO DE GUARDIA - VTV*\n`
+        : `REPORTE CONSOLIDADO DE GUARDIA - VTV\n`;
+      fullReport += isWa
+        ? `*Día:* _${currentDateInfo.dayName} ${currentDateInfo.formattedDate}_\n`
+        : `Día: ${currentDateInfo.dayName} ${currentDateInfo.formattedDate}\n`;
       fullReport += `========================================\n\n`;
 
       const getWorkerNames = (shiftType: 'manana' | 'tarde' | 'noche') => {
@@ -76,13 +83,18 @@ export default function ReportGenerator({
         ? assignedCoordinators.map(c => c.name).join(', ') 
         : 'No asignado';
 
-      fullReport += `Turno Mañana:\n`;
+      fullReport += isWa ? `*Turno Mañana:*\n` : `Turno Mañana:\n`;
       fullReport += `${mananaList.length > 0 ? mananaList.join('\n') : '(Ninguno asignado)'}\n\n`;
-      fullReport += `Turno Tarde:\n`;
+      
+      fullReport += isWa ? `*Turno Tarde:*\n` : `Turno Tarde:\n`;
       fullReport += `${tardeList.length > 0 ? tardeList.join('\n') : '(Ninguno asignado)'}\n\n`;
-      fullReport += `Turno Noche:\n`;
+      
+      fullReport += isWa ? `*Turno Noche:*\n` : `Turno Noche:\n`;
       fullReport += `${nocheList.length > 0 ? nocheList.join('\n') : '(Ninguno asignado)'}\n\n`;
-      fullReport += `Encargado/Coordinador de Guardia: ${coordinatorName}\n`;
+      
+      fullReport += isWa
+        ? `*Encargado/Coordinador de Guardia:* _${coordinatorName}_\n`
+        : `Encargado/Coordinador de Guardia: ${coordinatorName}\n`;
 
       return fullReport;
     }
@@ -100,7 +112,7 @@ export default function ReportGenerator({
         })
         .map(w => {
           const isCoord = w.role === 'coordinator' || w.role === 'superadmin' || w.role === 'deputy';
-          const suffix = isCoord ? ' (Encargado)' : '';
+          const suffix = isCoord ? (isWa ? ' *(_Encargado_)*' : ' (Encargado)') : '';
           return `- ${w.name}${w.cedula ? ` - C.I: ${w.cedula}` : ''} (${w.cargo})${suffix}`;
         });
     };
@@ -120,6 +132,21 @@ export default function ReportGenerator({
       ? assignedCoordinators.map(c => c.name).join(', ') 
       : (selectedDivision.coordinatorName || 'No asignado');
 
+    if (isWa) {
+      return `*Grupo de ${selectedDivision.name}* para el _${currentDateInfo.dayName} ${currentDateInfo.formattedDate}_
+
+*Turno Mañana:*
+${mananaList.length > 0 ? mananaList.join('\n') : '(Ninguno asignado)'}
+
+*Turno Tarde:*
+${tardeList.length > 0 ? tardeList.join('\n') : '(Ninguno asignado)'}
+
+*Turno Noche:*
+${nocheList.length > 0 ? nocheList.join('\n') : '(Ninguno asignado)'}
+
+*Encargado/Coordinador de Guardia:* _${coordinatorName}_`;
+    }
+
     return `Grupo de ${selectedDivision.name} para el ${currentDateInfo.dayName} ${currentDateInfo.formattedDate}
 
 Turno Mañana:
@@ -132,7 +159,7 @@ Turno Noche:
 ${nocheList.length > 0 ? nocheList.join('\n') : '(Ninguno asignado)'}
 
 Encargado/Coordinador de Guardia: ${coordinatorName}`;
-  }, [selectedDivisionId, selectedDivision, divisions, workers, assignments, currentDateInfo, selectedDateStr]);
+  }, [selectedDivisionId, selectedDivision, divisions, workers, assignments, currentDateInfo, selectedDateStr, isWhatsAppFormat]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(reportText);
@@ -173,73 +200,6 @@ Encargado/Coordinador de Guardia: ${coordinatorName}`;
 
   return (
     <div className="space-y-6">
-      {/* Dynamic Multi-day Operational Checklist */}
-      <div className="p-5 bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 shadow-lg space-y-4">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-          <div className="space-y-1">
-            <h4 className="text-sm font-bold text-white flex items-center gap-2">
-              <Calendar size={16} className="text-cyan-400" />
-              <span>Lista de Verificación de Días de Guardia (Reportes)</span>
-            </h4>
-            <p className="text-[11px] text-slate-400">
-              Selecciona el día para compilar y generar el reporte oficial de guardia.
-            </p>
-          </div>
-          
-          {/* Create new operational date */}
-          <div className="flex gap-2 items-center">
-            <input
-              type="date"
-              id="new-guard-date-reportes"
-              className="bg-slate-900/60 border border-white/10 hover:border-white/20 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-500 transition-all font-mono"
-            />
-            <button
-              onClick={() => {
-                const el = document.getElementById('new-guard-date-reportes') as HTMLInputElement;
-                if (el && el.value) {
-                  onAddOperationalDate(el.value);
-                  el.value = '';
-                }
-              }}
-              className="px-3 py-1.5 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/30 text-cyan-300 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5"
-            >
-              <span>+ Habilitar Día</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Checklist of Dates */}
-        <div className="flex flex-wrap gap-2 pt-1">
-          {operationalDates.map((dateVal) => {
-            const isSelected = selectedDateStr === dateVal;
-            const parts = dateVal.split('-').map(Number);
-            const d = new Date(parts[0], parts[1] - 1, parts[2]);
-            const dayNamesShort = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
-            const dayName = dayNamesShort[d.getDay()];
-            const formatted = `${dayName} ${String(parts[2]).padStart(2, '0')}/${String(parts[1]).padStart(2, '0')}`;
-
-            return (
-              <button
-                key={dateVal}
-                onClick={() => setSelectedDateStr(dateVal)}
-                className={`px-3 py-2 rounded-xl text-xs font-medium border cursor-pointer transition-all flex items-center gap-2 ${
-                  isSelected
-                    ? 'bg-gradient-to-r from-cyan-500/20 to-violet-500/20 text-white border-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.25)] font-bold'
-                    : 'bg-slate-900/40 text-slate-400 border-white/5 hover:text-slate-200 hover:bg-slate-800/40'
-                }`}
-              >
-                <div className={`w-3.5 h-3.5 rounded flex items-center justify-center border transition-all ${
-                  isSelected ? 'border-cyan-400 bg-cyan-400 text-slate-950' : 'border-white/20'
-                }`}>
-                  {isSelected && <Check size={10} strokeWidth={4} />}
-                </div>
-                <span className="font-mono">{formatted}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
       {/* Intro */}
       <div className="p-4 glass">
         <h3 className="text-base font-bold text-white flex items-center gap-2 mb-1">
@@ -270,6 +230,32 @@ Encargado/Coordinador de Guardia: ${coordinatorName}`;
               ))}
             </select>
 
+            <label className="block text-xs font-semibold text-slate-300 mb-2">
+              Formato de Texto:
+            </label>
+            <div className="grid grid-cols-2 gap-2 mb-4">
+              <button
+                onClick={() => setIsWhatsAppFormat(false)}
+                className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition-all cursor-pointer ${
+                  !isWhatsAppFormat
+                    ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30 font-extrabold'
+                    : 'bg-slate-950 border-white/5 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                📝 Normal / Plano
+              </button>
+              <button
+                onClick={() => setIsWhatsAppFormat(true)}
+                className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition-all cursor-pointer ${
+                  isWhatsAppFormat
+                    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 font-extrabold'
+                    : 'bg-slate-950 border-white/5 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                💬 WhatsApp (*bold*)
+              </button>
+            </div>
+
             {/* Quick Helper card */}
             <div className="p-3.5 bg-cyan-950/10 border border-cyan-500/10 rounded-xl flex items-start gap-2.5">
               <Info className="text-cyan-400 shrink-0 mt-0.5" size={14} />
@@ -283,9 +269,9 @@ Encargado/Coordinador de Guardia: ${coordinatorName}`;
 
         {/* Report Preview */}
         <div className="lg:col-span-2 space-y-4">
-          <div className="p-4 glass-panel flex items-center justify-between">
+          <div className="p-4 glass-panel flex flex-col sm:flex-row gap-3 items-center justify-between">
             <span className="text-xs font-semibold text-white">Vista Previa del Reporte Oficial</span>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <button
                 onClick={handleCopy}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs text-slate-200 font-medium transition-all cursor-pointer"
@@ -293,6 +279,17 @@ Encargado/Coordinador de Guardia: ${coordinatorName}`;
                 {copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
                 <span>{copied ? 'Copiado' : 'Copiar Texto'}</span>
               </button>
+              
+              <a
+                href={`https://api.whatsapp.com/send?text=${encodeURIComponent(reportText)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/30 rounded-lg text-xs text-emerald-300 font-bold transition-all cursor-pointer decoration-none"
+              >
+                <Share2 size={13} className="text-emerald-400" />
+                <span>Enviar WhatsApp</span>
+              </a>
+
               <button
                 onClick={handlePrint}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/30 rounded-lg text-xs text-cyan-300 font-semibold transition-all cursor-pointer"

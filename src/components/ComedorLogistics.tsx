@@ -29,18 +29,32 @@ export default function ComedorLogistics({
   // Let the user interactively override yesterday's night shift status for testing the dining logic!
   const [yesterdayNightOverrides, setYesterdayNightOverrides] = useState<Record<string, boolean>>({});
 
-  // Sync overrides when workers list changes
+  // Automatically sync overrides based on actual previous day night shift assignments
   useEffect(() => {
+    const parts = selectedDateStr.split('-').map(Number);
+    if (parts.length !== 3) return;
+    const date = new Date(parts[0], parts[1] - 1, parts[2]);
+    date.setDate(date.getDate() - 1);
+    
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const dStr = String(date.getDate()).padStart(2, '0');
+    const previousDateStr = `${y}-${m}-${dStr}`;
+
+    const previousNightWorkers = new Set(
+      assignments
+        .filter(a => a.date === previousDateStr && a.shiftType === 'noche')
+        .map(a => a.workerId)
+    );
+
     setYesterdayNightOverrides(prev => {
       const next = { ...prev };
       workers.forEach(w => {
-        if (next[w.id] === undefined) {
-          next[w.id] = false; // Default to false for registered workers
-        }
+        next[w.id] = previousNightWorkers.has(w.id);
       });
       return next;
     });
-  }, [workers]);
+  }, [workers, assignments, selectedDateStr]);
 
   const toggleYesterdayNight = (workerId: string) => {
     setYesterdayNightOverrides(prev => ({
@@ -91,9 +105,9 @@ export default function ComedorLogistics({
           if (prefs.cena) meals.cena = true;
         }
 
-        // 4. Empleados en Turno Noche (Día Anterior / Salientes hoy en la mañana): Reciben 1 Desayuno hoy.
+        // 4. Empleados en Turno Noche (Día Anterior / Salientes hoy en la mañana): Reciben 1 Desayuno hoy (incondicional).
         if (wasNightYesterday) {
-          if (prefs.desayuno) meals.desayuno = true;
+          meals.desayuno = true;
         }
 
         // Increment counts if meals are awarded
@@ -132,72 +146,7 @@ export default function ComedorLogistics({
 
   return (
     <div className="space-y-6">
-      {/* Dynamic Multi-day Operational Checklist */}
-      <div className="p-5 bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 shadow-lg space-y-4">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-          <div className="space-y-1">
-            <h4 className="text-sm font-bold text-white flex items-center gap-2">
-              <Calendar size={16} className="text-cyan-400" />
-              <span>Lista de Verificación de Días de Guardia (Comedor)</span>
-            </h4>
-            <p className="text-[11px] text-slate-400">
-              Selecciona el día para ver o planificar las raciones del servicio de comedor.
-            </p>
-          </div>
-          
-          {/* Create new operational date */}
-          <div className="flex gap-2 items-center">
-            <input
-              type="date"
-              id="new-guard-date-comedor"
-              className="bg-slate-900/60 border border-white/10 hover:border-white/20 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-500 transition-all font-mono"
-            />
-            <button
-              onClick={() => {
-                const el = document.getElementById('new-guard-date-comedor') as HTMLInputElement;
-                if (el && el.value) {
-                  onAddOperationalDate(el.value);
-                  el.value = '';
-                }
-              }}
-              className="px-3 py-1.5 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/30 text-cyan-300 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5"
-            >
-              <span>+ Habilitar Día</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Checklist of Dates */}
-        <div className="flex flex-wrap gap-2 pt-1">
-          {operationalDates.map((dateVal) => {
-            const isSelected = selectedDateStr === dateVal;
-            const parts = dateVal.split('-').map(Number);
-            const d = new Date(parts[0], parts[1] - 1, parts[2]);
-            const dayNamesShort = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
-            const dayName = dayNamesShort[d.getDay()];
-            const formatted = `${dayName} ${String(parts[2]).padStart(2, '0')}/${String(parts[1]).padStart(2, '0')}`;
-
-            return (
-              <button
-                key={dateVal}
-                onClick={() => setSelectedDateStr(dateVal)}
-                className={`px-3 py-2 rounded-xl text-xs font-medium border cursor-pointer transition-all flex items-center gap-2 ${
-                  isSelected
-                    ? 'bg-gradient-to-r from-cyan-500/20 to-violet-500/20 text-white border-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.25)] font-bold'
-                    : 'bg-slate-900/40 text-slate-400 border-white/5 hover:text-slate-200 hover:bg-slate-800/40'
-                }`}
-              >
-                <div className={`w-3.5 h-3.5 rounded flex items-center justify-center border transition-all ${
-                  isSelected ? 'border-cyan-400 bg-cyan-400 text-slate-950' : 'border-white/20'
-                }`}>
-                  {isSelected && <Check size={10} strokeWidth={4} />}
-                </div>
-                <span className="font-mono">{formatted}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      {/* Overview Cards & Stats */}
 
       {/* Introduction Card */}
       <div className="p-5 glass flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
@@ -302,8 +251,8 @@ export default function ComedorLogistics({
                 </div>
               </div>
 
-              {/* Roster Table of who eats what */}
-              <div className="overflow-x-auto">
+              {/* Desktop Roster Table of who eats what */}
+              <div className="hidden md:block overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead>
                     <tr className="text-slate-400 border-b border-white/5 font-mono text-[10px]">
@@ -438,6 +387,116 @@ export default function ComedorLogistics({
                     ))}
                   </tbody>
                 </table>
+              </div>
+
+              {/* Mobile View Card List */}
+              <div className="block md:hidden space-y-3">
+                {div.workers.map((worker: any, idx: number) => {
+                  const currentPrefs = mealsPreferences[worker.id] || { desayuno: true, almuerzo: true, cena: true };
+                  
+                  return (
+                    <div key={idx} className="p-4 bg-slate-900/40 border border-white/5 rounded-xl space-y-3.5">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <div className="font-bold text-white text-xs leading-snug">{worker.name}</div>
+                          <div className="text-[10px] text-slate-400 font-mono mt-0.5 leading-snug">{worker.cargo}</div>
+                        </div>
+                        <div className="flex flex-col items-end gap-1 font-mono">
+                          <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                            Hoy: 
+                            <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
+                              worker.currentShift === 'manana' ? 'bg-sky-500/10 text-sky-400' :
+                              worker.currentShift === 'tarde' ? 'bg-violet-500/10 text-violet-400' :
+                              worker.currentShift === 'noche' ? 'bg-indigo-500/10 text-indigo-400' :
+                              worker.currentShift === 'libre' ? 'bg-emerald-500/10 text-emerald-400' :
+                              'bg-slate-500/10 text-slate-400'
+                            }`}>
+                              {worker.currentShift.toUpperCase()}
+                            </span>
+                          </span>
+                          <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                            Ayer: 
+                            <span className={`text-[10px] font-bold ${worker.previousShift === 'noche' ? 'text-indigo-400' : 'text-slate-500'}`}>
+                              {worker.previousShift.toUpperCase()}
+                            </span>
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Meal selections on mobile - touch friendly */}
+                      <div className="grid grid-cols-3 gap-2 pt-2 border-t border-white/5">
+                        <button
+                          onClick={() => {
+                            onUpdateMealsPreference(worker.id, {
+                              ...currentPrefs,
+                              desayuno: !currentPrefs.desayuno
+                            });
+                          }}
+                          className={`py-2 rounded-xl text-xs font-bold transition-all border flex flex-col items-center justify-center gap-1 cursor-pointer ${
+                            currentPrefs.desayuno
+                              ? worker.meals.desayuno
+                                ? 'bg-sky-500/20 text-sky-300 border-sky-500/30 shadow-[0_0_8px_rgba(14,165,233,0.15)] font-black'
+                                : 'bg-slate-800/80 text-sky-300/60 border-slate-700/50 border-dashed'
+                              : 'bg-slate-950 text-slate-600 border-white/5'
+                          }`}
+                        >
+                          <span className="text-[9px] text-slate-400 uppercase tracking-wider">Desayuno</span>
+                          <span className="text-xs">
+                            {currentPrefs.desayuno
+                              ? (worker.meals.desayuno ? '✓' : '✗')
+                              : '—'}
+                          </span>
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            onUpdateMealsPreference(worker.id, {
+                              ...currentPrefs,
+                              almuerzo: !currentPrefs.almuerzo
+                            });
+                          }}
+                          className={`py-2 rounded-xl text-xs font-bold transition-all border flex flex-col items-center justify-center gap-1 cursor-pointer ${
+                            currentPrefs.almuerzo
+                              ? worker.meals.almuerzo
+                                ? 'bg-pink-500/20 text-pink-300 border-pink-500/30 shadow-[0_0_8px_rgba(236,72,153,0.15)] font-black'
+                                : 'bg-slate-800/80 text-pink-300/60 border-slate-700/50 border-dashed'
+                              : 'bg-slate-950 text-slate-600 border-white/5'
+                          }`}
+                        >
+                          <span className="text-[9px] text-slate-400 uppercase tracking-wider">Almuerzo</span>
+                          <span className="text-xs">
+                            {currentPrefs.almuerzo
+                              ? (worker.meals.almuerzo ? '✓' : '✗')
+                              : '—'}
+                          </span>
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            onUpdateMealsPreference(worker.id, {
+                              ...currentPrefs,
+                              cena: !currentPrefs.cena
+                            });
+                          }}
+                          className={`py-2 rounded-xl text-xs font-bold transition-all border flex flex-col items-center justify-center gap-1 cursor-pointer ${
+                            currentPrefs.cena
+                              ? worker.meals.cena
+                                ? 'bg-purple-500/20 text-purple-300 border-purple-500/30 shadow-[0_0_8px_rgba(168,85,247,0.15)] font-black'
+                                : 'bg-slate-800/80 text-purple-300/60 border-slate-700/50 border-dashed'
+                              : 'bg-slate-950 text-slate-600 border-white/5'
+                          }`}
+                        >
+                          <span className="text-[9px] text-slate-400 uppercase tracking-wider">Cena</span>
+                          <span className="text-xs">
+                            {currentPrefs.cena
+                              ? (worker.meals.cena ? '✓' : '✗')
+                              : '—'}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           ))}

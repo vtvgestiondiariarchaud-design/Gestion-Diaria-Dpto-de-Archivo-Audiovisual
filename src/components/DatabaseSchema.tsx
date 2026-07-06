@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Database, Code, Cpu, Server, Check, Copy, Link2, AlertCircle, Sparkles } from 'lucide-react';
+import { Database, Code, Cpu, Server, Check, Copy, Link2, AlertCircle, Sparkles, X } from 'lucide-react';
 import { isSupabaseConfigured, getSupabaseSQLScript } from '../supabaseClient';
 
-export default function DatabaseSchema() {
+export default function DatabaseSchema({ onClose }: { onClose?: () => void }) {
   const [activeTab, setActiveTab] = useState<'supabase_sql' | 'env_setup' | 'algorithm'>('supabase_sql');
   const [copiedCode, setCopiedCode] = useState(false);
 
@@ -114,8 +114,17 @@ export function calcularLogisticaComedor(
   return (
     <div className="space-y-6">
       {/* Intro Header */}
-      <div className="p-5 glass flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div className="space-y-1">
+      <div className="p-5 glass flex flex-col md:flex-row md:items-center justify-between gap-4 relative">
+        {onClose && (
+          <button
+            onClick={onClose}
+            className="absolute top-4 right-4 p-1.5 bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white border border-white/10 rounded-lg transition-all cursor-pointer"
+            title="Cerrar Planos"
+          >
+            <X size={16} />
+          </button>
+        )}
+        <div className="space-y-1 pr-8">
           <h3 className="text-base font-bold text-white flex items-center gap-2 mb-1">
             <Database className="text-cyan-400" size={18} />
             Planos Técnicos y Conexión Supabase

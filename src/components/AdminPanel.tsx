@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Trash, Edit2, Shield, UserCheck, Settings, AlertCircle, Layers, Check, KeyRound } from 'lucide-react';
+import { Plus, Trash, Edit2, Shield, UserCheck, Settings, AlertCircle, Layers, Check, KeyRound, Database } from 'lucide-react';
 import { Division, Worker, UserRole } from '../types';
 
 interface AdminPanelProps {
@@ -9,6 +9,7 @@ interface AdminPanelProps {
   onUpdateDivisions: (updated: Division[]) => void;
   onUpdateWorkers: (updated: Worker[]) => void;
   onAddNotification: (title: string, desc: string, type: 'success' | 'info') => void;
+  onOpenBlueprint?: () => void;
 }
 
 export default function AdminPanel({
@@ -16,7 +17,8 @@ export default function AdminPanel({
   workers,
   onUpdateDivisions,
   onUpdateWorkers,
-  onAddNotification
+  onAddNotification,
+  onOpenBlueprint
 }: AdminPanelProps) {
   const [newDivName, setNewDivName] = useState('');
   const [newDivDesc, setNewDivDesc] = useState('');
@@ -77,10 +79,13 @@ export default function AdminPanel({
     // Update worker role and division
     const updatedWorkers = workers.map(w => {
       if (w.id === workerId) {
+        const nextDiv = divId === 'none' ? '' : divId;
+        const nextFixedShift = (w.fixedShift === 'noche' && nextDiv !== 'div_ingesta') ? 'pool' : w.fixedShift;
         return { 
           ...w, 
-          divisionId: divId === 'none' ? '' : divId, 
-          role 
+          divisionId: nextDiv, 
+          role,
+          fixedShift: nextFixedShift
         };
       }
       return w;
@@ -117,6 +122,17 @@ export default function AdminPanel({
     );
   };
 
+  const handleUpdateWorkerFixedShift = (workerId: string, fixedShift: any) => {
+    const updatedWorkers = workers.map(w => {
+      if (w.id === workerId) {
+        return { ...w, fixedShift };
+      }
+      return w;
+    });
+    onUpdateWorkers(updatedWorkers);
+    onAddNotification('Turno Fijo Actualizado', 'Se configuró el turno preestablecido para este usuario.', 'success');
+  };
+
   const handleResetPassword = (workerId: string) => {
     const targetWorker = workers.find(w => w.id === workerId);
     if (!targetWorker) return;
@@ -144,14 +160,26 @@ export default function AdminPanel({
   return (
     <div className="space-y-8 animate-fade-in">
       {/* Top Warning of Exclusivity */}
-      <div className="p-4 bg-sky-950/20 backdrop-blur-md border border-sky-500/30 rounded-2xl flex items-start gap-3 shadow-lg">
-        <Shield size={22} className="text-sky-400 shrink-0 mt-0.5" />
-        <div className="space-y-1">
-          <h4 className="font-bold text-white text-sm">Consola del Gerente del Dpto de Archivo Audiovisual (SuperAdmin)</h4>
-          <p className="text-xs text-slate-300 leading-relaxed">
-            Como **Gerente del Dpto de Archivo Audiovisual**, tienes atribuciones exclusivas en la base de datos de VTV: solo tú puedes agregar o disolver divisiones operativas y promover cargos a Jefes de División / Coordinadores de Guardia.
-          </p>
+      <div className="p-4 bg-sky-950/20 backdrop-blur-md border border-sky-500/30 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-lg">
+        <div className="flex items-start gap-3">
+          <Shield size={22} className="text-sky-400 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <h4 className="font-bold text-white text-sm">Consola del Gerente del Dpto de Archivo Audiovisual (SuperAdmin)</h4>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Como **Gerente del Dpto de Archivo Audiovisual**, tienes atribuciones exclusivas en la base de datos de VTV: solo tú puedes agregar o disolver divisiones operativas y promover cargos a Jefes de División / Coordinadores de Guardia.
+            </p>
+          </div>
         </div>
+
+        {onOpenBlueprint && (
+          <button
+            onClick={onOpenBlueprint}
+            className="px-4 py-2.5 bg-gradient-to-r from-emerald-500/20 to-cyan-500/20 hover:from-emerald-500/35 hover:to-cyan-500/35 text-emerald-300 hover:text-white border border-emerald-500/35 hover:border-cyan-500/40 rounded-xl text-xs font-bold transition-all shadow-md flex items-center gap-2 cursor-pointer self-stretch sm:self-auto justify-center whitespace-nowrap shrink-0"
+          >
+            <Database size={14} className="text-emerald-400" />
+            <span>🔌 Ver Complemento: Planos BD</span>
+          </button>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -339,6 +367,23 @@ export default function AdminPanel({
                           <option value="superadmin">Gerente</option>
                         </select>
                       </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <span className="text-[8px] uppercase tracking-wider font-bold text-slate-500 block">Turno Fijo Preestablecido (Lunes a Viernes)</span>
+                      <select
+                        value={worker.fixedShift || 'pool'}
+                        onChange={(e) => handleUpdateWorkerFixedShift(worker.id, e.target.value as any)}
+                        className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-[10px] text-slate-300 focus:outline-none focus:border-cyan-500 cursor-pointer"
+                      >
+                        <option value="pool">Pool / Sin Turno Preestablecido</option>
+                        <option value="manana">Turno Mañana (06:00 - 14:00)</option>
+                        <option value="tarde">Turno Tarde (14:00 - 22:00)</option>
+                        {worker.divisionId === 'div_ingesta' && (
+                          <option value="noche">Turno Noche (22:00 - 06:00)</option>
+                        )}
+                        <option value="libre">Día Libre</option>
+                      </select>
                     </div>
 
                     <div className="flex items-center justify-between pt-1.5 border-t border-white/5">

@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   Tv, Layers, Utensils, FileText, Calendar, 
   Database, Shield, AlertTriangle, Sparkles, 
-  Bell, CheckCircle2, Info, ChevronDown, UserCircle, LogOut, Loader2, KeyRound, UserPlus, Edit2, Check, X
+  Bell, CheckCircle2, Info, ChevronDown, UserCircle, LogOut, Loader2, KeyRound, UserPlus, Edit2, Check, X, ChevronLeft, ChevronRight, Plus
 } from 'lucide-react';
 
 import { Division, Worker, ShiftAssignment, ShiftChangeRequest, UserRole } from './types';
@@ -24,14 +24,22 @@ interface NotificationToast {
 }
 
 export default function App() {
+  const getTodayDateStr = () => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+
   // Operational Days list with default initial values and local storage persistence
   const [operationalDates, setOperationalDates] = useState<string[]>(() => {
     const saved = localStorage.getItem('vtv_operational_dates');
     return saved ? JSON.parse(saved) : ['2026-07-02', '2026-07-03', '2026-07-04', '2026-07-05'];
   });
-  const [selectedDateStr, setSelectedDateStr] = useState<string>('2026-07-02');
+  const [selectedDateStr, setSelectedDateStr] = useState<string>(getTodayDateStr);
 
-  const handleAddOperationalDate = (newDateStr: string) => {
+  const handleAddOperationalDate = async (newDateStr: string) => {
     if (!newDateStr) return;
     const matched = newDateStr.match(/^\d{4}-\d{2}-\d{2}$/);
     if (!matched) {
@@ -47,7 +55,119 @@ export default function App() {
     setOperationalDates(updated);
     localStorage.setItem('vtv_operational_dates', JSON.stringify(updated));
     setSelectedDateStr(newDateStr);
-    addNotification('Día Habilitado', `Se habilitaron los tableros y raciones para el día ${newDateStr}.`, 'success');
+
+    // Determinar si es de lunes a viernes (1 a 5)
+    const [year, month, day] = newDateStr.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    const dayOfWeek = date.getDay(); // 0 = Domingo, 1 = Lunes, ..., 6 = Sábado
+    const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
+
+    if (isWeekday) {
+      const newAssignments: ShiftAssignment[] = [];
+      workers.forEach(w => {
+        if (w.fixedShift && w.fixedShift !== 'pool' && w.fixedShift !== 'libre') {
+          newAssignments.push({
+            id: `as_${w.id}_${w.fixedShift}_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+            workerId: w.id,
+            divisionId: w.divisionId,
+            date: newDateStr,
+            shiftType: w.fixedShift
+          });
+        }
+      });
+
+      if (newAssignments.length > 0) {
+        setAssignments(prev => [...prev, ...newAssignments]);
+        try {
+          for (const asg of newAssignments) {
+            await db.upsertAssignment(asg);
+          }
+          addNotification(
+            'Día Habilitado y Conformado',
+            `Se habilitó el día ${newDateStr} y se preestablecieron automáticamente ${newAssignments.length} turnos fijos de lunes a viernes.`,
+            'success'
+          );
+        } catch (err) {
+          console.error("Error al guardar las asignaciones automáticas:", err);
+          addNotification('Día Habilitado', `Se habilitó el día ${newDateStr}, pero hubo un detalle al persistir los turnos preestablecidos.`, 'info');
+        }
+      } else {
+        addNotification('Día Habilitado', `Se habilitó el día ${newDateStr} (L-V), sin turnos fijos cargados.`, 'success');
+      }
+    } else {
+      addNotification(
+        'Día Habilitado',
+        `Se habilitó el día ${newDateStr}. Al ser fin de semana, el tablero se creará vacío para conformación manual.`,
+        'success'
+      );
+    }
+  };
+
+  useEffect(() => {
+    const todayStr = getTodayDateStr();
+    if (!operationalDates.includes(todayStr)) {
+      handleAddOperationalDate(todayStr);
+    } else {
+      setSelectedDateStr(todayStr);
+    }
+  }, []);
+
+  const getPrevDateStr = (dateStr: string) => {
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    date.setDate(date.getDate() - 1);
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+
+  const getNextDateStr = (dateStr: string) => {
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    date.setDate(date.getDate() + 1);
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+
+  const getRelativeDateDetails = (dateStr: string) => {
+    const todayStr = getTodayDateStr();
+    
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const targetDate = new Date(y, m - 1, d);
+    
+    const [ty, tm, td] = todayStr.split('-').map(Number);
+    const todayDate = new Date(ty, tm - 1, td);
+    
+    const diffTime = targetDate.getTime() - todayDate.getTime();
+    const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+    
+    let label = '';
+    if (diffDays === 0) {
+      label = 'Hoy';
+    } else if (diffDays === -1) {
+      label = 'Ayer';
+    } else if (diffDays < -1) {
+      label = `Hace ${Math.abs(diffDays)} días`;
+    } else if (diffDays === 1) {
+      label = 'Mañana';
+    } else {
+      label = `En ${diffDays} días`;
+    }
+    
+    const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+    const months = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+    
+    const dayName = dayNames[targetDate.getDay()];
+    const formattedDateDisplay = `${d} de ${months[m - 1]} de ${y}`;
+    
+    return {
+      label,
+      dayName,
+      formattedDateDisplay
+    };
   };
 
   const formattedSelectedDate = useMemo(() => {
@@ -83,7 +203,8 @@ export default function App() {
   });
 
   // Active Navigation Tab
-  const [activeTab, setActiveTab] = useState<'tablero' | 'comedor' | 'reportes' | 'solicitudes' | 'admin' | 'blueprint'>('tablero');
+  const [activeTab, setActiveTab] = useState<'tablero' | 'comedor' | 'reportes' | 'solicitudes' | 'admin'>('tablero');
+  const [showBlueprintModal, setShowBlueprintModal] = useState(false);
 
   // Currently Selected Division in Trello Board view
   const [selectedDivisionId, setSelectedDivisionId] = useState<string>('todos');
@@ -1023,6 +1144,86 @@ export default function App() {
 
             </div>
 
+            {/* Unified Date Navigation Panel */}
+            {['tablero', 'comedor', 'reportes'].includes(activeTab) && (() => {
+              const { label, dayName, formattedDateDisplay } = getRelativeDateDetails(selectedDateStr);
+              const nextStr = getNextDateStr(selectedDateStr);
+              const nextDayExists = operationalDates.includes(nextStr);
+
+              const handlePrevDay = () => {
+                const prevStr = getPrevDateStr(selectedDateStr);
+                if (!operationalDates.includes(prevStr)) {
+                  handleAddOperationalDate(prevStr);
+                } else {
+                  setSelectedDateStr(prevStr);
+                }
+              };
+
+              const handleNextDay = () => {
+                setSelectedDateStr(nextStr);
+              };
+
+              const handleCreateNextDay = () => {
+                handleAddOperationalDate(nextStr);
+              };
+
+              return (
+                <div className="p-4 bg-gradient-to-r from-slate-900 via-slate-950 to-slate-900 rounded-2xl border border-white/10 shadow-xl flex flex-col sm:flex-row items-center justify-between gap-4">
+                  {/* Left side: Relative date and calendar date */}
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 bg-cyan-500/10 text-cyan-400 rounded-xl border border-cyan-500/25">
+                      <Calendar size={18} />
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400 block font-mono">
+                        {label}
+                      </span>
+                      <h3 className="text-base font-bold text-white flex items-center gap-1.5 leading-none mt-0.5">
+                        <span>{dayName}</span>
+                        <span className="text-slate-400 text-xs font-normal">({formattedDateDisplay})</span>
+                      </h3>
+                    </div>
+                  </div>
+
+                  {/* Center / Right side: navigation arrows & + */}
+                  <div className="flex items-center justify-between sm:justify-start w-full sm:w-auto gap-3 bg-white/5 p-1 rounded-xl border border-white/10">
+                    {/* Left button: always previous day */}
+                    <button
+                      onClick={handlePrevDay}
+                      className="p-2.5 sm:p-2 hover:bg-white/10 text-slate-300 hover:text-white rounded-lg transition-all cursor-pointer flex items-center justify-center shrink-0"
+                      title="Día Anterior"
+                    >
+                      <ChevronLeft size={18} />
+                    </button>
+
+                    <span className="text-xs font-bold text-slate-200 select-none px-2 font-mono">
+                      {selectedDateStr}
+                    </span>
+
+                    {/* Right button: right arrow or + */}
+                    {nextDayExists ? (
+                      <button
+                        onClick={handleNextDay}
+                        className="p-2.5 sm:p-2 hover:bg-white/10 text-slate-300 hover:text-white rounded-lg transition-all cursor-pointer flex items-center justify-center shrink-0"
+                        title="Día Siguiente"
+                      >
+                        <ChevronRight size={18} />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={handleCreateNextDay}
+                        className="px-4 py-2 sm:px-3 sm:py-1.5 bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/30 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold shrink-0"
+                        title="Habilitar Día Siguiente"
+                      >
+                        <Plus size={14} />
+                        <span>Habilitar Siguiente</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Navigation Tabs - Glassmorphic Toolbar */}
             <div className="flex overflow-x-auto gap-2 p-1.5 glass rounded-2xl">
               <button
@@ -1090,19 +1291,6 @@ export default function App() {
                   <span>Consola Gerencial</span>
                 </button>
               )}
-
-              {/* Technical Specs Blueprints Tab */}
-              <button
-                onClick={() => setActiveTab('blueprint')}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ml-auto ${
-                  activeTab === 'blueprint' 
-                    ? 'bg-gradient-to-r from-emerald-500/20 to-cyan-500/20 text-white border border-emerald-500/30 font-extrabold' 
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/5 border border-transparent'
-                }`}
-              >
-                <Database size={14} className={activeTab === 'blueprint' ? 'text-emerald-400' : 'text-slate-400'} />
-                <span>Planos BD y Código</span>
-              </button>
             </div>
 
             {/* RLS policy violation / schema error warning banner */}
@@ -1121,7 +1309,7 @@ export default function App() {
                   </div>
                 </div>
                 <button
-                  onClick={() => setActiveTab('blueprint')}
+                  onClick={() => setShowBlueprintModal(true)}
                   className="px-4 py-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded-xl font-bold transition-all whitespace-nowrap shrink-0 self-stretch md:self-auto text-center cursor-pointer"
                 >
                   Ver Solución SQL 🛠️
@@ -1213,11 +1401,8 @@ export default function App() {
                         onUpdateDivisions={handleUpdateDivisions}
                         onUpdateWorkers={handleUpdateWorkers}
                         onAddNotification={addNotification}
+                        onOpenBlueprint={() => setShowBlueprintModal(true)}
                       />
-                    )}
-
-                    {activeTab === 'blueprint' && (
-                      <DatabaseSchema />
                     )}
                   </motion.div>
                 </AnimatePresence>
@@ -1228,6 +1413,32 @@ export default function App() {
 
         </div>
       )}
+
+      {/* Blueprint Modal Overlay */}
+      <AnimatePresence>
+        {showBlueprintModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 md:p-6 overflow-hidden">
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowBlueprintModal(false)}
+              className="absolute inset-0 bg-slate-950/85 backdrop-blur-md cursor-pointer"
+            />
+            
+            {/* Modal Box */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              className="relative w-full max-w-4xl max-h-[85vh] overflow-y-auto bg-slate-900 border border-white/10 rounded-3xl p-6 md:p-8 shadow-[0_0_50px_rgba(34,211,238,0.15)] space-y-6"
+            >
+              <DatabaseSchema onClose={() => setShowBlueprintModal(false)} />
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Floating Liquid-Style Notifications Center */}
       <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none">

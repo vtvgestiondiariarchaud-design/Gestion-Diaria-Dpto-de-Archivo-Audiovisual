@@ -97,6 +97,7 @@ function SingleDivisionBoard({
   const [newTemplateName, setNewTemplateName] = useState('');
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [draggedOverColumn, setDraggedOverColumn] = useState<ShiftType | null>(null);
+  const [activeMobileColumn, setActiveMobileColumn] = useState<string>('all');
 
   // Template System using LocalStorage
   const [savedTemplates, setSavedTemplates] = useState<ShiftTemplate[]>(() => {
@@ -162,6 +163,13 @@ function SingleDivisionBoard({
     return savedTemplates.filter(t => t.divisionId === division.id);
   }, [savedTemplates, division]);
 
+  const visibleColumns = useMemo(() => {
+    if (division.id === 'todos' || division.id === 'div_ingesta') {
+      return SHIFT_COLUMNS;
+    }
+    return SHIFT_COLUMNS.filter(col => col.key !== 'noche');
+  }, [division.id]);
+
   // Toggle individual worker shift
   const toggleWorkerShift = (worker: Worker, shiftType: 'manana' | 'tarde' | 'noche') => {
     const canEditWorker = userRole === 'superadmin' || userRole === 'deputy' || (userRole === 'coordinator' && userDivisionId === worker.divisionId);
@@ -181,6 +189,10 @@ function SingleDivisionBoard({
       updated.splice(existingIndex, 1);
     } else {
       // Toggle on - adding a shift assignment
+      if (shiftType === 'noche' && worker.divisionId !== 'div_ingesta') {
+        onAddNotification('Acceso Denegado', 'Solo el personal de la división de Ingesta puede realizar guardias nocturnas.', 'info');
+        return;
+      }
       updated.push({
         id: `as_${worker.id}_${shiftType}_${Date.now()}`,
         workerId: worker.id,
@@ -251,6 +263,12 @@ function SingleDivisionBoard({
       );
     } else {
       // Adding/moving to an active shift - first clean previous assignments of this worker for this day
+      if (targetShift === 'noche' && workerObj.divisionId !== 'div_ingesta') {
+        onAddNotification('Acceso Denegado', 'Solo el personal de la división de Ingesta puede realizar guardias nocturnas.', 'info');
+        setActiveDragId(null);
+        setDraggedOverColumn(null);
+        return;
+      }
       updated = updated.filter(a => !(a.workerId === workerId && a.date === selectedDateStr));
       
       updated.push({
@@ -335,6 +353,45 @@ function SingleDivisionBoard({
     onAddNotification('Tablero Reiniciado', `Todos los trabajadores volvieron al Pool de Disponibles para el día ${selectedDateStr}.`, 'info');
   };
 
+  const handleApplyFixedShifts = () => {
+    const parts = selectedDateStr.split('-').map(Number);
+    const d = new Date(parts[0], parts[1] - 1, parts[2]);
+    const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+    const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+
+    if (isWeekend) {
+      if (!confirm(`Hoy es ${dayNames[d.getDay()]}. ¿Estás seguro de que deseas aplicar los turnos fijos de lunes a viernes a este fin de semana?`)) {
+        return;
+      }
+    } else {
+      if (!confirm(`¿Estás seguro de aplicar los turnos fijos preestablecidos a la división "${division.name}" para el día ${selectedDateStr}? Se sobrescribirán los turnos actuales.`)) {
+        return;
+      }
+    }
+
+    let updated = assignments.filter(a => !(a.divisionId === division.id && a.date === selectedDateStr));
+    const workersToAssign = workers.filter(w => w.divisionId === division.id);
+
+    workersToAssign.forEach(w => {
+      if (w.fixedShift && w.fixedShift !== 'pool' && w.fixedShift !== 'libre') {
+        updated.push({
+          id: `as_${w.id}_${w.fixedShift}_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+          workerId: w.id,
+          divisionId: w.divisionId,
+          date: selectedDateStr,
+          shiftType: w.fixedShift
+        });
+      }
+    });
+
+    onUpdateAssignments(updated, division.id, selectedDateStr);
+    onAddNotification(
+      'Turnos Fijos Aplicados',
+      `Se cargaron los turnos fijos preestablecidos para la división "${division.name}".`,
+      'success'
+    );
+  };
+
   const filteredColumnWorkers = (shiftKey: ShiftType) => {
     const list = columnWorkers[shiftKey] || [];
     if (!searchTerm.trim()) return list;
@@ -416,6 +473,16 @@ function SingleDivisionBoard({
               )}
 
               <button
+                onClick={handleApplyFixedShifts}
+                type="button"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-950/40 hover:bg-cyan-950/60 border border-cyan-500/20 rounded-xl text-xs text-cyan-300 font-medium transition-all cursor-pointer"
+                title="Aplicar Turnos Fijos L-V preestablecidos"
+              >
+                <RefreshCw size={13} className="animate-pulse" />
+                <span>Aplicar Turnos Fijos</span>
+              </button>
+
+              <button
                 onClick={handleResetBoard}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-950/30 hover:bg-rose-950/50 border border-rose-500/20 rounded-xl text-xs text-rose-300 font-medium transition-all cursor-pointer"
                 title="Reiniciar tablero al pool"
@@ -449,20 +516,59 @@ function SingleDivisionBoard({
         </form>
       )}
 
+      {/* Mobile Column Navigation Tabs */}
+      <div className="block md:hidden mb-4 overflow-x-auto">
+        <div className="flex gap-1.5 p-1 bg-slate-950/45 border border-white/5 rounded-xl min-w-max">
+          <button
+            type="button"
+            onClick={() => setActiveMobileColumn('all')}
+            className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              activeMobileColumn === 'all'
+                ? 'bg-gradient-to-r from-cyan-500/20 to-violet-500/20 text-white border border-cyan-500/25 shadow-md font-extrabold'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Todos ({boardWorkers.length})
+          </button>
+          {visibleColumns.map((col) => {
+            const list = filteredColumnWorkers(col.key);
+            const colLabel = col.key === 'pool' ? 'Pool' : col.key === 'manana' ? 'Mañana' : col.key === 'tarde' ? 'Tarde' : 'Noche';
+            return (
+              <button
+                key={col.key}
+                type="button"
+                onClick={() => setActiveMobileColumn(col.key)}
+                className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  activeMobileColumn === col.key
+                    ? 'bg-gradient-to-r from-cyan-500/20 to-violet-500/20 text-white border border-cyan-500/25 shadow-md font-extrabold'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <span>{colLabel}</span>
+                <span className="px-1.5 py-0.2 text-[10px] bg-white/10 rounded-full font-mono text-slate-300">
+                  {list.length}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Board Columns Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 overflow-x-auto pb-4">
-        {SHIFT_COLUMNS.map((col) => {
+      <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-${visibleColumns.length} gap-4 overflow-x-auto pb-4`}>
+        {visibleColumns.map((col) => {
           const isOver = draggedOverColumn === col.key;
           const list = filteredColumnWorkers(col.key);
+          const isVisibleOnMobile = activeMobileColumn === 'all' || activeMobileColumn === col.key;
 
           return (
             <div
               key={col.key}
               onDragOver={(e) => handleDragOver(e, col.key)}
               onDrop={(e) => handleDrop(e, col.key)}
-              className={`flex flex-col min-h-[380px] p-4 rounded-2xl border transition-all duration-300 ${col.color} ${col.border} ${col.glow} ${
+              className={`min-h-[380px] p-4 rounded-2xl border transition-all duration-300 ${col.color} ${col.border} ${col.glow} ${
                 isOver ? 'ring-2 ring-cyan-500 border-cyan-400 bg-cyan-950/20 scale-[1.01]' : ''
-              }`}
+              } ${isVisibleOnMobile ? 'flex flex-col' : 'hidden md:flex flex-col'}`}
             >
               {/* Column Header */}
               <div className="mb-4">
@@ -564,7 +670,7 @@ function SingleDivisionBoard({
                                 { key: 'manana', label: 'M', title: 'Turno Mañana', color: 'bg-sky-500/25 text-sky-300 border-sky-500/30', activeColor: 'bg-sky-500 text-slate-950 font-bold border-sky-400 shadow-[0_0_10px_rgba(56,189,248,0.4)]' },
                                 { key: 'tarde', label: 'T', title: 'Turno Tarde', color: 'bg-pink-500/25 text-pink-300 border-pink-500/30', activeColor: 'bg-pink-500 text-slate-950 font-bold border-pink-400 shadow-[0_0_10px_rgba(244,63,94,0.4)]' },
                                 { key: 'noche', label: 'N', title: 'Turno Noche', color: 'bg-purple-500/25 text-purple-300 border-purple-500/30', activeColor: 'bg-purple-500 text-slate-950 font-bold border-purple-400 shadow-[0_0_10px_rgba(168,85,247,0.4)]' }
-                              ].map(btn => {
+                              ].filter(btn => btn.key !== 'noche' || worker.divisionId === 'div_ingesta').map(btn => {
                                 const isActive = assignments.some(
                                   a => a.workerId === worker.id && a.shiftType === btn.key
                                 );
@@ -626,73 +732,6 @@ export default function TrelloBoard({
 
   return (
     <div className="space-y-6">
-      {/* Dynamic Multi-day Operational Checklist */}
-      <div className="p-5 bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 shadow-lg space-y-4">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-          <div className="space-y-1">
-            <h4 className="text-sm font-bold text-white flex items-center gap-2">
-              <Calendar size={16} className="text-cyan-400" />
-              <span>Lista de Verificación de Días de Guardia</span>
-            </h4>
-            <p className="text-[11px] text-slate-400">
-              Selecciona el día para ver o planificar la distribución de turnos de este tablero operativo.
-            </p>
-          </div>
-          
-          {/* Create new operational date */}
-          <div className="flex gap-2 items-center">
-            <input
-              type="date"
-              id="new-guard-date-board"
-              className="bg-slate-900/60 border border-white/10 hover:border-white/20 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-500 transition-all font-mono"
-            />
-            <button
-              onClick={() => {
-                const el = document.getElementById('new-guard-date-board') as HTMLInputElement;
-                if (el && el.value) {
-                  onAddOperationalDate(el.value);
-                  el.value = '';
-                }
-              }}
-              className="px-3 py-1.5 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/30 text-cyan-300 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5"
-            >
-              <span>+ Habilitar Día</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Checklist of Dates */}
-        <div className="flex flex-wrap gap-2 pt-1">
-          {operationalDates.map((dateVal) => {
-            const isSelected = selectedDateStr === dateVal;
-            const parts = dateVal.split('-').map(Number);
-            const d = new Date(parts[0], parts[1] - 1, parts[2]);
-            const dayNamesShort = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
-            const dayName = dayNamesShort[d.getDay()];
-            const formatted = `${dayName} ${String(parts[2]).padStart(2, '0')}/${String(parts[1]).padStart(2, '0')}`;
-
-            return (
-              <button
-                key={dateVal}
-                onClick={() => setSelectedDateStr(dateVal)}
-                className={`px-3 py-2 rounded-xl text-xs font-medium border cursor-pointer transition-all flex items-center gap-2 ${
-                  isSelected
-                    ? 'bg-gradient-to-r from-cyan-500/20 to-violet-500/20 text-white border-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.25)] font-bold'
-                    : 'bg-slate-900/40 text-slate-400 border-white/5 hover:text-slate-200 hover:bg-slate-800/40'
-                }`}
-              >
-                <div className={`w-3.5 h-3.5 rounded flex items-center justify-center border transition-all ${
-                  isSelected ? 'border-cyan-400 bg-cyan-400 text-slate-950' : 'border-white/20'
-                }`}>
-                  {isSelected && <Check size={10} strokeWidth={4} />}
-                </div>
-                <span className="font-mono">{formatted}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
       {/* Unified Search across all boards */}
       <div className="flex flex-col md:flex-row gap-4 items-center justify-between p-4 bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 shadow-lg">
         <div>
