@@ -3,7 +3,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   Tv, Layers, Utensils, FileText, Calendar, 
   Database, Shield, AlertTriangle, Sparkles, 
-  Bell, CheckCircle2, Info, ChevronDown, UserCircle, LogOut, Loader2, KeyRound, UserPlus, Edit2, Check, X, ChevronLeft, ChevronRight, Plus
+  Bell, CheckCircle2, Info, ChevronDown, UserCircle, LogOut, Loader2, KeyRound, UserPlus, Edit2, Check, X, ChevronLeft, ChevronRight, Plus,
+  Umbrella
 } from 'lucide-react';
 
 import { Division, Worker, ShiftAssignment, ShiftChangeRequest, UserRole } from './types';
@@ -15,6 +16,7 @@ import ReportGenerator from './components/ReportGenerator';
 import DatabaseSchema from './components/DatabaseSchema';
 import AdminPanel from './components/AdminPanel';
 import ShiftChanges from './components/ShiftChanges';
+import VacationControl from './components/VacationControl';
 
 interface NotificationToast {
   id: string;
@@ -65,7 +67,16 @@ export default function App() {
     if (isWeekday) {
       const newAssignments: ShiftAssignment[] = [];
       workers.forEach(w => {
-        if (w.fixedShift && w.fixedShift !== 'pool' && w.fixedShift !== 'libre') {
+        // Exclude worker from auto-scheduling if they are on vacation on this date
+        const isOnVacation = w.vacationStart && w.vacationEnd &&
+                             newDateStr >= w.vacationStart && newDateStr <= w.vacationEnd;
+        if (isOnVacation) return;
+
+        // Exclude worker if they have a programmed 'libre' (free day) shift on this date
+        const hasFreeDay = assignments.some(a => a.workerId === w.id && a.date === newDateStr && a.shiftType === 'libre');
+        if (hasFreeDay) return;
+
+        if (w.fixedShift && w.fixedShift !== 'pool') {
           newAssignments.push({
             id: `as_${w.id}_${w.fixedShift}_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
             workerId: w.id,
@@ -181,6 +192,20 @@ export default function App() {
   // Core Sync States
   const [divisions, setDivisions] = useState<Division[]>([]);
   const [workers, setWorkers] = useState<Worker[]>([]);
+
+  // Memoized workers sorted by division name, then alphabetically by worker name
+  const sortedWorkers = useMemo(() => {
+    return [...workers].sort((a, b) => {
+      const divA = divisions.find(d => d.id === a.divisionId);
+      const divB = divisions.find(d => d.id === b.divisionId);
+      const nameA = divA ? divA.name : 'Sin división';
+      const nameB = divB ? divB.name : 'Sin división';
+      
+      const divCompare = nameA.localeCompare(nameB);
+      if (divCompare !== 0) return divCompare;
+      return a.name.localeCompare(b.name);
+    });
+  }, [workers, divisions]);
   const [assignments, setAssignments] = useState<ShiftAssignment[]>([]);
   const [requests, setRequests] = useState<ShiftChangeRequest[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -203,7 +228,7 @@ export default function App() {
   });
 
   // Active Navigation Tab
-  const [activeTab, setActiveTab] = useState<'tablero' | 'comedor' | 'reportes' | 'solicitudes' | 'admin'>('tablero');
+  const [activeTab, setActiveTab] = useState<'tablero' | 'comedor' | 'reportes' | 'solicitudes' | 'admin' | 'vacaciones'>('tablero');
   const [showBlueprintModal, setShowBlueprintModal] = useState(false);
 
   // Currently Selected Division in Trello Board view
@@ -330,8 +355,54 @@ export default function App() {
       const fetchedAssignments = await db.fetchAssignments();
       const fetchedRequests = await db.fetchRequests();
 
+      // Robust local storage fallback for worker preestablished fixed shifts, vacations, and free days adjustment
+      let mergedWorkers = fetchedWorkers;
+      try {
+        const localFixedShiftsRaw = localStorage.getItem('vtv_worker_fixed_shifts');
+        const localFixedShifts = localFixedShiftsRaw ? JSON.parse(localFixedShiftsRaw) : {};
+
+        const localVacStartRaw = localStorage.getItem('vtv_worker_vacation_start');
+        const localVacStart = localVacStartRaw ? JSON.parse(localVacStartRaw) : {};
+
+        const localVacEndRaw = localStorage.getItem('vtv_worker_vacation_end');
+        const localVacEnd = localVacEndRaw ? JSON.parse(localVacEndRaw) : {};
+
+        const localManualFreeDaysRaw = localStorage.getItem('vtv_worker_manual_free_days');
+        const localManualFreeDays = localManualFreeDaysRaw ? JSON.parse(localManualFreeDaysRaw) : {};
+        
+        // Feed DB values to local storage fallback if they are present
+        fetchedWorkers.forEach(w => {
+          if (w.fixedShift && w.fixedShift !== 'pool') {
+            localFixedShifts[w.id] = w.fixedShift;
+          }
+          if (w.vacationStart) {
+            localVacStart[w.id] = w.vacationStart;
+          }
+          if (w.vacationEnd) {
+            localVacEnd[w.id] = w.vacationEnd;
+          }
+          if (w.manualFreeDaysAdjustment !== undefined) {
+            localManualFreeDays[w.id] = w.manualFreeDaysAdjustment;
+          }
+        });
+        localStorage.setItem('vtv_worker_fixed_shifts', JSON.stringify(localFixedShifts));
+        localStorage.setItem('vtv_worker_vacation_start', JSON.stringify(localVacStart));
+        localStorage.setItem('vtv_worker_vacation_end', JSON.stringify(localVacEnd));
+        localStorage.setItem('vtv_worker_manual_free_days', JSON.stringify(localManualFreeDays));
+
+        mergedWorkers = fetchedWorkers.map(w => ({
+          ...w,
+          fixedShift: localFixedShifts[w.id] || w.fixedShift || 'pool',
+          vacationStart: localVacStart[w.id] || w.vacationStart,
+          vacationEnd: localVacEnd[w.id] || w.vacationEnd,
+          manualFreeDaysAdjustment: localManualFreeDays[w.id] !== undefined ? localManualFreeDays[w.id] : (w.manualFreeDaysAdjustment || 0)
+        }));
+      } catch (err) {
+        console.warn('Error applying localStorage fallback for workers:', err);
+      }
+
       setDivisions(fetchedDivisions.length > 0 ? fetchedDivisions : DEFAULT_DIVISIONS);
-      setWorkers(fetchedWorkers);
+      setWorkers(mergedWorkers);
       setAssignments(fetchedAssignments);
       setRequests(fetchedRequests);
 
@@ -613,9 +684,18 @@ export default function App() {
       if (divisionId && date) {
         // Clear existing assignments for this division and date to avoid duplicates / stale items
         await db.deleteAssignmentsForDivisionAndDate(divisionId, date);
-      }
-      for (const asg of updated) {
-        await db.upsertAssignment(asg);
+        
+        // ONLY upsert the assignments that are actually for this division and date
+        // to avoid mass network traffic and slow performance/failures
+        const toUpsert = updated.filter(a => a.divisionId === divisionId && a.date === date);
+        for (const asg of toUpsert) {
+          await db.upsertAssignment(asg);
+        }
+      } else {
+        // Fallback (unlikely)
+        for (const asg of updated) {
+          await db.upsertAssignment(asg);
+        }
       }
     } catch (e) {
       console.error(e);
@@ -641,6 +721,47 @@ export default function App() {
 
   const handleUpdateWorkers = async (updated: Worker[]) => {
     setWorkers(updated);
+
+    // Save preestablished fixed shifts, vacations, and manual adjustments to local storage fallback
+    try {
+      const localFixedShiftsRaw = localStorage.getItem('vtv_worker_fixed_shifts');
+      const localFixedShifts = localFixedShiftsRaw ? JSON.parse(localFixedShiftsRaw) : {};
+
+      const localVacStartRaw = localStorage.getItem('vtv_worker_vacation_start');
+      const localVacStart = localVacStartRaw ? JSON.parse(localVacStartRaw) : {};
+
+      const localVacEndRaw = localStorage.getItem('vtv_worker_vacation_end');
+      const localVacEnd = localVacEndRaw ? JSON.parse(localVacEndRaw) : {};
+
+      const localManualFreeDaysRaw = localStorage.getItem('vtv_worker_manual_free_days');
+      const localManualFreeDays = localManualFreeDaysRaw ? JSON.parse(localManualFreeDaysRaw) : {};
+
+      updated.forEach(w => {
+        if (w.fixedShift) {
+          localFixedShifts[w.id] = w.fixedShift;
+        }
+        if (w.vacationStart) {
+          localVacStart[w.id] = w.vacationStart;
+        } else {
+          delete localVacStart[w.id];
+        }
+        if (w.vacationEnd) {
+          localVacEnd[w.id] = w.vacationEnd;
+        } else {
+          delete localVacEnd[w.id];
+        }
+        if (w.manualFreeDaysAdjustment !== undefined) {
+          localManualFreeDays[w.id] = w.manualFreeDaysAdjustment;
+        }
+      });
+      localStorage.setItem('vtv_worker_fixed_shifts', JSON.stringify(localFixedShifts));
+      localStorage.setItem('vtv_worker_vacation_start', JSON.stringify(localVacStart));
+      localStorage.setItem('vtv_worker_vacation_end', JSON.stringify(localVacEnd));
+      localStorage.setItem('vtv_worker_manual_free_days', JSON.stringify(localManualFreeDays));
+    } catch (err) {
+      console.warn('Error saving worker fixed shifts, vacations, and free days to local storage fallback:', err);
+    }
+
     try {
       for (const w of updated) {
         const old = workers.find(o => o.id === w.id);
@@ -650,7 +771,13 @@ export default function App() {
             old.divisionId !== w.divisionId || 
             old.name !== w.name ||
             old.password !== w.password ||
-            old.mustChangePassword !== w.mustChangePassword
+            old.mustChangePassword !== w.mustChangePassword ||
+            old.fixedShift !== w.fixedShift ||
+            old.cargo !== w.cargo ||
+            old.cedula !== w.cedula ||
+            old.vacationStart !== w.vacationStart ||
+            old.vacationEnd !== w.vacationEnd ||
+            old.manualFreeDaysAdjustment !== w.manualFreeDaysAdjustment
           ) {
             await db.updateWorker(w);
           }
@@ -1277,6 +1404,18 @@ export default function App() {
                 )}
               </button>
 
+              <button
+                onClick={() => setActiveTab('vacaciones')}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                  activeTab === 'vacaciones' 
+                    ? 'bg-gradient-to-r from-cyan-500/20 to-violet-500/20 text-white border border-cyan-500/30 font-extrabold' 
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
+                }`}
+              >
+                <Umbrella size={14} className={activeTab === 'vacaciones' ? 'text-cyan-400' : 'text-slate-400'} />
+                <span>Vacaciones y Días Libres</span>
+              </button>
+
               {/* SuperAdmin Exclusivity Tab */}
               {currentSession.role === 'superadmin' && (
                 <button
@@ -1339,7 +1478,7 @@ export default function App() {
                       <TrelloBoard
                         currentDivisionId={selectedDivisionId}
                         divisions={divisions}
-                        workers={workers}
+                        workers={sortedWorkers}
                         assignments={assignments}
                         onUpdateAssignments={handleUpdateAssignments}
                         userRole={currentSession.role}
@@ -1355,7 +1494,7 @@ export default function App() {
                     {activeTab === 'comedor' && (
                       <ComedorLogistics
                         divisions={divisions}
-                        workers={workers}
+                        workers={sortedWorkers}
                         assignments={assignments}
                         selectedDateStr={selectedDateStr}
                         setSelectedDateStr={setSelectedDateStr}
@@ -1369,7 +1508,7 @@ export default function App() {
                     {activeTab === 'reportes' && (
                       <ReportGenerator
                         divisions={divisions}
-                        workers={workers}
+                        workers={sortedWorkers}
                         assignments={assignments}
                         onAddNotification={addNotification}
                         selectedDateStr={selectedDateStr}
@@ -1381,7 +1520,7 @@ export default function App() {
 
                     {activeTab === 'solicitudes' && (
                       <ShiftChanges
-                        workers={workers}
+                        workers={sortedWorkers}
                         divisions={divisions}
                         assignments={assignments}
                         requests={requests}
@@ -1394,10 +1533,23 @@ export default function App() {
                       />
                     )}
 
+                    {activeTab === 'vacaciones' && (
+                      <VacationControl
+                        divisions={divisions}
+                        workers={sortedWorkers}
+                        assignments={assignments}
+                        onUpdateWorkers={handleUpdateWorkers}
+                        userRole={currentSession.role}
+                        userDivisionId={currentSession.divisionId}
+                        onUpdateAssignments={handleUpdateAssignments}
+                        onAddNotification={addNotification}
+                      />
+                    )}
+
                     {activeTab === 'admin' && currentSession.role === 'superadmin' && (
                       <AdminPanel
                         divisions={divisions}
-                        workers={workers}
+                        workers={sortedWorkers}
                         onUpdateDivisions={handleUpdateDivisions}
                         onUpdateWorkers={handleUpdateWorkers}
                         onAddNotification={addNotification}

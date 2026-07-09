@@ -19,6 +19,9 @@ export interface Worker {
   password?: string;
   mustChangePassword?: boolean;
   fixedShift?: ShiftType;
+  vacationStart?: string; // YYYY-MM-DD
+  vacationEnd?: string; // YYYY-MM-DD
+  manualFreeDaysAdjustment?: number;
   mealsPreference?: {
     desayuno: boolean;
     almuerzo: boolean;

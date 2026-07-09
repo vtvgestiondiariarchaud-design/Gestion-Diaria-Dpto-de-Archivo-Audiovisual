@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Trash, Edit2, Shield, UserCheck, Settings, AlertCircle, Layers, Check, KeyRound, Database } from 'lucide-react';
+import { Plus, Trash, Edit2, Shield, UserCheck, Settings, AlertCircle, Layers, Check, KeyRound, Database, Search } from 'lucide-react';
 import { Division, Worker, UserRole } from '../types';
 
 interface AdminPanelProps {
@@ -25,6 +25,7 @@ export default function AdminPanel({
   const [editingDivId, setEditingDivId] = useState<string | null>(null);
   const [editDivName, setEditDivName] = useState('');
   const [editDivDesc, setEditDivDesc] = useState('');
+  const [workerSearch, setWorkerSearch] = useState('');
 
   // Division CRUD
   const handleCreateDivision = (e: React.FormEvent) => {
@@ -326,88 +327,117 @@ export default function AdminPanel({
               <UserCheck size={14} className="text-indigo-400" />
               Gestión de Usuarios y Roles de Guardia
             </h4>
-            <p className="text-[10px] text-slate-400 leading-relaxed mb-3">
+            <p className="text-[10px] text-slate-400 leading-relaxed mb-1">
               Cambia la división y el rol asignado a cada usuario en tiempo real. Los Gerentes y Adjuntos tienen permisos globales.
             </p>
 
+            {/* Employee Search Bar */}
+            <div className="relative mb-2">
+              <input
+                type="text"
+                placeholder="Buscar empleado por nombre, cargo o correo..."
+                value={workerSearch}
+                onChange={(e) => setWorkerSearch(e.target.value)}
+                className="w-full bg-slate-900/60 border border-white/10 rounded-xl px-3 py-1.5 pl-8 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition-all font-sans"
+              />
+              <Search size={12} className="absolute left-2.5 top-2.5 text-slate-500" />
+            </div>
+
             <div className="space-y-3 max-h-[380px] overflow-y-auto pr-1">
-              {workers.map((worker) => {
-                return (
-                  <div key={worker.id} className="p-3 bg-white/5 border border-white/5 rounded-xl space-y-2.5">
-                    <div className="truncate">
-                      <div className="text-xs font-bold text-white truncate">{worker.name}</div>
-                      <div className="text-[9px] text-slate-400 truncate">{worker.cargo} • {worker.email}</div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="space-y-1">
-                        <span className="text-[8px] uppercase tracking-wider font-bold text-slate-500 block">División</span>
-                        <select
-                          value={worker.divisionId || 'none'}
-                          onChange={(e) => handleUpdateWorkerDivisionAndRole(worker.id, e.target.value, worker.role)}
-                          className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-[10px] text-slate-300 focus:outline-none focus:border-cyan-500 cursor-pointer"
-                        >
-                          <option value="none">Sin división</option>
-                          {divisions.map(d => (
-                            <option key={d.id} value={d.id}>{d.name}</option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div className="space-y-1">
-                        <span className="text-[8px] uppercase tracking-wider font-bold text-slate-500 block">Rol</span>
-                        <select
-                          value={worker.role}
-                          onChange={(e) => handleUpdateWorkerDivisionAndRole(worker.id, worker.divisionId, e.target.value as any)}
-                          className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-[10px] text-slate-300 focus:outline-none focus:border-cyan-500 cursor-pointer"
-                        >
-                          <option value="worker">Técnico</option>
-                          <option value="coordinator">Coordinador de División</option>
-                          <option value="deputy">Adjunto</option>
-                          <option value="superadmin">Gerente</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className="space-y-1">
-                      <span className="text-[8px] uppercase tracking-wider font-bold text-slate-500 block">Turno Fijo Preestablecido (Lunes a Viernes)</span>
-                      <select
-                        value={worker.fixedShift || 'pool'}
-                        onChange={(e) => handleUpdateWorkerFixedShift(worker.id, e.target.value as any)}
-                        className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-[10px] text-slate-300 focus:outline-none focus:border-cyan-500 cursor-pointer"
-                      >
-                        <option value="pool">Pool / Sin Turno Preestablecido</option>
-                        <option value="manana">Turno Mañana (06:00 - 14:00)</option>
-                        <option value="tarde">Turno Tarde (14:00 - 22:00)</option>
-                        {worker.divisionId === 'div_ingesta' && (
-                          <option value="noche">Turno Noche (22:00 - 06:00)</option>
-                        )}
-                        <option value="libre">Día Libre</option>
-                      </select>
-                    </div>
-
-                    <div className="flex items-center justify-between pt-1.5 border-t border-white/5">
-                      <span className="text-[9px] text-slate-400">
-                        {worker.mustChangePassword ? (
-                          <span className="text-amber-400 font-semibold flex items-center gap-1">
-                            ⚠️ Cambio pendiente
-                          </span>
-                        ) : (
-                          <span className="text-emerald-400 font-medium">Contraseña Activa</span>
-                        )}
-                      </span>
-                      <button
-                        onClick={() => handleResetPassword(worker.id)}
-                        className="flex items-center gap-1 px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 hover:border-amber-500/30 rounded-lg text-[9px] font-bold text-amber-300 transition-all cursor-pointer"
-                        title="Restablecer contraseña a 12345678"
-                      >
-                        <KeyRound size={10} />
-                        <span>Reiniciar</span>
-                      </button>
-                    </div>
-                  </div>
+              {(() => {
+                const query = workerSearch.toLowerCase().trim();
+                const filtered = workers.filter(w => 
+                  w.name.toLowerCase().includes(query) ||
+                  (w.cargo && w.cargo.toLowerCase().includes(query)) ||
+                  (w.email && w.email.toLowerCase().includes(query))
                 );
-              })}
+
+                if (filtered.length === 0) {
+                  return (
+                    <div className="text-center py-6 text-slate-500 text-xs">
+                      No se encontraron empleados que coincidan.
+                    </div>
+                  );
+                }
+
+                return filtered.map((worker) => {
+                  return (
+                    <div key={worker.id} className="p-3 bg-white/5 border border-white/5 rounded-xl space-y-2.5 animate-fade-in">
+                      <div className="truncate">
+                        <div className="text-xs font-bold text-white truncate">{worker.name}</div>
+                        <div className="text-[9px] text-slate-400 truncate">{worker.cargo} • {worker.email}</div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <span className="text-[8px] uppercase tracking-wider font-bold text-slate-500 block">División</span>
+                          <select
+                            value={worker.divisionId || 'none'}
+                            onChange={(e) => handleUpdateWorkerDivisionAndRole(worker.id, e.target.value, worker.role)}
+                            className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-[10px] text-slate-300 focus:outline-none focus:border-cyan-500 cursor-pointer"
+                          >
+                            <option value="none">Sin división</option>
+                            {divisions.map(d => (
+                              <option key={d.id} value={d.id}>{d.name}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="space-y-1">
+                          <span className="text-[8px] uppercase tracking-wider font-bold text-slate-500 block">Rol</span>
+                          <select
+                            value={worker.role}
+                            onChange={(e) => handleUpdateWorkerDivisionAndRole(worker.id, worker.divisionId, e.target.value as any)}
+                            className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-[10px] text-slate-300 focus:outline-none focus:border-cyan-500 cursor-pointer"
+                          >
+                            <option value="worker">Técnico</option>
+                            <option value="coordinator">Coordinador de División</option>
+                            <option value="deputy">Adjunto</option>
+                            <option value="superadmin">Gerente</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <span className="text-[8px] uppercase tracking-wider font-bold text-slate-500 block">Turno Fijo Preestablecido (Lunes a Viernes)</span>
+                        <select
+                          value={worker.fixedShift || 'pool'}
+                          onChange={(e) => handleUpdateWorkerFixedShift(worker.id, e.target.value as any)}
+                          className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-[10px] text-slate-300 focus:outline-none focus:border-cyan-500 cursor-pointer"
+                        >
+                          <option value="pool">Pool / Sin Turno Preestablecido</option>
+                          <option value="manana">Turno Mañana (06:00 - 14:00)</option>
+                          <option value="tarde">Turno Tarde (14:00 - 22:00)</option>
+                          {worker.divisionId === 'div_ingesta' && (
+                            <option value="noche">Turno Noche (22:00 - 06:00)</option>
+                          )}
+                          <option value="libre">Día Libre</option>
+                        </select>
+                      </div>
+
+                      <div className="flex items-center justify-between pt-1.5 border-t border-white/5">
+                        <span className="text-[9px] text-slate-400">
+                          {worker.mustChangePassword ? (
+                            <span className="text-amber-400 font-semibold flex items-center gap-1">
+                              ⚠️ Cambio pendiente
+                            </span>
+                          ) : (
+                            <span className="text-emerald-400 font-medium">Contraseña Activa</span>
+                          )}
+                        </span>
+                        <button
+                          onClick={() => handleResetPassword(worker.id)}
+                          className="flex items-center gap-1 px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 hover:border-amber-500/30 rounded-lg text-[9px] font-bold text-amber-300 transition-all cursor-pointer"
+                          title="Restablecer contraseña a 12345678"
+                        >
+                          <KeyRound size={10} />
+                          <span>Reiniciar</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
             </div>
           </div>
         </div>

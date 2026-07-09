@@ -24,7 +24,7 @@ interface TrelloBoardProps {
 const SHIFT_COLUMNS: { key: ShiftType; title: string; time: string; color: string; border: string; glow: string }[] = [
   { 
     key: 'pool', 
-    title: 'Personal Disponible / Pool', 
+    title: 'Personal Libre', 
     time: 'Sin turno hoy', 
     color: 'glass bg-white/2', 
     border: 'border-white/5', 
@@ -359,21 +359,42 @@ function SingleDivisionBoard({
     const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
     const isWeekend = d.getDay() === 0 || d.getDay() === 6;
 
-    if (isWeekend) {
-      if (!confirm(`Hoy es ${dayNames[d.getDay()]}. ¿Estás seguro de que deseas aplicar los turnos fijos de lunes a viernes a este fin de semana?`)) {
-        return;
-      }
-    } else {
-      if (!confirm(`¿Estás seguro de aplicar los turnos fijos preestablecidos a la división "${division.name}" para el día ${selectedDateStr}? Se sobrescribirán los turnos actuales.`)) {
-        return;
-      }
+    const workersToAssign = workers.filter(w => w.divisionId === division.id);
+    const hasAnyFixedShift = workersToAssign.some(w => {
+      const isOnVacation = w.vacationStart && w.vacationEnd &&
+                           selectedDateStr >= w.vacationStart && selectedDateStr <= w.vacationEnd;
+      const hasFreeDay = assignments.some(a => a.workerId === w.id && a.date === selectedDateStr && a.shiftType === 'libre');
+      return !isOnVacation && !hasFreeDay && w.fixedShift && w.fixedShift !== 'pool';
+    });
+
+    if (!hasAnyFixedShift) {
+      onAddNotification(
+        'Sin Turnos Configurados',
+        `No hay trabajadores con Turno Fijo Preestablecido configurado en la división "${division.name}" (o todos están de vacaciones/día libre). Por favor, configúralos en el Panel de Administración primero.`,
+        'info'
+      );
+      return;
     }
 
-    let updated = assignments.filter(a => !(a.divisionId === division.id && a.date === selectedDateStr));
-    const workersToAssign = workers.filter(w => w.divisionId === division.id);
+    let updated = assignments.filter(a => {
+      const isForThisDivisionAndDate = a.divisionId === division.id && a.date === selectedDateStr;
+      if (!isForThisDivisionAndDate) return true;
+      // Keep if it is 'libre'
+      return a.shiftType === 'libre';
+    });
+    let count = 0;
 
     workersToAssign.forEach(w => {
-      if (w.fixedShift && w.fixedShift !== 'pool' && w.fixedShift !== 'libre') {
+      // Exclude worker from scheduling if they are on vacation on this date
+      const isOnVacation = w.vacationStart && w.vacationEnd &&
+                           selectedDateStr >= w.vacationStart && selectedDateStr <= w.vacationEnd;
+      if (isOnVacation) return;
+
+      // Exclude worker if they have a scheduled free day (dia libre) on this date
+      const hasFreeDay = assignments.some(a => a.workerId === w.id && a.date === selectedDateStr && a.shiftType === 'libre');
+      if (hasFreeDay) return;
+
+      if (w.fixedShift && w.fixedShift !== 'pool') {
         updated.push({
           id: `as_${w.id}_${w.fixedShift}_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
           workerId: w.id,
@@ -381,13 +402,14 @@ function SingleDivisionBoard({
           date: selectedDateStr,
           shiftType: w.fixedShift
         });
+        count++;
       }
     });
 
     onUpdateAssignments(updated, division.id, selectedDateStr);
     onAddNotification(
       'Turnos Fijos Aplicados',
-      `Se cargaron los turnos fijos preestablecidos para la división "${division.name}".`,
+      `Se cargaron los turnos fijos preestablecidos para ${count} trabajador(es) de la división "${division.name}" con éxito.${isWeekend ? ' (Aplicado a Fin de Semana)' : ''}`,
       'success'
     );
   };
@@ -626,6 +648,17 @@ function SingleDivisionBoard({
                               <span className="text-[10px] text-slate-300 font-medium mt-1 truncate max-w-[140px]">
                                 {worker.cargo}
                               </span>
+                              {worker.vacationStart && worker.vacationEnd && 
+                               selectedDateStr >= worker.vacationStart && selectedDateStr <= worker.vacationEnd && (
+                                <div className="flex items-center gap-1 mt-1 text-[9px] text-teal-300 font-bold bg-teal-500/20 border border-teal-500/35 px-1.5 py-0.5 rounded-md self-start">
+                                  <span>De Vacaciones 🏖️</span>
+                                </div>
+                              )}
+                              {assignments.some(a => a.workerId === worker.id && a.date === selectedDateStr && a.shiftType === 'libre') && (
+                                <div className="flex items-center gap-1 mt-1 text-[9px] text-emerald-300 font-bold bg-emerald-500/20 border border-emerald-500/35 px-1.5 py-0.5 rounded-md self-start">
+                                  <span>Día Libre 🗓️</span>
+                                </div>
+                              )}
                             </div>
                             
                             {/* Colored indicator bulb or Lock icon */}
@@ -659,7 +692,7 @@ function SingleDivisionBoard({
                                 Asignar Turno:
                               </span>
                               {/* Multi-turn label indicator */}
-                              {assignments.filter(a => a.workerId === worker.id).length > 1 && (
+                              {assignments.filter(a => a.workerId === worker.id && a.date === selectedDateStr).length > 1 && (
                                 <span className="text-[8px] font-bold text-amber-400 bg-amber-400/10 px-1 py-0.2 rounded font-mono uppercase">
                                   Multi-turno
                                 </span>
@@ -667,12 +700,12 @@ function SingleDivisionBoard({
                             </div>
                             <div className="flex gap-1">
                               {[
-                                { key: 'manana', label: 'M', title: 'Turno Mañana', color: 'bg-sky-500/25 text-sky-300 border-sky-500/30', activeColor: 'bg-sky-500 text-slate-950 font-bold border-sky-400 shadow-[0_0_10px_rgba(56,189,248,0.4)]' },
-                                { key: 'tarde', label: 'T', title: 'Turno Tarde', color: 'bg-pink-500/25 text-pink-300 border-pink-500/30', activeColor: 'bg-pink-500 text-slate-950 font-bold border-pink-400 shadow-[0_0_10px_rgba(244,63,94,0.4)]' },
-                                { key: 'noche', label: 'N', title: 'Turno Noche', color: 'bg-purple-500/25 text-purple-300 border-purple-500/30', activeColor: 'bg-purple-500 text-slate-950 font-bold border-purple-400 shadow-[0_0_10px_rgba(168,85,247,0.4)]' }
+                                { key: 'manana', label: 'M', title: 'Turno Mañana', color: 'bg-slate-950/65 text-slate-500 border-white/5 hover:bg-slate-900 hover:text-slate-300', activeColor: 'bg-sky-500 text-slate-950 font-black border-sky-300 shadow-[0_0_12px_rgba(0,242,255,0.85)] animate-glow-cyan' },
+                                { key: 'tarde', label: 'T', title: 'Turno Tarde', color: 'bg-slate-950/65 text-slate-500 border-white/5 hover:bg-slate-900 hover:text-slate-300', activeColor: 'bg-pink-500 text-slate-950 font-black border-pink-300 shadow-[0_0_12px_rgba(255,0,200,0.85)] animate-glow-pink' },
+                                { key: 'noche', label: 'N', title: 'Turno Noche', color: 'bg-slate-950/65 text-slate-500 border-white/5 hover:bg-slate-900 hover:text-slate-300', activeColor: 'bg-purple-500 text-slate-950 font-black border-purple-300 shadow-[0_0_12px_rgba(138,43,226,0.85)] animate-glow-purple' }
                               ].filter(btn => btn.key !== 'noche' || worker.divisionId === 'div_ingesta').map(btn => {
                                 const isActive = assignments.some(
-                                  a => a.workerId === worker.id && a.shiftType === btn.key
+                                  a => a.workerId === worker.id && a.shiftType === btn.key && a.date === selectedDateStr
                                 );
                                 return (
                                   <button
@@ -686,8 +719,8 @@ function SingleDivisionBoard({
                                     }}
                                     disabled={!canEditWorker}
                                     className={`flex-1 py-0.5 rounded text-[9px] border transition-all cursor-pointer text-center ${
-                                      isActive ? btn.activeColor : `${btn.color} opacity-60 hover:opacity-100`
-                                    } ${!canEditWorker ? 'cursor-not-allowed opacity-40' : ''}`}
+                                      isActive ? btn.activeColor : btn.color
+                                    } ${!canEditWorker ? 'cursor-not-allowed opacity-30' : ''}`}
                                     title={!canEditWorker ? 'No tienes permisos en esta división' : `${isActive ? 'Remover de' : 'Asignar a'} ${btn.title}`}
                                   >
                                     {btn.label}

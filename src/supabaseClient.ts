@@ -98,7 +98,10 @@ create table if not exists workers (
   password text,
   meals_preference text,
   must_change_password boolean default false,
-  fixed_shift text default 'pool'
+  fixed_shift text default 'pool',
+  vacation_start text,
+  vacation_end text,
+  manual_free_days_adjustment integer default 0
 );
 
 -- Garantizar columnas correctas si la tabla ya existía
@@ -109,6 +112,9 @@ alter table workers add column if not exists meals_preference text;
 alter table workers add column if not exists division_id text references divisions(id) on delete set null;
 alter table workers add column if not exists must_change_password boolean default false;
 alter table workers add column if not exists fixed_shift text default 'pool';
+alter table workers add column if not exists vacation_start text;
+alter table workers add column if not exists vacation_end text;
+alter table workers add column if not exists manual_free_days_adjustment integer default 0;
 
 -- 3. Crear tabla de asignaciones de turnos (shift_assignments)
 create table if not exists shift_assignments (
@@ -419,6 +425,9 @@ export const db = {
         password: w.password || '',
         mustChangePassword: w.must_change_password === true || w.must_change_password === 'true',
         fixedShift: (w.fixed_shift || 'pool') as any,
+        vacationStart: w.vacation_start || undefined,
+        vacationEnd: w.vacation_end || undefined,
+        manualFreeDaysAdjustment: Number(w.manual_free_days_adjustment) || 0,
         mealsPreference: mealsPreferenceObj
       };
     });
@@ -439,7 +448,10 @@ export const db = {
       password: worker.password,
       meals_preference: worker.mealsPreference ? JSON.stringify(worker.mealsPreference) : null,
       must_change_password: worker.mustChangePassword || false,
-      fixed_shift: worker.fixedShift || 'pool'
+      fixed_shift: worker.fixedShift || 'pool',
+      vacation_start: worker.vacationStart || null,
+      vacation_end: worker.vacationEnd || null,
+      manual_free_days_adjustment: worker.manualFreeDaysAdjustment || 0
     };
 
     const executeInsert = async (currentPayload: any): Promise<void> => {
@@ -450,6 +462,21 @@ export const db = {
         const isColumnError = error.code === '42703' || errStr.includes('column') || errStr.includes('schema cache');
         if (isColumnError) {
           let modified = false;
+          if (errStr.includes('manual_free_days_adjustment') && 'manual_free_days_adjustment' in currentPayload) {
+            console.warn('Pruning missing "manual_free_days_adjustment" column and retrying...');
+            delete currentPayload.manual_free_days_adjustment;
+            modified = true;
+          }
+          if (errStr.includes('vacation_start') && 'vacation_start' in currentPayload) {
+            console.warn('Pruning missing "vacation_start" column and retrying...');
+            delete currentPayload.vacation_start;
+            modified = true;
+          }
+          if (errStr.includes('vacation_end') && 'vacation_end' in currentPayload) {
+            console.warn('Pruning missing "vacation_end" column and retrying...');
+            delete currentPayload.vacation_end;
+            modified = true;
+          }
           if (errStr.includes('fixed_shift') && 'fixed_shift' in currentPayload) {
             console.warn('Pruning missing "fixed_shift" column and retrying...');
             delete currentPayload.fixed_shift;
@@ -531,7 +558,10 @@ export const db = {
       password: worker.password,
       meals_preference: worker.mealsPreference ? JSON.stringify(worker.mealsPreference) : null,
       must_change_password: worker.mustChangePassword !== undefined ? worker.mustChangePassword : false,
-      fixed_shift: worker.fixedShift || 'pool'
+      fixed_shift: worker.fixedShift || 'pool',
+      vacation_start: worker.vacationStart || null,
+      vacation_end: worker.vacationEnd || null,
+      manual_free_days_adjustment: worker.manualFreeDaysAdjustment !== undefined ? worker.manualFreeDaysAdjustment : 0
     };
 
     const executeUpdate = async (currentPayload: any): Promise<void> => {
@@ -545,6 +575,21 @@ export const db = {
         const isColumnError = error.code === '42703' || errStr.includes('column') || errStr.includes('schema cache');
         if (isColumnError) {
           let modified = false;
+          if (errStr.includes('manual_free_days_adjustment') && 'manual_free_days_adjustment' in currentPayload) {
+            console.warn('Pruning missing "manual_free_days_adjustment" column and retrying...');
+            delete currentPayload.manual_free_days_adjustment;
+            modified = true;
+          }
+          if (errStr.includes('vacation_start') && 'vacation_start' in currentPayload) {
+            console.warn('Pruning missing "vacation_start" column and retrying...');
+            delete currentPayload.vacation_start;
+            modified = true;
+          }
+          if (errStr.includes('vacation_end') && 'vacation_end' in currentPayload) {
+            console.warn('Pruning missing "vacation_end" column and retrying...');
+            delete currentPayload.vacation_end;
+            modified = true;
+          }
           if (errStr.includes('fixed_shift') && 'fixed_shift' in currentPayload) {
             console.warn('Pruning missing "fixed_shift" column and retrying...');
             delete currentPayload.fixed_shift;
