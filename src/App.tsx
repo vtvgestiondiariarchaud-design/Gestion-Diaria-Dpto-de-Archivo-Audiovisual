@@ -4,12 +4,13 @@ import {
   Tv, Layers, Utensils, FileText, Calendar, 
   Database, Shield, AlertTriangle, Sparkles, 
   Bell, CheckCircle2, Info, ChevronDown, UserCircle, LogOut, Loader2, KeyRound, UserPlus, Edit2, Check, X, ChevronLeft, ChevronRight, Plus,
-  Umbrella
+  Umbrella, Kanban, CheckSquare
 } from 'lucide-react';
 
-import { Division, Worker, ShiftAssignment, ShiftChangeRequest, UserRole } from './types';
+import { Division, Worker, ShiftAssignment, ShiftChangeRequest, UserRole, TaskBoard, TaskCard, TaskNotification } from './types';
 import { db, DEFAULT_DIVISIONS, isSupabaseConfigured, supabaseConnectionStatus, lastSupabaseError } from './supabaseClient';
 
+import TaskManager from './components/TaskManager';
 import TrelloBoard from './components/TrelloBoard';
 import ComedorLogistics from './components/ComedorLogistics';
 import ReportGenerator from './components/ReportGenerator';
@@ -208,6 +209,12 @@ export default function App() {
   }, [workers, divisions]);
   const [assignments, setAssignments] = useState<ShiftAssignment[]>([]);
   const [requests, setRequests] = useState<ShiftChangeRequest[]>([]);
+
+  // Task System States
+  const [taskBoards, setTaskBoards] = useState<TaskBoard[]>([]);
+  const [taskCards, setTaskCards] = useState<TaskCard[]>([]);
+  const [taskNotifications, setTaskNotifications] = useState<TaskNotification[]>([]);
+
   const [loading, setLoading] = useState<boolean>(true);
   const [dbStatus, setDbStatus] = useState<'connected' | 'error' | 'not_configured'>(
     isSupabaseConfigured ? 'connected' : 'not_configured'
@@ -227,8 +234,8 @@ export default function App() {
     return saved ? JSON.parse(saved) : null;
   });
 
-  // Active Navigation Tab
-  const [activeTab, setActiveTab] = useState<'tablero' | 'comedor' | 'reportes' | 'solicitudes' | 'admin' | 'vacaciones'>('tablero');
+  // Active Navigation Tab ('tareas' as primary default)
+  const [activeTab, setActiveTab] = useState<'tareas' | 'tablero' | 'comedor' | 'reportes' | 'solicitudes' | 'admin' | 'vacaciones'>('tareas');
   const [showBlueprintModal, setShowBlueprintModal] = useState(false);
 
   // Currently Selected Division in Trello Board view
@@ -355,6 +362,132 @@ export default function App() {
       const fetchedAssignments = await db.fetchAssignments();
       const fetchedRequests = await db.fetchRequests();
 
+      // Fetch Tasks System Data
+      const fetchedTaskBoards = await db.fetchTaskBoards();
+      const fetchedTaskCards = await db.fetchTaskCards();
+      const fetchedTaskNotifs = await db.fetchTaskNotifications();
+
+      // Ensure default initial task boards exist if empty
+      let finalBoards = fetchedTaskBoards;
+      if (finalBoards.length === 0) {
+        finalBoards = [
+          {
+            id: 'board_ingesta',
+            name: 'Ingesta',
+            description: 'Recepción, digitalización y control de calidad de materiales audiovisuales entrantes.',
+            color: 'cyan',
+            createdAt: new Date().toISOString()
+          },
+          {
+            id: 'board_prensa',
+            name: 'Prensa',
+            description: 'Redacción, cobertura periodística y notas informativas de canal VTV.',
+            color: 'blue',
+            createdAt: new Date().toISOString()
+          },
+          {
+            id: 'board_programacion',
+            name: 'Programación',
+            description: 'Planificación, escaletas y emisión de la parrilla de programación.',
+            color: 'indigo',
+            createdAt: new Date().toISOString()
+          },
+          {
+            id: 'board_mantenimiento',
+            name: 'Mantenimiento & Equipos Técnicos',
+            description: 'Soporte técnico, mantenimiento preventivo y supervisión de infraestructura.',
+            color: 'amber',
+            createdAt: new Date().toISOString()
+          },
+          {
+            id: 'board_digitalizacion',
+            name: 'Digitalización',
+            description: 'Migración y resguardo de cintas históricas y acervo audiovisual.',
+            color: 'purple',
+            createdAt: new Date().toISOString()
+          },
+          {
+            id: 'board_administracion',
+            name: 'Administración',
+            description: 'Logística, gestión de personal, asignaciones y procesos administrativos.',
+            color: 'emerald',
+            createdAt: new Date().toISOString()
+          }
+        ];
+        localStorage.setItem('vtv_task_boards', JSON.stringify(finalBoards));
+        for (const b of finalBoards) {
+          db.createTaskBoard(b);
+        }
+      }
+
+      // Ensure default initial task cards exist if empty
+      let finalCards = fetchedTaskCards;
+      if (finalCards.length === 0) {
+        const today = getTodayDateStr();
+        const nextWeek = getNextDateStr(today);
+        finalCards = [
+          {
+            id: 'task_default_1',
+            boardId: 'board_ingesta',
+            title: 'Ingesta de Señal Internacional en Vivo',
+            description: 'Sincronización y captura en servidor de almacenamiento central para notas de prensa.',
+            status: 'Ingestado',
+            priority: 'alta',
+            startDate: today,
+            dueDate: nextWeek,
+            assignedWorkerIds: [],
+            checklist: [
+              { id: 'c1', text: 'Verificación de audio e imagen', completed: true },
+              { id: 'c2', text: 'Etiquetado con palabras clave', completed: true }
+            ],
+            createdAt: new Date().toISOString(),
+            createdByName: 'Jefatura de Operaciones'
+          },
+          {
+            id: 'task_default_2',
+            boardId: 'board_prensa',
+            title: 'Edición de Avance Informativo del Mediodía',
+            description: 'Ensamblaje y titulación de reportajes especiales para emisión en vivo.',
+            status: 'Editado',
+            priority: 'urgente',
+            startDate: today,
+            dueDate: nextWeek,
+            assignedWorkerIds: [],
+            checklist: [
+              { id: 'm1', text: 'Revisión de generador de caracteres', completed: true },
+              { id: 'm2', text: 'Exportación a máster de emisión', completed: false }
+            ],
+            createdAt: new Date().toISOString(),
+            createdByName: 'Coordinación de Prensa'
+          },
+          {
+            id: 'task_default_3',
+            boardId: 'board_digitalizacion',
+            title: 'Archivado y Catalogación de Cinta Histórica',
+            description: 'Indexación en base de datos documental para preservación permanente.',
+            status: 'Archivando',
+            priority: 'media',
+            startDate: today,
+            dueDate: nextWeek,
+            assignedWorkerIds: [],
+            checklist: [
+              { id: 'e1', text: 'Limpieza de cabezales y formato', completed: true },
+              { id: 'e2', text: 'Verificación de metadatos', completed: false }
+            ],
+            createdAt: new Date().toISOString(),
+            createdByName: 'Archivo Audiovisual'
+          }
+        ];
+        localStorage.setItem('vtv_task_cards', JSON.stringify(finalCards));
+        for (const c of finalCards) {
+          db.upsertTaskCard(c);
+        }
+      }
+
+      setTaskBoards(finalBoards);
+      setTaskCards(finalCards);
+      setTaskNotifications(fetchedTaskNotifs);
+
       // Robust local storage fallback for worker preestablished fixed shifts, vacations, and free days adjustment
       let mergedWorkers = fetchedWorkers;
       try {
@@ -422,6 +555,77 @@ export default function App() {
   useEffect(() => {
     syncData();
   }, []);
+
+  // Task System Handlers
+  const handleAddBoard = async (board: TaskBoard) => {
+    const updated = [...taskBoards, board];
+    setTaskBoards(updated);
+    localStorage.setItem('vtv_task_boards', JSON.stringify(updated));
+    await db.createTaskBoard(board);
+  };
+
+  const handleDeleteBoard = async (boardId: string) => {
+    const updatedBoards = taskBoards.filter(b => b.id !== boardId);
+    const updatedCards = taskCards.filter(c => c.boardId !== boardId);
+    setTaskBoards(updatedBoards);
+    setTaskCards(updatedCards);
+    localStorage.setItem('vtv_task_boards', JSON.stringify(updatedBoards));
+    localStorage.setItem('vtv_task_cards', JSON.stringify(updatedCards));
+    await db.deleteTaskBoard(boardId);
+  };
+
+  const handleSaveCard = async (card: TaskCard) => {
+    const existingCard = taskCards.find(c => c.id === card.id);
+    const oldAssignees = existingCard ? existingCard.assignedWorkerIds : [];
+    const newlyAssigned = card.assignedWorkerIds.filter(id => !oldAssignees.includes(id));
+
+    const existingIndex = taskCards.findIndex(c => c.id === card.id);
+    let updatedCards: TaskCard[] = [];
+    if (existingIndex >= 0) {
+      updatedCards = taskCards.map(c => c.id === card.id ? card : c);
+    } else {
+      updatedCards = [card, ...taskCards];
+    }
+
+    setTaskCards(updatedCards);
+    localStorage.setItem('vtv_task_cards', JSON.stringify(updatedCards));
+    await db.upsertTaskCard(card);
+
+    // Notifications for newly assigned workers
+    if (newlyAssigned.length > 0) {
+      const boardObj = taskBoards.find(b => b.id === card.boardId);
+      const boardName = boardObj ? boardObj.name : 'Tablero de Tareas';
+
+      for (const workerId of newlyAssigned) {
+        const notif: TaskNotification = {
+          id: `notif_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+          workerId,
+          taskId: card.id,
+          taskTitle: card.title,
+          boardName,
+          message: `Se te ha asignado la tarea "${card.title}" en el tablero "${boardName}".`,
+          createdAt: new Date().toISOString(),
+          read: false
+        };
+        setTaskNotifications(prev => [notif, ...prev]);
+        await db.createTaskNotification(notif);
+      }
+    }
+  };
+
+  const handleDeleteCard = async (cardId: string) => {
+    const updatedCards = taskCards.filter(c => c.id !== cardId);
+    setTaskCards(updatedCards);
+    localStorage.setItem('vtv_task_cards', JSON.stringify(updatedCards));
+    await db.deleteTaskCard(cardId);
+  };
+
+  const handleMarkNotificationRead = async (id: string) => {
+    const updated = taskNotifications.map(n => n.id === id ? { ...n, read: true } : n);
+    setTaskNotifications(updated);
+    localStorage.setItem('vtv_task_notifications', JSON.stringify(updated));
+    await db.markTaskNotificationRead(id);
+  };
 
   // Update selected division ID when session changes
   useEffect(() => {
@@ -864,10 +1068,7 @@ export default function App() {
               {dbStatus === 'error' && (
                 <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-2xl text-[11px] text-slate-300 w-full text-center leading-normal">
                   <span className="text-amber-400 font-bold block mb-1">⚠️ Error en la Base de Datos Supabase</span>
-                  Ocurrió un error al cargar o guardar los datos. Asegúrate de haber creado las tablas de la base de datos ejecutando el script SQL actualizado y desactivado RLS.
-                  <div className="mt-2 text-[10px] text-cyan-300 font-mono">
-                    Para solucionarlo de inmediato: copia y ejecuta el script SQL actualizado en el SQL Editor de tu Supabase.
-                  </div>
+                  Ocurrió un error de sincronización. Contacta al Administrador/Gerente para verificar la conexión.
                 </div>
               )}
             </div>
@@ -1354,6 +1555,21 @@ export default function App() {
             {/* Navigation Tabs - Glassmorphic Toolbar */}
             <div className="flex overflow-x-auto gap-2 p-1.5 glass rounded-2xl">
               <button
+                onClick={() => setActiveTab('tareas')}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                  activeTab === 'tareas' 
+                    ? 'bg-gradient-to-r from-cyan-500/20 to-violet-500/20 text-white border border-cyan-500/30 font-extrabold shadow-[0_0_12px_rgba(6,182,212,0.3)]' 
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
+                }`}
+              >
+                <Kanban size={14} className={activeTab === 'tareas' ? 'text-cyan-400' : 'text-slate-400'} />
+                <span>Gestión de Tareas</span>
+                {taskNotifications.filter(n => !n.read && n.workerId === currentSession?.userId).length > 0 && (
+                  <span className="w-2 h-2 rounded-full bg-rose-500 inline-block animate-pulse" />
+                )}
+              </button>
+
+              <button
                 onClick={() => setActiveTab('tablero')}
                 className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
                   activeTab === 'tablero' 
@@ -1447,12 +1663,14 @@ export default function App() {
                     <span className="text-white font-medium block mt-1">La aplicación ha cambiado al Almacenamiento Local de forma automática para que puedas interactuar y registrar todo al 100% sin perder datos.</span>
                   </div>
                 </div>
-                <button
-                  onClick={() => setShowBlueprintModal(true)}
-                  className="px-4 py-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded-xl font-bold transition-all whitespace-nowrap shrink-0 self-stretch md:self-auto text-center cursor-pointer"
-                >
-                  Ver Solución SQL 🛠️
-                </button>
+                {currentSession?.role === 'superadmin' && (
+                  <button
+                    onClick={() => setShowBlueprintModal(true)}
+                    className="px-4 py-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded-xl font-bold transition-all whitespace-nowrap shrink-0 self-stretch md:self-auto text-center cursor-pointer"
+                  >
+                    Ver Solución SQL 🛠️
+                  </button>
+                )}
               </motion.div>
             )}
 
@@ -1474,6 +1692,23 @@ export default function App() {
                     exit={{ opacity: 0, y: -10 }}
                     transition={{ duration: 0.2 }}
                   >
+                    {activeTab === 'tareas' && (
+                      <TaskManager
+                        boards={taskBoards}
+                        cards={taskCards}
+                        notifications={taskNotifications}
+                        workers={sortedWorkers}
+                        divisions={divisions}
+                        currentSession={currentSession}
+                        onAddBoard={handleAddBoard}
+                        onDeleteBoard={handleDeleteBoard}
+                        onSaveCard={handleSaveCard}
+                        onDeleteCard={handleDeleteCard}
+                        onMarkNotificationRead={handleMarkNotificationRead}
+                        onAddNotificationToast={addNotification}
+                      />
+                    )}
+
                     {activeTab === 'tablero' && (
                       <TrelloBoard
                         currentDivisionId={selectedDivisionId}

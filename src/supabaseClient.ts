@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { Division, Worker, ShiftAssignment, ShiftChangeRequest, ShiftType } from './types';
+import { Division, Worker, ShiftAssignment, ShiftChangeRequest, ShiftType, TaskBoard, TaskCard, TaskNotification } from './types';
 
 // Read values from env if available
 // @ts-ignore
@@ -59,18 +59,9 @@ export const DEFAULT_DIVISIONS: Division[] = [
 
 // Helper to generate a clean SQL Script for the user to run in Supabase SQL Editor
 export const getSupabaseSQLScript = (): string => {
-  return `-- SQL SCRIPT ULTRA-ROBUSTO PARA CONFIGURAR TU BASE DE DATOS EN SUPABASE
--- Copia y ejecuta todo este script completo en el SQL Editor de tu proyecto de Supabase.
--- ¡Soluciona todos los problemas de RLS, columnas faltantes o conflictos de claves externas!
-
--- =========================================================================
--- OPCIÓN RECOMENDADA: SI DESEAS LIMPIAR LA BASE DE DATOS Y EMPEZAR DESDE CERO,
--- DESCOMENTA LAS SIGUIENTES 4 LÍNEAS ANTES DE EJECUTAR EL SCRIPT:
--- =========================================================================
--- drop table if exists shift_change_requests cascade;
--- drop table if exists shift_assignments cascade;
--- drop table if exists workers cascade;
--- drop table if exists divisions cascade;
+  return `-- SQL SCRIPT COMPLETO Y ULTRA-ROBUSTO PARA SUPABASE (VTV)
+-- Copia y ejecuta todo este script en el SQL Editor de Supabase (https://app.supabase.com -> SQL Editor).
+-- Habilita tablas para Turnos, Comedor, Tareas/Procesos, Columnas de Duración y Permisos Totales.
 
 -- 1. Crear tabla de divisiones
 create table if not exists divisions (
@@ -81,7 +72,6 @@ create table if not exists divisions (
   coordinator_name text
 );
 
--- Garantizar columnas correctas si la tabla ya existía
 alter table divisions add column if not exists description text;
 alter table divisions add column if not exists coordinator_id text;
 alter table divisions add column if not exists coordinator_name text;
@@ -92,7 +82,7 @@ create table if not exists workers (
   name text not null,
   email text not null unique,
   cargo text not null,
-  division_id text references divisions(id) on delete set null,
+  division_id text,
   role text not null default 'worker',
   cedula text,
   password text,
@@ -104,12 +94,11 @@ create table if not exists workers (
   manual_free_days_adjustment integer default 0
 );
 
--- Garantizar columnas correctas si la tabla ya existía
 alter table workers add column if not exists role text not null default 'worker';
 alter table workers add column if not exists cedula text;
 alter table workers add column if not exists password text;
 alter table workers add column if not exists meals_preference text;
-alter table workers add column if not exists division_id text references divisions(id) on delete set null;
+alter table workers add column if not exists division_id text;
 alter table workers add column if not exists must_change_password boolean default false;
 alter table workers add column if not exists fixed_shift text default 'pool';
 alter table workers add column if not exists vacation_start text;
@@ -119,36 +108,103 @@ alter table workers add column if not exists manual_free_days_adjustment integer
 -- 3. Crear tabla de asignaciones de turnos (shift_assignments)
 create table if not exists shift_assignments (
   id text primary key,
-  worker_id text references workers(id) on delete cascade,
-  division_id text references divisions(id) on delete cascade,
+  worker_id text,
+  division_id text,
   date date not null,
   shift_type text not null
 );
 
--- Garantizar columnas correctas si la tabla ya existía
 alter table shift_assignments add column if not exists shift_type text;
-alter table shift_assignments add column if not exists worker_id text references workers(id) on delete cascade;
-alter table shift_assignments add column if not exists division_id text references divisions(id) on delete cascade;
+alter table shift_assignments add column if not exists worker_id text;
+alter table shift_assignments add column if not exists division_id text;
 
 -- 4. Crear tabla de solicitudes de cambio de guardia (shift_change_requests)
 create table if not exists shift_change_requests (
   id text primary key,
-  requester_id text references workers(id) on delete cascade,
+  requester_id text,
   requester_name text not null,
-  target_worker_id text references workers(id) on delete cascade,
+  target_worker_id text,
   target_worker_name text not null,
-  division_id text references divisions(id) on delete cascade,
+  division_id text,
   date date not null,
   reason text not null,
   status text not null default 'pending',
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
--- Garantizar columnas correctas si la tabla ya existía
 alter table shift_change_requests add column if not exists status text not null default 'pending';
 alter table shift_change_requests add column if not exists created_at timestamp with time zone default timezone('utc'::text, now());
 
--- 5. Insertar divisiones por defecto de VTV (Evita duplicados)
+-- 5. Crear tablas para el Gestor de Tareas y Procesos Audiovisuales (Task Boards, Cards, History & Notifications)
+create table if not exists task_boards (
+  id text primary key,
+  name text not null,
+  description text,
+  color text,
+  division_id text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+alter table task_boards add column if not exists description text;
+alter table task_boards add column if not exists color text;
+alter table task_boards add column if not exists division_id text;
+
+create table if not exists task_cards (
+  id text primary key,
+  board_id text,
+  division_id text,
+  title text not null,
+  description text,
+  status text not null default 'Pendiente', -- Estados: Pendiente, Ingestado, Editado, Archivando, Evaluacion Pendiente, Finalizado
+  start_date text,
+  due_date text,
+  assigned_worker_ids text, -- JSON string
+  checklist text, -- JSON string
+  priority text default 'media',
+  is_gerencia_only boolean default false,
+  duration text default '00:00:00',
+  created_by_worker_id text,
+  created_by_name text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+alter table task_cards add column if not exists board_id text;
+alter table task_cards add column if not exists division_id text;
+alter table task_cards add column if not exists title text;
+alter table task_cards add column if not exists description text;
+alter table task_cards add column if not exists status text default 'Pendiente';
+alter table task_cards add column if not exists start_date text;
+alter table task_cards add column if not exists due_date text;
+alter table task_cards add column if not exists assigned_worker_ids text;
+alter table task_cards add column if not exists checklist text;
+alter table task_cards add column if not exists priority text default 'media';
+alter table task_cards add column if not exists is_gerencia_only boolean default false;
+alter table task_cards add column if not exists duration text default '00:00:00';
+alter table task_cards add column if not exists created_by_worker_id text;
+alter table task_cards add column if not exists created_by_name text;
+
+create table if not exists task_history (
+  id text primary key,
+  task_id text,
+  from_status text,
+  to_status text not null,
+  changed_by_worker_id text,
+  changed_by_name text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+create table if not exists task_notifications (
+  id text primary key,
+  worker_id text,
+  task_id text,
+  task_title text,
+  board_name text,
+  message text not null,
+  read boolean default false,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 6. Insertar divisiones por defecto de VTV (Evita duplicados)
 insert into divisions (id, name, description) values
 ('div_archivo_prensa', 'Archivo de Prensa', 'Gestión, clasificación y resguardo del material audiovisual y notas informativas del área de prensa y noticias.'),
 ('div_archivo_programacion', 'Archivo de Programacion', 'Catalogación, digitalización e inventario de programas, documentales y transmisiones especiales de la planta televisiva.'),
@@ -157,19 +213,25 @@ on conflict (id) do update set
   name = excluded.name,
   description = excluded.description;
 
--- 6. DESACTIVAR DE MANERA ABSOLUTA EL ROW-LEVEL SECURITY (RLS)
--- Esto garantiza que la web pueda conectarse directamente, leer y escribir datos sin bloqueos.
+-- 7. DESACTIVAR DE MANERA ABSOLUTA EL ROW-LEVEL SECURITY (RLS)
 alter table divisions disable row level security;
 alter table workers disable row level security;
 alter table shift_assignments disable row level security;
 alter table shift_change_requests disable row level security;
+alter table task_boards disable row level security;
+alter table task_cards disable row level security;
+alter table task_history disable row level security;
+alter table task_notifications disable row level security;
 
--- 7. CONCEDER PERMISOS TOTALES DE LECTURA Y ESCRITURA AL ROL PÚBLICO (ANON) Y AUTENTICADO
--- ¡Medida de seguridad extra para evitar denegación de permisos de API en Supabase!
+-- 8. CONCEDER PERMISOS TOTALES DE LECTURA Y ESCRITURA AL ROL PÚBLICO (ANON) Y AUTENTICADO
 grant all privileges on table divisions to anon, authenticated, postgres;
 grant all privileges on table workers to anon, authenticated, postgres;
 grant all privileges on table shift_assignments to anon, authenticated, postgres;
 grant all privileges on table shift_change_requests to anon, authenticated, postgres;
+grant all privileges on table task_boards to anon, authenticated, postgres;
+grant all privileges on table task_cards to anon, authenticated, postgres;
+grant all privileges on table task_history to anon, authenticated, postgres;
+grant all privileges on table task_notifications to anon, authenticated, postgres;
 `;
 };
 
@@ -778,6 +840,297 @@ export const db = {
     if (error) {
       console.error('Error updating request status in Supabase:', error);
       throw error;
+    }
+  },
+
+  // Task System Methods
+  async fetchTaskBoards(): Promise<TaskBoard[]> {
+    let supabaseBoards: TaskBoard[] = [];
+    if (supabase) {
+      try {
+        const { data, error } = await supabase.from('task_boards').select('*').order('created_at', { ascending: true });
+        if (!error && data) {
+          supabaseBoards = data.map(b => ({
+            id: b.id,
+            name: b.name,
+            description: b.description || '',
+            color: b.color || 'cyan',
+            divisionId: b.division_id,
+            createdAt: b.created_at
+          }));
+        }
+      } catch (err) {
+        console.warn('Supabase task_boards query failed, using localStorage fallback', err);
+      }
+    }
+    const saved = localStorage.getItem('vtv_task_boards');
+    const localBoards: TaskBoard[] = saved ? JSON.parse(saved) : [];
+
+    if (supabaseBoards.length > 0) {
+      const sbMap = new Map(supabaseBoards.map(b => [b.id, b]));
+      localBoards.forEach(lb => {
+        if (!sbMap.has(lb.id)) {
+          supabaseBoards.push(lb);
+        }
+      });
+      localStorage.setItem('vtv_task_boards', JSON.stringify(supabaseBoards));
+      return supabaseBoards;
+    }
+
+    return localBoards;
+  },
+
+  async createTaskBoard(board: TaskBoard): Promise<void> {
+    try {
+      const saved = localStorage.getItem('vtv_task_boards');
+      let boards: TaskBoard[] = saved ? JSON.parse(saved) : [];
+      const idx = boards.findIndex(b => b.id === board.id);
+      if (idx >= 0) {
+        boards[idx] = board;
+      } else {
+        boards.push(board);
+      }
+      localStorage.setItem('vtv_task_boards', JSON.stringify(boards));
+    } catch (e) {
+      console.error('Error saving task board to localStorage:', e);
+    }
+
+    if (supabase) {
+      try {
+        const { error } = await supabase.from('task_boards').upsert([{
+          id: board.id,
+          name: board.name,
+          description: board.description || '',
+          color: board.color || 'cyan',
+          division_id: board.divisionId || null,
+          created_at: board.createdAt || new Date().toISOString()
+        }]);
+        if (error) {
+          console.error('Error upserting task_board to Supabase:', error);
+        }
+      } catch (err) {
+        console.warn('Error saving task_board to Supabase:', err);
+      }
+    }
+  },
+
+  async deleteTaskBoard(boardId: string): Promise<void> {
+    try {
+      const saved = localStorage.getItem('vtv_task_boards');
+      if (saved) {
+        let boards: TaskBoard[] = JSON.parse(saved);
+        boards = boards.filter(b => b.id !== boardId);
+        localStorage.setItem('vtv_task_boards', JSON.stringify(boards));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+
+    if (supabase) {
+      try {
+        await supabase.from('task_boards').delete().eq('id', boardId);
+      } catch (err) {
+        console.warn('Error deleting task_board from Supabase:', err);
+      }
+    }
+  },
+
+  async fetchTaskCards(): Promise<TaskCard[]> {
+    let supabaseCards: TaskCard[] = [];
+    if (supabase) {
+      try {
+        const { data, error } = await supabase.from('task_cards').select('*').order('created_at', { ascending: false });
+        if (!error && data) {
+          supabaseCards = data.map(c => ({
+            id: c.id,
+            boardId: c.board_id,
+            divisionId: c.division_id,
+            title: c.title,
+            description: c.description || '',
+            status: c.status as any,
+            startDate: c.start_date,
+            dueDate: c.due_date,
+            assignedWorkerIds: c.assigned_worker_ids ? JSON.parse(c.assigned_worker_ids) : [],
+            checklist: c.checklist ? JSON.parse(c.checklist) : [],
+            createdAt: c.created_at,
+            createdByWorkerId: c.created_by_worker_id,
+            createdByName: c.created_by_name,
+            priority: c.priority as any || 'media',
+            isGerenciaOnly: Boolean(c.is_gerencia_only),
+            duration: c.duration || '00:00:00'
+          }));
+        } else if (error) {
+          console.warn('Error fetching task_cards from Supabase:', error);
+        }
+      } catch (err) {
+        console.warn('Supabase task_cards query failed, using localStorage fallback', err);
+      }
+    }
+
+    const saved = localStorage.getItem('vtv_task_cards');
+    const localCards: TaskCard[] = saved ? JSON.parse(saved) : [];
+
+    if (supabaseCards.length > 0) {
+      // Merge local cards that might not be in Supabase yet due to network/schema sync latency
+      const supabaseMap = new Map(supabaseCards.map(c => [c.id, c]));
+      localCards.forEach(lc => {
+        if (!supabaseMap.has(lc.id)) {
+          supabaseCards.push(lc);
+        }
+      });
+      localStorage.setItem('vtv_task_cards', JSON.stringify(supabaseCards));
+      return supabaseCards;
+    }
+
+    return localCards;
+  },
+
+  async upsertTaskCard(card: TaskCard): Promise<void> {
+    // 1. Immediate sync to localStorage
+    try {
+      const saved = localStorage.getItem('vtv_task_cards');
+      let cards: TaskCard[] = saved ? JSON.parse(saved) : [];
+      const idx = cards.findIndex(c => c.id === card.id);
+      if (idx >= 0) {
+        cards[idx] = card;
+      } else {
+        cards.unshift(card);
+      }
+      localStorage.setItem('vtv_task_cards', JSON.stringify(cards));
+    } catch (e) {
+      console.error('Error saving task_card to localStorage:', e);
+    }
+
+    // 2. Sync to Supabase Cloud
+    if (supabase) {
+      try {
+        const payload = {
+          id: card.id,
+          board_id: card.boardId || null,
+          division_id: card.divisionId || null,
+          title: card.title,
+          description: card.description || '',
+          status: card.status,
+          start_date: card.startDate || null,
+          due_date: card.dueDate || null,
+          assigned_worker_ids: JSON.stringify(card.assignedWorkerIds || []),
+          checklist: JSON.stringify(card.checklist || []),
+          priority: card.priority || 'media',
+          is_gerencia_only: Boolean(card.isGerenciaOnly),
+          duration: card.duration || '00:00:00',
+          created_by_worker_id: card.createdByWorkerId || null,
+          created_by_name: card.createdByName || 'Sistema',
+          created_at: card.createdAt || new Date().toISOString()
+        };
+        const { error } = await supabase.from('task_cards').upsert([payload]);
+        if (error) {
+          console.error('Error upserting task_card to Supabase:', error);
+        }
+      } catch (err) {
+        console.warn('Error upserting task_card to Supabase:', err);
+      }
+    }
+  },
+
+  async deleteTaskCard(cardId: string): Promise<void> {
+    try {
+      const saved = localStorage.getItem('vtv_task_cards');
+      if (saved) {
+        let cards: TaskCard[] = JSON.parse(saved);
+        cards = cards.filter(c => c.id !== cardId);
+        localStorage.setItem('vtv_task_cards', JSON.stringify(cards));
+      }
+    } catch (e) {
+      console.error('Error deleting task_card from localStorage:', e);
+    }
+
+    if (supabase) {
+      try {
+        await supabase.from('task_cards').delete().eq('id', cardId);
+      } catch (err) {
+        console.warn('Error deleting task_card from Supabase:', err);
+      }
+    }
+  },
+
+  async fetchTaskNotifications(workerId?: string): Promise<TaskNotification[]> {
+    if (supabase) {
+      try {
+        let query = supabase.from('task_notifications').select('*').order('created_at', { ascending: false });
+        if (workerId) {
+          query = query.eq('worker_id', workerId);
+        }
+        const { data, error } = await query;
+        if (!error && data) {
+          return data.map(n => ({
+            id: n.id,
+            workerId: n.worker_id,
+            taskId: n.task_id,
+            taskTitle: n.task_title,
+            boardName: n.board_name,
+            message: n.message,
+            createdAt: n.created_at,
+            read: n.read
+          }));
+        }
+      } catch (err) {
+        console.warn('Supabase task_notifications query failed, using localStorage fallback', err);
+      }
+    }
+    const saved = localStorage.getItem('vtv_task_notifications');
+    const all: TaskNotification[] = saved ? JSON.parse(saved) : [];
+    if (workerId) {
+      return all.filter(n => n.workerId === workerId);
+    }
+    return all;
+  },
+
+  async createTaskNotification(notif: TaskNotification): Promise<void> {
+    try {
+      const saved = localStorage.getItem('vtv_task_notifications');
+      let all: TaskNotification[] = saved ? JSON.parse(saved) : [];
+      all.unshift(notif);
+      localStorage.setItem('vtv_task_notifications', JSON.stringify(all));
+    } catch (e) {
+      console.error(e);
+    }
+
+    if (supabase) {
+      try {
+        await supabase.from('task_notifications').insert([{
+          id: notif.id,
+          worker_id: notif.workerId || null,
+          task_id: notif.taskId || null,
+          task_title: notif.taskTitle || '',
+          board_name: notif.boardName || '',
+          message: notif.message,
+          read: Boolean(notif.read),
+          created_at: notif.createdAt || new Date().toISOString()
+        }]);
+      } catch (err) {
+        console.warn('Error saving task_notification to Supabase:', err);
+      }
+    }
+  },
+
+  async markTaskNotificationRead(id: string): Promise<void> {
+    try {
+      const saved = localStorage.getItem('vtv_task_notifications');
+      if (saved) {
+        let all: TaskNotification[] = JSON.parse(saved);
+        all = all.map(n => n.id === id ? { ...n, read: true } : n);
+        localStorage.setItem('vtv_task_notifications', JSON.stringify(all));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+
+    if (supabase) {
+      try {
+        await supabase.from('task_notifications').update({ read: true }).eq('id', id);
+      } catch (err) {
+        console.warn('Error marking task notification read in Supabase:', err);
+      }
     }
   }
 };
