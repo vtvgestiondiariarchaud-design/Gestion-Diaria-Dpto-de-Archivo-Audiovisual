@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 
 import { Division, Worker, ShiftAssignment, ShiftChangeRequest, UserRole, TaskBoard, TaskCard, TaskNotification } from './types';
-import { db, DEFAULT_DIVISIONS, isSupabaseConfigured, supabaseConnectionStatus, lastSupabaseError } from './supabaseClient';
+import { db, DEFAULT_DIVISIONS, isSupabaseConfigured, supabaseConnectionStatus, lastSupabaseError, supabase } from './supabaseClient';
 
 import TaskManager from './components/TaskManager';
 import TrelloBoard from './components/TrelloBoard';
@@ -551,9 +551,65 @@ export default function App() {
     }
   };
 
-  // Load data on mount
+  // Silent data refresh for real-time background sync across workers
+  const syncDataSilent = async () => {
+    try {
+      const fetchedTaskBoards = await db.fetchTaskBoards();
+      const fetchedTaskCards = await db.fetchTaskCards();
+      const fetchedTaskNotifs = await db.fetchTaskNotifications();
+      const fetchedWorkers = await db.fetchWorkers();
+      const fetchedAssignments = await db.fetchAssignments();
+      const fetchedRequests = await db.fetchRequests();
+
+      if (fetchedTaskBoards.length > 0) setTaskBoards(fetchedTaskBoards);
+      setTaskCards(fetchedTaskCards);
+      if (fetchedTaskNotifs.length > 0) setTaskNotifications(fetchedTaskNotifs);
+      if (fetchedWorkers.length > 0) setWorkers(fetchedWorkers);
+      if (fetchedAssignments.length > 0) setAssignments(fetchedAssignments);
+      if (fetchedRequests.length > 0) setRequests(fetchedRequests);
+
+      setDbStatus(supabaseConnectionStatus);
+      setDbError(lastSupabaseError);
+    } catch (e) {
+      console.warn('Silent sync warning:', e);
+    }
+  };
+
+  // Load data on mount and setup real-time background synchronization
   useEffect(() => {
     syncData();
+
+    // Auto-polling interval (every 5 seconds) so all workers see task updates live
+    const pollInterval = setInterval(() => {
+      syncDataSilent();
+    }, 5000);
+
+    // Supabase Realtime channel subscription
+    let channel: any = null;
+    if (supabase) {
+      try {
+        channel = supabase.channel('vtv_realtime_channel')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'task_cards' }, () => {
+            syncDataSilent();
+          })
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'task_boards' }, () => {
+            syncDataSilent();
+          })
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_assignments' }, () => {
+            syncDataSilent();
+          })
+          .subscribe();
+      } catch (err) {
+        console.warn('Realtime subscription error:', err);
+      }
+    }
+
+    return () => {
+      clearInterval(pollInterval);
+      if (supabase && channel) {
+        supabase.removeChannel(channel);
+      }
+    };
   }, []);
 
   // Task System Handlers
@@ -561,7 +617,17 @@ export default function App() {
     const updated = [...taskBoards, board];
     setTaskBoards(updated);
     localStorage.setItem('vtv_task_boards', JSON.stringify(updated));
-    await db.createTaskBoard(board);
+    try {
+      await db.createTaskBoard(board);
+      addNotification('Tablero Creado', `El tablero "${board.name}" se sincronizó con Supabase.`, 'success');
+      setDbStatus(supabaseConnectionStatus);
+      setDbError(lastSupabaseError);
+    } catch (err: any) {
+      console.error('Error creating board in Supabase:', err);
+      addNotification('Error en Supabase', err.message || 'No se pudo guardar el tablero en Supabase.', 'info');
+      setDbStatus('error');
+      setDbError(err.message || 'Error guardando tablero en Supabase');
+    }
   };
 
   const handleDeleteBoard = async (boardId: string) => {
@@ -571,7 +637,13 @@ export default function App() {
     setTaskCards(updatedCards);
     localStorage.setItem('vtv_task_boards', JSON.stringify(updatedBoards));
     localStorage.setItem('vtv_task_cards', JSON.stringify(updatedCards));
-    await db.deleteTaskBoard(boardId);
+    try {
+      await db.deleteTaskBoard(boardId);
+      addNotification('Tablero Eliminado', 'Se eliminó el tablero correctamente.', 'success');
+    } catch (err: any) {
+      console.error('Error deleting board:', err);
+      addNotification('Error en Supabase', err.message || 'Error al eliminar el tablero.', 'info');
+    }
   };
 
   const handleSaveCard = async (card: TaskCard) => {
@@ -589,7 +661,18 @@ export default function App() {
 
     setTaskCards(updatedCards);
     localStorage.setItem('vtv_task_cards', JSON.stringify(updatedCards));
-    await db.upsertTaskCard(card);
+
+    try {
+      await db.upsertTaskCard(card);
+      addNotification('Tarea Guardada', `La tarea "${card.title}" se guardó en la base de datos Supabase.`, 'success');
+      setDbStatus(supabaseConnectionStatus);
+      setDbError(lastSupabaseError);
+    } catch (err: any) {
+      console.error('Error upserting card in Supabase:', err);
+      addNotification('Error de Base de Datos', err.message || 'No se pudo guardar la tarea en Supabase.', 'info');
+      setDbStatus('error');
+      setDbError(err.message || 'Error guardando tarea en Supabase');
+    }
 
     // Notifications for newly assigned workers
     if (newlyAssigned.length > 0) {
@@ -608,7 +691,11 @@ export default function App() {
           read: false
         };
         setTaskNotifications(prev => [notif, ...prev]);
-        await db.createTaskNotification(notif);
+        try {
+          await db.createTaskNotification(notif);
+        } catch (e) {
+          console.warn('Error saving notif:', e);
+        }
       }
     }
   };
@@ -617,7 +704,13 @@ export default function App() {
     const updatedCards = taskCards.filter(c => c.id !== cardId);
     setTaskCards(updatedCards);
     localStorage.setItem('vtv_task_cards', JSON.stringify(updatedCards));
-    await db.deleteTaskCard(cardId);
+    try {
+      await db.deleteTaskCard(cardId);
+      addNotification('Tarea Eliminada', 'La tarea se eliminó de Supabase.', 'success');
+    } catch (err: any) {
+      console.error('Error deleting card:', err);
+      addNotification('Error en Supabase', err.message || 'No se pudo eliminar la tarea.', 'info');
+    }
   };
 
   const handleMarkNotificationRead = async (id: string) => {

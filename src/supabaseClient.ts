@@ -858,29 +858,24 @@ export const db = {
             divisionId: b.division_id,
             createdAt: b.created_at
           }));
+          setSupabaseConnectionStatus('connected');
+          localStorage.setItem('vtv_task_boards', JSON.stringify(supabaseBoards));
+          return supabaseBoards;
+        } else if (error) {
+          console.error('Error fetching task_boards from Supabase:', error);
+          setSupabaseConnectionStatus('error', `Error al consultar 'task_boards': ${error.message}. Por favor ejecuta el Script SQL en Supabase.`);
         }
-      } catch (err) {
-        console.warn('Supabase task_boards query failed, using localStorage fallback', err);
+      } catch (err: any) {
+        console.warn('Supabase task_boards query failed:', err);
+        setSupabaseConnectionStatus('error', err?.message || 'Error de conexión con Supabase');
       }
     }
     const saved = localStorage.getItem('vtv_task_boards');
-    const localBoards: TaskBoard[] = saved ? JSON.parse(saved) : [];
-
-    if (supabaseBoards.length > 0) {
-      const sbMap = new Map(supabaseBoards.map(b => [b.id, b]));
-      localBoards.forEach(lb => {
-        if (!sbMap.has(lb.id)) {
-          supabaseBoards.push(lb);
-        }
-      });
-      localStorage.setItem('vtv_task_boards', JSON.stringify(supabaseBoards));
-      return supabaseBoards;
-    }
-
-    return localBoards;
+    return saved ? JSON.parse(saved) : [];
   },
 
   async createTaskBoard(board: TaskBoard): Promise<void> {
+    // Local storage update for fast offline responsiveness
     try {
       const saved = localStorage.getItem('vtv_task_boards');
       let boards: TaskBoard[] = saved ? JSON.parse(saved) : [];
@@ -896,20 +891,20 @@ export const db = {
     }
 
     if (supabase) {
-      try {
-        const { error } = await supabase.from('task_boards').upsert([{
-          id: board.id,
-          name: board.name,
-          description: board.description || '',
-          color: board.color || 'cyan',
-          division_id: board.divisionId || null,
-          created_at: board.createdAt || new Date().toISOString()
-        }]);
-        if (error) {
-          console.error('Error upserting task_board to Supabase:', error);
-        }
-      } catch (err) {
-        console.warn('Error saving task_board to Supabase:', err);
+      const { error } = await supabase.from('task_boards').upsert([{
+        id: board.id,
+        name: board.name,
+        description: board.description || '',
+        color: board.color || 'cyan',
+        division_id: board.divisionId || null,
+        created_at: board.createdAt || new Date().toISOString()
+      }]);
+      if (error) {
+        console.error('Error upserting task_board to Supabase:', error);
+        setSupabaseConnectionStatus('error', `Error en 'task_boards': ${error.message}`);
+        throw new Error(`Error en Supabase (task_boards): ${error.message}`);
+      } else {
+        setSupabaseConnectionStatus('connected');
       }
     }
   },
@@ -927,10 +922,11 @@ export const db = {
     }
 
     if (supabase) {
-      try {
-        await supabase.from('task_boards').delete().eq('id', boardId);
-      } catch (err) {
-        console.warn('Error deleting task_board from Supabase:', err);
+      const { error } = await supabase.from('task_boards').delete().eq('id', boardId);
+      if (error) {
+        console.error('Error deleting task_board from Supabase:', error);
+        setSupabaseConnectionStatus('error', `Error en 'task_boards': ${error.message}`);
+        throw new Error(`Error en Supabase al eliminar tablero: ${error.message}`);
       }
     }
   },
@@ -959,34 +955,25 @@ export const db = {
             isGerenciaOnly: Boolean(c.is_gerencia_only),
             duration: c.duration || '00:00:00'
           }));
+          setSupabaseConnectionStatus('connected');
+          localStorage.setItem('vtv_task_cards', JSON.stringify(supabaseCards));
+          return supabaseCards;
         } else if (error) {
-          console.warn('Error fetching task_cards from Supabase:', error);
+          console.error('Error fetching task_cards from Supabase:', error);
+          setSupabaseConnectionStatus('error', `Error al consultar 'task_cards': ${error.message}. Ejecuta el Script SQL en Supabase.`);
         }
-      } catch (err) {
-        console.warn('Supabase task_cards query failed, using localStorage fallback', err);
+      } catch (err: any) {
+        console.warn('Supabase task_cards query failed:', err);
+        setSupabaseConnectionStatus('error', err?.message || 'Error de conexión con Supabase');
       }
     }
 
     const saved = localStorage.getItem('vtv_task_cards');
-    const localCards: TaskCard[] = saved ? JSON.parse(saved) : [];
-
-    if (supabaseCards.length > 0) {
-      // Merge local cards that might not be in Supabase yet due to network/schema sync latency
-      const supabaseMap = new Map(supabaseCards.map(c => [c.id, c]));
-      localCards.forEach(lc => {
-        if (!supabaseMap.has(lc.id)) {
-          supabaseCards.push(lc);
-        }
-      });
-      localStorage.setItem('vtv_task_cards', JSON.stringify(supabaseCards));
-      return supabaseCards;
-    }
-
-    return localCards;
+    return saved ? JSON.parse(saved) : [];
   },
 
   async upsertTaskCard(card: TaskCard): Promise<void> {
-    // 1. Immediate sync to localStorage
+    // 1. LocalStorage for immediate UI response
     try {
       const saved = localStorage.getItem('vtv_task_cards');
       let cards: TaskCard[] = saved ? JSON.parse(saved) : [];
@@ -1001,33 +988,34 @@ export const db = {
       console.error('Error saving task_card to localStorage:', e);
     }
 
-    // 2. Sync to Supabase Cloud
+    // 2. Strict sync to Supabase Cloud DB
     if (supabase) {
-      try {
-        const payload = {
-          id: card.id,
-          board_id: card.boardId || null,
-          division_id: card.divisionId || null,
-          title: card.title,
-          description: card.description || '',
-          status: card.status,
-          start_date: card.startDate || null,
-          due_date: card.dueDate || null,
-          assigned_worker_ids: JSON.stringify(card.assignedWorkerIds || []),
-          checklist: JSON.stringify(card.checklist || []),
-          priority: card.priority || 'media',
-          is_gerencia_only: Boolean(card.isGerenciaOnly),
-          duration: card.duration || '00:00:00',
-          created_by_worker_id: card.createdByWorkerId || null,
-          created_by_name: card.createdByName || 'Sistema',
-          created_at: card.createdAt || new Date().toISOString()
-        };
-        const { error } = await supabase.from('task_cards').upsert([payload]);
-        if (error) {
-          console.error('Error upserting task_card to Supabase:', error);
-        }
-      } catch (err) {
-        console.warn('Error upserting task_card to Supabase:', err);
+      const payload = {
+        id: card.id,
+        board_id: card.boardId || null,
+        division_id: card.divisionId || null,
+        title: card.title,
+        description: card.description || '',
+        status: card.status,
+        start_date: card.startDate || null,
+        due_date: card.dueDate || null,
+        assigned_worker_ids: JSON.stringify(card.assignedWorkerIds || []),
+        checklist: JSON.stringify(card.checklist || []),
+        priority: card.priority || 'media',
+        is_gerencia_only: Boolean(card.isGerenciaOnly),
+        duration: card.duration || '00:00:00',
+        created_by_worker_id: card.createdByWorkerId || null,
+        created_by_name: card.createdByName || 'Sistema',
+        created_at: card.createdAt || new Date().toISOString()
+      };
+      
+      const { error } = await supabase.from('task_cards').upsert([payload]);
+      if (error) {
+        console.error('Error upserting task_card to Supabase:', error);
+        setSupabaseConnectionStatus('error', `Error al guardar tarea en Supabase: ${error.message}`);
+        throw new Error(`Error en Supabase (task_cards): ${error.message}. Asegúrate de haber ejecutado el Script SQL en Supabase.`);
+      } else {
+        setSupabaseConnectionStatus('connected');
       }
     }
   },
@@ -1045,10 +1033,11 @@ export const db = {
     }
 
     if (supabase) {
-      try {
-        await supabase.from('task_cards').delete().eq('id', cardId);
-      } catch (err) {
-        console.warn('Error deleting task_card from Supabase:', err);
+      const { error } = await supabase.from('task_cards').delete().eq('id', cardId);
+      if (error) {
+        console.error('Error deleting task_card from Supabase:', error);
+        setSupabaseConnectionStatus('error', `Error al eliminar tarea en Supabase: ${error.message}`);
+        throw new Error(`Error en Supabase al eliminar tarea: ${error.message}`);
       }
     }
   },
