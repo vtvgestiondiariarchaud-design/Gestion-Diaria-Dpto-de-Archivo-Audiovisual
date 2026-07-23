@@ -115,7 +115,22 @@ export interface TaskCard {
   createdByName?: string;
   priority?: 'baja' | 'media' | 'alta' | 'urgente';
   isGerenciaOnly?: boolean;
-  duration?: string; // Duración del material en formato HH:MM:SS
+  duration?: string; // Duración original del material en formato HH:MM:SS
+  editedDuration?: string; // Duración del material editado en formato HH:MM:SS
+  
+  // Etapas del flujo de trabajo (Booleans & Timestamps)
+  isIngested?: boolean;
+  ingestedAt?: string;
+  isEdited?: boolean;
+  editedAt?: string;
+  isDocumented?: boolean;
+  documentedAt?: string;
+  isFinalized?: boolean;
+  finalizedAt?: string;
+
+  // Clasificación para Otras Solicitudes
+  isOtherRequest?: boolean;
+
   history?: TaskHistoryItem[];
 }
 

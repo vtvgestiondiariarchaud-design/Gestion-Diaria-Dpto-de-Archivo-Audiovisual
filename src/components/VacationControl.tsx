@@ -113,13 +113,12 @@ export function computeWorkerFreeDays(
 
   events.forEach(ev => {
     const earnedTime = new Date(ev.earnedDate + 'T12:00:00').getTime();
-    const maxTime = earnedTime + 8 * 24 * 60 * 60 * 1000; // +8 days
 
-    // Find first matching 'libre' date in range
+    // Find first matching 'libre' date on or after the earned date
     const matchingLibre = libreDates.find(lDate => {
       if (consumedLibres.has(lDate)) return false;
       const lTime = new Date(lDate + 'T12:00:00').getTime();
-      return lTime >= earnedTime && lTime <= maxTime;
+      return lTime >= earnedTime;
     });
 
     if (matchingLibre) {
@@ -127,12 +126,8 @@ export function computeWorkerFreeDays(
       ev.status = 'used';
       ev.usedOnDate = matchingLibre;
     } else {
-      const todayTime = new Date().getTime();
-      if (todayTime > maxTime) {
-        ev.status = 'expired';
-      } else {
-        ev.status = 'active';
-      }
+      // Free days accumulate indefinitely without automatic expiration/deletion
+      ev.status = 'active';
     }
   });
 

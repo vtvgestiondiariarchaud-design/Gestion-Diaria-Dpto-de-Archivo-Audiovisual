@@ -155,7 +155,7 @@ create table if not exists task_cards (
   division_id text,
   title text not null,
   description text,
-  status text not null default 'Pendiente', -- Estados: Pendiente, Ingestado, Editado, Archivando, Evaluacion Pendiente, Finalizado
+  status text not null default 'Pendiente',
   start_date text,
   due_date text,
   assigned_worker_ids text, -- JSON string
@@ -163,6 +163,16 @@ create table if not exists task_cards (
   priority text default 'media',
   is_gerencia_only boolean default false,
   duration text default '00:00:00',
+  edited_duration text default '00:00:00',
+  is_ingested boolean default false,
+  ingested_at text,
+  is_edited boolean default false,
+  edited_at text,
+  is_documented boolean default false,
+  documented_at text,
+  is_finalized boolean default false,
+  finalized_at text,
+  is_other_request boolean default false,
   created_by_worker_id text,
   created_by_name text,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
@@ -180,6 +190,16 @@ alter table task_cards add column if not exists checklist text;
 alter table task_cards add column if not exists priority text default 'media';
 alter table task_cards add column if not exists is_gerencia_only boolean default false;
 alter table task_cards add column if not exists duration text default '00:00:00';
+alter table task_cards add column if not exists edited_duration text default '00:00:00';
+alter table task_cards add column if not exists is_ingested boolean default false;
+alter table task_cards add column if not exists ingested_at text;
+alter table task_cards add column if not exists is_edited boolean default false;
+alter table task_cards add column if not exists edited_at text;
+alter table task_cards add column if not exists is_documented boolean default false;
+alter table task_cards add column if not exists documented_at text;
+alter table task_cards add column if not exists is_finalized boolean default false;
+alter table task_cards add column if not exists finalized_at text;
+alter table task_cards add column if not exists is_other_request boolean default false;
 alter table task_cards add column if not exists created_by_worker_id text;
 alter table task_cards add column if not exists created_by_name text;
 
@@ -953,7 +973,17 @@ export const db = {
             createdByName: c.created_by_name,
             priority: c.priority as any || 'media',
             isGerenciaOnly: Boolean(c.is_gerencia_only),
-            duration: c.duration || '00:00:00'
+            duration: c.duration || '00:00:00',
+            editedDuration: c.edited_duration || '00:00:00',
+            isIngested: Boolean(c.is_ingested),
+            ingestedAt: c.ingested_at || undefined,
+            isEdited: Boolean(c.is_edited),
+            editedAt: c.edited_at || undefined,
+            isDocumented: Boolean(c.is_documented),
+            documentedAt: c.documented_at || undefined,
+            isFinalized: Boolean(c.is_finalized),
+            finalizedAt: c.finalized_at || undefined,
+            isOtherRequest: Boolean(c.is_other_request)
           }));
           setSupabaseConnectionStatus('connected');
           localStorage.setItem('vtv_task_cards', JSON.stringify(supabaseCards));
@@ -1004,6 +1034,16 @@ export const db = {
         priority: card.priority || 'media',
         is_gerencia_only: Boolean(card.isGerenciaOnly),
         duration: card.duration || '00:00:00',
+        edited_duration: card.editedDuration || '00:00:00',
+        is_ingested: Boolean(card.isIngested),
+        ingested_at: card.ingestedAt || null,
+        is_edited: Boolean(card.isEdited),
+        edited_at: card.editedAt || null,
+        is_documented: Boolean(card.isDocumented),
+        documented_at: card.documentedAt || null,
+        is_finalized: Boolean(card.isFinalized),
+        finalized_at: card.finalizedAt || null,
+        is_other_request: Boolean(card.isOtherRequest),
         created_by_worker_id: card.createdByWorkerId || null,
         created_by_name: card.createdByName || 'Sistema',
         created_at: card.createdAt || new Date().toISOString()
