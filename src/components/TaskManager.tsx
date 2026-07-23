@@ -336,9 +336,9 @@ export default function TaskManager({
     // 1. Ingestados en el período
     const ingestadosEnPeriodo = baseCards.filter(c => c.isIngested && matchesPeriod(c.ingestedAt || c.startDate || c.createdAt));
     
-    // Horas de Ingesta: solo se suman si la tarea está archivada/documentada o finalizada y NO es otra solicitud
-    const ingestadosArchivados = baseCards.filter(c => c.isIngested && (c.isDocumented || c.isFinalized) && !c.isOtherRequest && matchesPeriod(c.ingestedAt || c.startDate || c.createdAt));
-    const totalIngestaSeconds = ingestadosArchivados.reduce((sum, c) => sum + parseDurationToSeconds(c.duration), 0);
+    // Horas de Ingesta: se suman inmediatamente tan pronto como se marca la tarea como ingestado (si no es otra solicitud)
+    const ingestadosValidos = baseCards.filter(c => c.isIngested && !c.isOtherRequest && matchesPeriod(c.ingestedAt || c.startDate || c.createdAt));
+    const totalIngestaSeconds = ingestadosValidos.reduce((sum, c) => sum + parseDurationToSeconds(c.duration), 0);
 
     // 2. Editados en el período
     const editadosEnPeriodo = baseCards.filter(c => c.isEdited && matchesPeriod(c.editedAt || c.createdAt));
@@ -394,29 +394,29 @@ export default function TaskManager({
       }
       const nextVal = !card.isFinalized;
       updatedCard.isFinalized = nextVal;
+      updatedCard.finalizedAt = nextVal ? (card.finalizedAt || nowIso) : undefined;
       if (nextVal) {
-        updatedCard.finalizedAt = nowIso;
         updatedCard.status = 'Finalizado';
       }
     } else if (stage === 'ingested') {
       const nextVal = !card.isIngested;
       updatedCard.isIngested = nextVal;
-      if (nextVal && !card.ingestedAt) {
-        updatedCard.ingestedAt = nowIso;
+      updatedCard.ingestedAt = nextVal ? (card.ingestedAt || nowIso) : undefined;
+      if (nextVal) {
         updatedCard.status = 'Ingested' as any;
       }
     } else if (stage === 'edited') {
       const nextVal = !card.isEdited;
       updatedCard.isEdited = nextVal;
-      if (nextVal && !card.editedAt) {
-        updatedCard.editedAt = nowIso;
+      updatedCard.editedAt = nextVal ? (card.editedAt || nowIso) : undefined;
+      if (nextVal) {
         updatedCard.status = 'Editado' as any;
       }
     } else if (stage === 'documented') {
       const nextVal = !card.isDocumented;
       updatedCard.isDocumented = nextVal;
-      if (nextVal && !card.documentedAt) {
-        updatedCard.documentedAt = nowIso;
+      updatedCard.documentedAt = nextVal ? (card.documentedAt || nowIso) : undefined;
+      if (nextVal) {
         updatedCard.status = 'Archivando' as any;
       }
     }
@@ -616,7 +616,7 @@ export default function TaskManager({
     reportText += `--------------------------------------------------\n\n`;
 
     reportText += `--- RESUMEN DE MÉTRICAS ---\n`;
-    reportText += `• Total Horas Ingesta (Archivadas): ${reportMetrics.totalIngestaHHMMSS}\n`;
+    reportText += `• Total Horas Ingesta: ${reportMetrics.totalIngestaHHMMSS}\n`;
     reportText += `• Ahorro por Filtro de Ingesta: ${reportMetrics.tiempoAhorradoHHMMSS}\n`;
     reportText += `• Materiales Editados: ${reportMetrics.editadosCount} items\n`;
     reportText += `• Materiales Ingestados: ${reportMetrics.ingestadosCount} items\n`;
@@ -634,15 +634,26 @@ export default function TaskManager({
         const edit = parseDurationToSeconds(c.editedDuration);
         const diff = Math.max(0, orig - edit);
 
-        const stages = [];
-        if (c.isIngested) stages.push('Ingestado');
-        if (c.isEdited) stages.push('Editado');
-        if (c.isDocumented) stages.push('Archivado');
-        if (c.isFinalized) stages.push('Finalizado');
+        const assignedNames = (c.assignedWorkerIds || [])
+          .map(wId => workers.find(w => w.id === wId)?.name)
+          .filter(Boolean)
+          .join(', ');
+
+        const fmtDate = (isoStr?: string) => {
+          if (!isoStr) return 'Marcado';
+          return new Date(isoStr).toLocaleString('es-VE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        };
+
+        const stageTimes = [];
+        if (c.isIngested) stageTimes.push(`Ingestado (${fmtDate(c.ingestedAt)})`);
+        if (c.isEdited) stageTimes.push(`Editado (${fmtDate(c.editedAt)})`);
+        if (c.isDocumented) stageTimes.push(`Archivado (${fmtDate(c.documentedAt)})`);
+        if (c.isFinalized) stageTimes.push(`Finalizado (${fmtDate(c.finalizedAt)})`);
 
         reportText += `${idx + 1}. ${c.title}\n`;
         reportText += `   - Área/Lista: ${bObj?.name || 'VTV'}\n`;
-        reportText += `   - Etapas: ${stages.length > 0 ? stages.join(', ') : 'Pendiente'}\n`;
+        reportText += `   - Personal Asignado: ${assignedNames || 'Sin asignar'}\n`;
+        reportText += `   - Etapas y Tiempos: ${stageTimes.length > 0 ? stageTimes.join(' | ') : 'Pendiente'}\n`;
         reportText += `   - Duración Original: ${c.duration || '00:00:00'} | Duración Editada: ${c.editedDuration || '00:00:00'}\n`;
         reportText += `   - Tiempo Ahorrado: ${formatSecondsToHHMMSS(diff)}\n`;
         if (c.description) {
@@ -986,16 +997,63 @@ export default function TaskManager({
                           <span>Finalizar</span>
                         </button>
                       </div>
+
+                      {/* Timestamps breakdown if any stage is completed */}
+                      {(card.isIngested || card.isEdited || card.isDocumented || card.isFinalized) && (
+                        <div className="p-2 rounded-xl bg-slate-950/80 border border-white/5 text-[10px] space-y-0.5 font-mono">
+                          <div className="text-[9px] uppercase font-bold text-slate-500 font-sans mb-0.5">Registro de Marcas de Tiempo:</div>
+                          {card.isIngested && (
+                            <div className="flex items-center justify-between text-cyan-300">
+                              <span>• Ingestado:</span>
+                              <span>{card.ingestedAt ? new Date(card.ingestedAt).toLocaleString('es-VE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : 'Registrado'}</span>
+                            </div>
+                          )}
+                          {card.isEdited && (
+                            <div className="flex items-center justify-between text-blue-300">
+                              <span>• Editado:</span>
+                              <span>{card.editedAt ? new Date(card.editedAt).toLocaleString('es-VE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : 'Registrado'}</span>
+                            </div>
+                          )}
+                          {card.isDocumented && (
+                            <div className="flex items-center justify-between text-amber-300">
+                              <span>• Archivado:</span>
+                              <span>{card.documentedAt ? new Date(card.documentedAt).toLocaleString('es-VE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : 'Registrado'}</span>
+                            </div>
+                          )}
+                          {card.isFinalized && (
+                            <div className="flex items-center justify-between text-emerald-300">
+                              <span>• Finalizado:</span>
+                              <span>{card.finalizedAt ? new Date(card.finalizedAt).toLocaleString('es-VE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : 'Registrado'}</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
+
+                    {/* Assigned Workers List */}
+                    {card.assignedWorkerIds && card.assignedWorkerIds.length > 0 && (
+                      <div className="flex items-center gap-1 flex-wrap pt-1">
+                        <span className="text-[10px] text-slate-500 font-bold">Personal:</span>
+                        {card.assignedWorkerIds.map(wId => {
+                          const w = workers.find(work => work.id === wId);
+                          if (!w) return null;
+                          return (
+                            <span key={wId} className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-cyan-300 border border-cyan-500/20">
+                              {w.name}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
 
                     {/* Footer: Assignee & Reassign Board */}
                     <div className="flex items-center justify-between pt-2 border-t border-white/5 text-[11px]">
                       <button
                         onClick={(e) => handleToggleSelfAssignment(card, e)}
-                        className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 ${
+                        className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 cursor-pointer ${
                           isSelfAssigned
                             ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                            : 'bg-slate-800 text-slate-300 border border-white/10'
+                            : 'bg-slate-800 text-slate-300 border border-white/10 hover:text-white'
                         }`}
                       >
                         <UserCheck className="w-3 h-3" />
@@ -1382,7 +1440,8 @@ export default function TaskManager({
                     <tr>
                       <th className="p-3">Título / Tarea</th>
                       <th className="p-3">Área / Tablero</th>
-                      <th className="p-3">Etapas Cumplidas</th>
+                      <th className="p-3">Personal Asignado</th>
+                      <th className="p-3">Etapas y Tiempos</th>
                       <th className="p-3">Duración Orig.</th>
                       <th className="p-3">Duración Edit.</th>
                       <th className="p-3">Tiempo Ahorrado</th>
@@ -1391,7 +1450,7 @@ export default function TaskManager({
                   <tbody className="divide-y divide-white/5 text-slate-300">
                     {reportMetrics.ingestadosEnPeriodo.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="p-6 text-center text-slate-500 italic">
+                        <td colSpan={7} className="p-6 text-center text-slate-500 italic">
                           No hay registros para la fecha o filtros seleccionados.
                         </td>
                       </tr>
@@ -1402,21 +1461,40 @@ export default function TaskManager({
                         const edit = parseDurationToSeconds(c.editedDuration);
                         const diff = Math.max(0, orig - edit);
 
+                        const assignedNames = (c.assignedWorkerIds || [])
+                          .map(wId => workers.find(w => w.id === wId)?.name)
+                          .filter(Boolean);
+
+                        const fmtTime = (isoStr?: string) => isoStr ? new Date(isoStr).toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit' }) : '';
+
                         return (
                           <tr key={c.id} className="hover:bg-slate-900/40">
-                            <td className="p-3 font-bold text-white">{c.title}</td>
-                            <td className="p-3 text-cyan-300">{bObj?.name || 'VTV'}</td>
+                            <td className="p-3 font-bold text-white max-w-[200px] truncate" title={c.title}>{c.title}</td>
+                            <td className="p-3 text-cyan-300 whitespace-nowrap">{bObj?.name || 'VTV'}</td>
                             <td className="p-3">
-                              <div className="flex items-center gap-1">
-                                {c.isIngested && <span className="px-1.5 py-0.5 rounded text-[9px] bg-cyan-500/20 text-cyan-300">Ingestado</span>}
-                                {c.isEdited && <span className="px-1.5 py-0.5 rounded text-[9px] bg-blue-500/20 text-blue-300">Editado</span>}
-                                {c.isDocumented && <span className="px-1.5 py-0.5 rounded text-[9px] bg-amber-500/20 text-amber-300">Archivado</span>}
-                                {c.isFinalized && <span className="px-1.5 py-0.5 rounded text-[9px] bg-emerald-500/20 text-emerald-300">Finalizado</span>}
+                              {assignedNames.length > 0 ? (
+                                <div className="flex flex-wrap gap-1">
+                                  {assignedNames.map((n, i) => (
+                                    <span key={i} className="px-1.5 py-0.5 rounded text-[9px] bg-slate-800 text-cyan-200 border border-white/5">
+                                      {n}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span className="text-slate-500 italic text-[10px]">Sin asignar</span>
+                              )}
+                            </td>
+                            <td className="p-3">
+                              <div className="flex flex-col gap-0.5 text-[10px] font-mono">
+                                {c.isIngested && <span className="text-cyan-300">Ingestado: {fmtTime(c.ingestedAt)}</span>}
+                                {c.isEdited && <span className="text-blue-300">Editado: {fmtTime(c.editedAt)}</span>}
+                                {c.isDocumented && <span className="text-amber-300">Archivado: {fmtTime(c.documentedAt)}</span>}
+                                {c.isFinalized && <span className="text-emerald-300">Finalizado: {fmtTime(c.finalizedAt)}</span>}
                               </div>
                             </td>
-                            <td className="p-3 font-mono text-cyan-300">{c.duration || '00:00:00'}</td>
-                            <td className="p-3 font-mono text-blue-300">{c.editedDuration || '00:00:00'}</td>
-                            <td className="p-3 font-mono text-emerald-300 font-bold">{formatSecondsToHHMMSS(diff)}</td>
+                            <td className="p-3 font-mono text-cyan-300 whitespace-nowrap">{c.duration || '00:00:00'}</td>
+                            <td className="p-3 font-mono text-blue-300 whitespace-nowrap">{c.editedDuration || '00:00:00'}</td>
+                            <td className="p-3 font-mono text-emerald-300 font-bold whitespace-nowrap">{formatSecondsToHHMMSS(diff)}</td>
                           </tr>
                         );
                       })
@@ -1587,6 +1665,67 @@ export default function TaskManager({
                       <Crown className="w-3.5 h-3.5 text-emerald-400" />
                       <span>Finalizado</span>
                     </label>
+                  </div>
+                </div>
+
+                {/* Personal Asignado */}
+                <div className="space-y-2 p-3.5 rounded-xl bg-slate-950 border border-white/10">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-slate-300 uppercase flex items-center gap-1.5">
+                      <UserCheck className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Personal Asignado ({taskAssignedWorkerIds.length})</span>
+                    </label>
+                    {currentWorkerId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (taskAssignedWorkerIds.includes(currentWorkerId)) {
+                            setTaskAssignedWorkerIds(taskAssignedWorkerIds.filter(id => id !== currentWorkerId));
+                          } else {
+                            setTaskAssignedWorkerIds([...taskAssignedWorkerIds, currentWorkerId]);
+                          }
+                        }}
+                        className="text-[10px] font-bold text-cyan-400 hover:underline cursor-pointer"
+                      >
+                        {taskAssignedWorkerIds.includes(currentWorkerId) ? '- Quitarme a mí' : '+ Asignarme a mí'}
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
+                    {workers.length === 0 ? (
+                      <p className="text-xs text-slate-500 italic">No hay colaboradores registrados en el sistema.</p>
+                    ) : (
+                      workers.map(w => {
+                        const isAssigned = taskAssignedWorkerIds.includes(w.id);
+                        const divName = divisions.find(d => d.id === w.divisionId)?.name || 'Sin división';
+                        return (
+                          <button
+                            key={w.id}
+                            type="button"
+                            onClick={() => {
+                              if (isAssigned) {
+                                setTaskAssignedWorkerIds(taskAssignedWorkerIds.filter(id => id !== w.id));
+                              } else {
+                                setTaskAssignedWorkerIds([...taskAssignedWorkerIds, w.id]);
+                              }
+                            }}
+                            className={`w-full text-left p-2 rounded-lg text-xs font-medium transition-all flex items-center justify-between cursor-pointer border ${
+                              isAssigned
+                                ? 'bg-cyan-500/20 text-cyan-200 border-cyan-500/40 font-bold'
+                                : 'bg-slate-900 text-slate-400 border-white/5 hover:border-white/20'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className={`w-2 h-2 rounded-full ${isAssigned ? 'bg-cyan-400' : 'bg-slate-600'}`} />
+                              <span>{w.name}</span>
+                              <span className="text-[10px] text-slate-500">({w.cargo} - {divName})</span>
+                            </div>
+                            {isAssigned && <Check className="w-3.5 h-3.5 text-cyan-400" />}
+                          </button>
+                        );
+                      })
+                    )}
                   </div>
                 </div>
 
