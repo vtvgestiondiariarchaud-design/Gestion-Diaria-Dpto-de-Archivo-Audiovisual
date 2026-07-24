@@ -128,9 +128,11 @@ export interface TaskCard {
   isFinalized?: boolean;
   finalizedAt?: string;
 
-  // Clasificación para Otras Solicitudes y Logros
+  // Clasificación para Otras Solicitudes, Logros y Material Descartado
   isOtherRequest?: boolean;
   isDepartmentAchievement?: boolean; // Determina si la tarea cuenta como logro del departamento (excluye gerencia y administración)
+  isDiscarded?: boolean; // Determina si el material fue descartado (sigue contando horas ingestadas pero no en archivados)
+  discardedAt?: string;
 
   history?: TaskHistoryItem[];
 }

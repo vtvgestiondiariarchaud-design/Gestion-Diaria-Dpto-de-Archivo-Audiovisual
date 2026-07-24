@@ -180,6 +180,8 @@ create table if not exists task_cards (
   finalized_at text,
   is_other_request boolean default false,
   is_department_achievement boolean default false,
+  is_discarded boolean default false,
+  discarded_at text,
   created_by_worker_id text,
   created_by_name text,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
@@ -208,6 +210,8 @@ alter table task_cards add column if not exists is_finalized boolean default fal
 alter table task_cards add column if not exists finalized_at text;
 alter table task_cards add column if not exists is_other_request boolean default false;
 alter table task_cards add column if not exists is_department_achievement boolean default false;
+alter table task_cards add column if not exists is_discarded boolean default false;
+alter table task_cards add column if not exists discarded_at text;
 alter table task_cards add column if not exists created_by_worker_id text;
 alter table task_cards add column if not exists created_by_name text;
 
@@ -1034,7 +1038,9 @@ export const db = {
             isFinalized: Boolean(c.is_finalized),
             finalizedAt: c.finalized_at || undefined,
             isOtherRequest: Boolean(c.is_other_request),
-            isDepartmentAchievement: Boolean(c.is_department_achievement)
+            isDepartmentAchievement: Boolean(c.is_department_achievement),
+            isDiscarded: Boolean(c.is_discarded),
+            discardedAt: c.discarded_at || undefined
           }));
           setSupabaseConnectionStatus('connected');
           localStorage.setItem('vtv_task_cards', JSON.stringify(supabaseCards));
@@ -1096,6 +1102,8 @@ export const db = {
         finalized_at: card.finalizedAt || null,
         is_other_request: Boolean(card.isOtherRequest),
         is_department_achievement: Boolean(card.isDepartmentAchievement),
+        is_discarded: Boolean(card.isDiscarded),
+        discarded_at: card.discardedAt || null,
         created_by_worker_id: card.createdByWorkerId || null,
         created_by_name: card.createdByName || 'Sistema',
         created_at: card.createdAt || new Date().toISOString()

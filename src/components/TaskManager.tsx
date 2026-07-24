@@ -112,8 +112,8 @@ export default function TaskManager({
   const canManageTasks = isGerenciaUser || isDivisionHeadUser;
   const currentWorkerId = currentSession?.userId;
 
-  // Active Main Navigation Tab ('produccion' | 'solicitudes' | 'finalizadas' | 'reportes')
-  const [activeMainTab, setActiveMainTab] = useState<'produccion' | 'solicitudes' | 'finalizadas' | 'reportes'>('produccion');
+  // Active Main Navigation Tab ('produccion' | 'solicitudes' | 'finalizadas' | 'descartados' | 'reportes')
+  const [activeMainTab, setActiveMainTab] = useState<'produccion' | 'solicitudes' | 'finalizadas' | 'descartados' | 'reportes'>('produccion');
 
   // Selected Board Filter within Producción ('todos' | 'board_ingesta' | 'board_prensa' | 'board_programacion')
   const [selectedBoardId, setSelectedBoardId] = useState<string>('todos');
@@ -164,6 +164,8 @@ export default function TaskManager({
   const [taskIsFinalized, setTaskIsFinalized] = useState(false);
   const [taskFinalizedAt, setTaskFinalizedAt] = useState<string | undefined>(undefined);
   const [taskIsDepartmentAchievement, setTaskIsDepartmentAchievement] = useState<boolean>(false);
+  const [taskIsDiscarded, setTaskIsDiscarded] = useState<boolean>(false);
+  const [taskDiscardedAt, setTaskDiscardedAt] = useState<string | undefined>(undefined);
 
   // Report Generator Filters State
   const [reportType, setReportType] = useState<'diario' | 'mensual' | 'anual'>('diario');
@@ -250,6 +252,9 @@ export default function TaskManager({
   // Filtered cards for active Production Tab (Ingesta, Prensa, Programación)
   const productionCards = useMemo(() => {
     return sortedCardsDescending.filter(card => {
+      // 0. Hide discarded tasks
+      if (card.isDiscarded) return false;
+
       // 1. Hide finalized tasks (they belong to Tareas Finalizadas tab)
       if (card.isFinalized) return false;
 
@@ -287,6 +292,9 @@ export default function TaskManager({
   // Filtered cards for "Otras Solicitudes" Tab (Includes Administración and general requests)
   const otherRequestsCards = useMemo(() => {
     return sortedCardsDescending.filter(card => {
+      // 0. Hide discarded tasks
+      if (card.isDiscarded) return false;
+
       // 1. Hide finalized tasks
       if (card.isFinalized) return false;
 
@@ -317,8 +325,33 @@ export default function TaskManager({
   // Filtered cards for "Tareas Finalizadas" Tab (Hidden section / Apartado)
   const finalizedCards = useMemo(() => {
     return sortedCardsDescending.filter(card => {
+      // Hide discarded tasks
+      if (card.isDiscarded) return false;
+
       // Must be finalized
       if (!card.isFinalized) return false;
+
+      // Privacy check
+      if (card.isGerenciaOnly && !isGerenciaUser) return false;
+
+      // Search query
+      if (searchQuery.trim() !== '') {
+        const q = searchQuery.toLowerCase();
+        return card.title.toLowerCase().includes(q) || card.description.toLowerCase().includes(q);
+      }
+
+      // Date filter
+      if (dateFilter && !cardMatchesDateFilter(card, dateFilter)) return false;
+
+      return true;
+    });
+  }, [sortedCardsDescending, searchQuery, dateFilter, isGerenciaUser]);
+
+  // Filtered cards for "Material Descartado" Tab
+  const discardedCards = useMemo(() => {
+    return sortedCardsDescending.filter(card => {
+      // Must be discarded
+      if (!card.isDiscarded) return false;
 
       // Privacy check
       if (card.isGerenciaOnly && !isGerenciaUser) return false;
@@ -397,8 +430,11 @@ export default function TaskManager({
       return sum + diff;
     }, 0);
 
-    // 3. Documentados en el período
-    const documentadosEnPeriodo = baseCards.filter(c => c.isDocumented && matchesPeriod(c.documentedAt || c.createdAt));
+    // 3. Documentados ("Por Archivar") en el período (excluye material descartado)
+    const documentadosEnPeriodo = baseCards.filter(c => c.isDocumented && !c.isDiscarded && matchesPeriod(c.documentedAt || c.createdAt));
+
+    // Materiales Descartados en el período
+    const descartadosEnPeriodo = baseCards.filter(c => c.isDiscarded && matchesPeriod(c.discardedAt || c.createdAt));
 
     // 4. Finalizados en el período
     const finalizadosEnPeriodo = baseCards.filter(c => c.isFinalized && matchesPeriod(c.finalizedAt || c.createdAt));
@@ -483,11 +519,13 @@ export default function TaskManager({
       editadosCount: editadosEnPeriodo.length,
       tiempoAhorradoHHMMSS: formatSecondsToHHMMSS(tiempoAhorradoSeconds),
       documentadosCount: documentadosEnPeriodo.length,
+      descartadosCount: descartadosEnPeriodo.length,
       finalizadosCount: finalizadosEnPeriodo.length,
       logrosOtrasSolicitudesCount: departmentAchievements.length,
       ingestadosEnPeriodo,
       editadosEnPeriodo,
       documentadosEnPeriodo,
+      descartadosEnPeriodo,
       finalizadosEnPeriodo,
       departmentAchievements,
       monthlyCalendarDays,
@@ -508,7 +546,7 @@ export default function TaskManager({
       if (!canManageTasks) {
         onAddNotificationToast(
           'Acceso Restringido',
-          'Solo los Jefes de División o Coordinadores pueden autorizar y finalizar la tarea.',
+          'Solo los Jefes de División, Coordinadores o Gerencia pueden autorizar, finalizar o desmarcar la tarea.',
           'info'
         );
         return;
@@ -521,6 +559,14 @@ export default function TaskManager({
       }
     } else if (stage === 'ingested') {
       const nextVal = !card.isIngested;
+      if (!nextVal && !canManageTasks) {
+        onAddNotificationToast(
+          'Acceso Restringido',
+          'Solo los Jefes de División, Coordinadores o Gerencia pueden desmarcar una etapa completada.',
+          'info'
+        );
+        return;
+      }
       updatedCard.isIngested = nextVal;
       updatedCard.ingestedAt = nextVal ? (card.ingestedAt || nowIso) : undefined;
       if (nextVal) {
@@ -528,6 +574,14 @@ export default function TaskManager({
       }
     } else if (stage === 'edited') {
       const nextVal = !card.isEdited;
+      if (!nextVal && !canManageTasks) {
+        onAddNotificationToast(
+          'Acceso Restringido',
+          'Solo los Jefes de División, Coordinadores o Gerencia pueden desmarcar una etapa completada.',
+          'info'
+        );
+        return;
+      }
       updatedCard.isEdited = nextVal;
       updatedCard.editedAt = nextVal ? (card.editedAt || nowIso) : undefined;
       if (nextVal) {
@@ -535,11 +589,31 @@ export default function TaskManager({
       }
     } else if (stage === 'documented') {
       const nextVal = !card.isDocumented;
+      if (!nextVal && !canManageTasks) {
+        onAddNotificationToast(
+          'Acceso Restringido',
+          'Solo los Jefes de División, Coordinadores o Gerencia pueden desmarcar una etapa completada.',
+          'info'
+        );
+        return;
+      }
       updatedCard.isDocumented = nextVal;
       updatedCard.documentedAt = nextVal ? (card.documentedAt || nowIso) : undefined;
       if (nextVal) {
         updatedCard.status = 'Archivando' as any;
       }
+    } else if (stage === 'discarded') {
+      const nextVal = !card.isDiscarded;
+      if (!nextVal && !canManageTasks) {
+        onAddNotificationToast(
+          'Acceso Restringido',
+          'Solo los Jefes de División, Coordinadores o Gerencia pueden restaurar o desmarcar el material descartado.',
+          'info'
+        );
+        return;
+      }
+      updatedCard.isDiscarded = nextVal;
+      updatedCard.discardedAt = nextVal ? (card.discardedAt || nowIso) : undefined;
     }
 
     onSaveCard(updatedCard);
@@ -565,6 +639,17 @@ export default function TaskManager({
   const handleToggleChecklistItemOnCard = (card: TaskCard, itemId: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     const currentList = card.checklist || [];
+    const targetItem = currentList.find(i => i.id === itemId);
+
+    if (targetItem?.completed && !canManageTasks) {
+      onAddNotificationToast(
+        'Acceso Restringido',
+        'Solo los Jefes de División, Coordinadores o Gerencia pueden desmarcar ítems completados.',
+        'info'
+      );
+      return;
+    }
+
     const updatedList = currentList.map(item =>
       item.id === itemId ? { ...item, completed: !item.completed } : item
     );
@@ -610,6 +695,8 @@ export default function TaskManager({
     setTaskIsFinalized(false);
     setTaskFinalizedAt(undefined);
     setTaskIsDepartmentAchievement(false);
+    setTaskIsDiscarded(false);
+    setTaskDiscardedAt(undefined);
 
     const today = new Date().toISOString().split('T')[0];
     setTaskStartDate(today);
@@ -657,6 +744,8 @@ export default function TaskManager({
     setTaskIsFinalized(Boolean(card.isFinalized));
     setTaskFinalizedAt(card.finalizedAt);
     setTaskIsDepartmentAchievement(Boolean(card.isDepartmentAchievement));
+    setTaskIsDiscarded(Boolean(card.isDiscarded));
+    setTaskDiscardedAt(card.discardedAt);
 
     setShowTaskModal(true);
 
@@ -699,6 +788,8 @@ export default function TaskManager({
       editedAt: isOther ? undefined : (taskIsEdited ? (taskEditedAt || nowIso) : undefined),
       isDocumented: isOther ? false : taskIsDocumented,
       documentedAt: isOther ? undefined : (taskIsDocumented ? (taskDocumentedAt || nowIso) : undefined),
+      isDiscarded: taskIsDiscarded,
+      discardedAt: taskIsDiscarded ? (taskDiscardedAt || nowIso) : undefined,
       isFinalized: taskIsFinalized,
       finalizedAt: taskIsFinalized ? (taskFinalizedAt || nowIso) : undefined,
       startDate: taskStartDate,
@@ -709,6 +800,33 @@ export default function TaskManager({
       createdByWorkerId: editingCard ? editingCard.createdByWorkerId : currentSession?.userId,
       createdByName: editingCard ? editingCard.createdByName : currentSession?.name
     };
+
+    if (editingCard && !canManageTasks) {
+      if (editingCard.isIngested && !cardData.isIngested) {
+        onAddNotificationToast('Acceso Restringido', 'Solo Jefes, Coordinadores o Gerencia pueden desmarcar la etapa de Ingesta.', 'info');
+        return;
+      }
+      if (editingCard.isEdited && !cardData.isEdited) {
+        onAddNotificationToast('Acceso Restringido', 'Solo Jefes, Coordinadores o Gerencia pueden desmarcar la etapa de Edición.', 'info');
+        return;
+      }
+      if (editingCard.isDocumented && !cardData.isDocumented) {
+        onAddNotificationToast('Acceso Restringido', 'Solo Jefes, Coordinadores o Gerencia pueden desmarcar la etapa de Por Archivar.', 'info');
+        return;
+      }
+      if (editingCard.isDiscarded && !cardData.isDiscarded) {
+        onAddNotificationToast('Acceso Restringido', 'Solo Jefes, Coordinadores o Gerencia pueden restaurar el material descartado.', 'info');
+        return;
+      }
+      if (editingCard.isFinalized && !cardData.isFinalized) {
+        onAddNotificationToast('Acceso Restringido', 'Solo Jefes, Coordinadores o Gerencia pueden desmarcar la etapa de Finalizado.', 'info');
+        return;
+      }
+      if (editingCard.isDepartmentAchievement && !cardData.isDepartmentAchievement) {
+        onAddNotificationToast('Acceso Restringido', 'Solo Jefes, Coordinadores o Gerencia pueden desmarcar un Logro del Departamento.', 'info');
+        return;
+      }
+    }
 
     onSaveCard(cardData);
     setShowTaskModal(false);
@@ -765,6 +883,16 @@ export default function TaskManager({
   const handleToggleDepartmentAchievement = (card: TaskCard, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     const nextVal = !card.isDepartmentAchievement;
+
+    if (!nextVal && !canManageTasks) {
+      onAddNotificationToast(
+        'Acceso Restringido',
+        'Solo los Jefes de División, Coordinadores o Gerencia pueden desmarcar un Logro del Departamento.',
+        'info'
+      );
+      return;
+    }
+
     const updatedCard: TaskCard = {
       ...card,
       isDepartmentAchievement: nextVal
@@ -1131,7 +1259,7 @@ export default function TaskManager({
           <Layers className="w-4 h-4 text-cyan-400" />
           <span>Producción Audiovisual</span>
           <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-cyan-500/10 text-cyan-300 font-mono font-bold">
-            {cards.filter(c => !c.isFinalized && !c.isOtherRequest && c.boardId !== 'board_otras_solicitudes' && c.boardId !== 'board_administracion').length}
+            {cards.filter(c => !c.isDiscarded && !c.isFinalized && !c.isOtherRequest && c.boardId !== 'board_otras_solicitudes' && c.boardId !== 'board_administracion').length}
           </span>
         </button>
 
@@ -1146,7 +1274,7 @@ export default function TaskManager({
           <Award className="w-4 h-4 text-amber-400" />
           <span>Otras Solicitudes</span>
           <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-amber-500/10 text-amber-300 font-mono font-bold">
-            {cards.filter(c => !c.isFinalized && (c.isOtherRequest || c.boardId === 'board_otras_solicitudes' || c.boardId === 'board_administracion')).length}
+            {cards.filter(c => !c.isDiscarded && !c.isFinalized && (c.isOtherRequest || c.boardId === 'board_otras_solicitudes' || c.boardId === 'board_administracion')).length}
           </span>
         </button>
 
@@ -1159,9 +1287,24 @@ export default function TaskManager({
           }`}
         >
           <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-          <span>Tareas Finalizadas (Oculto)</span>
+          <span>Tareas Finalizadas</span>
           <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-emerald-500/10 text-emerald-300 font-mono font-bold">
-            {cards.filter(c => c.isFinalized).length}
+            {cards.filter(c => !c.isDiscarded && c.isFinalized).length}
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActiveMainTab('descartados')}
+          className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+            activeMainTab === 'descartados'
+              ? 'bg-gradient-to-r from-red-500/20 to-rose-500/20 text-red-300 border border-red-500/40 shadow-sm'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+          }`}
+        >
+          <Trash2 className="w-4 h-4 text-red-400" />
+          <span>Material Descartado</span>
+          <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-red-500/10 text-red-300 font-mono font-bold">
+            {cards.filter(c => c.isDiscarded).length}
           </span>
         </button>
 
@@ -1196,22 +1339,59 @@ export default function TaskManager({
               </button>
 
               {productionBoards.map(b => (
-                <button
+                <div
                   key={b.id}
-                  onClick={() => setSelectedBoardId(b.id)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 border ${
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 border ${
                     selectedBoardId === b.id
                       ? 'bg-cyan-500/20 text-white border-cyan-500/40'
                       : 'bg-slate-800/50 text-slate-300 border-white/5 hover:border-white/20'
                   }`}
                 >
-                  <span className="w-2 h-2 rounded-full bg-cyan-400" />
-                  <span>{b.name}</span>
-                  <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-950/60 text-slate-400 font-mono">
-                    {productionCards.filter(c => c.boardId === b.id).length}
-                  </span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedBoardId(b.id)}
+                    className="flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <span className="w-2 h-2 rounded-full bg-cyan-400" />
+                    <span>{b.name}</span>
+                    <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-950/60 text-slate-400 font-mono">
+                      {productionCards.filter(c => c.boardId === b.id).length}
+                    </span>
+                  </button>
+
+                  {/* Permitir borrar listas SOLO al Superadmin */}
+                  {currentSession?.role === 'superadmin' && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (window.confirm(`¿Estás seguro de eliminar la lista "${b.name}"? Esta acción desasociará las tareas asociadas a esta lista.`)) {
+                          onDeleteBoard(b.id);
+                          if (selectedBoardId === b.id) setSelectedBoardId('todos');
+                          onAddNotificationToast('Lista Eliminada', `La lista "${b.name}" ha sido eliminada por el Superadmin.`, 'info');
+                        }
+                      }}
+                      title={`Eliminar lista "${b.name}" (Solo Superadmin)`}
+                      className="ml-1 p-1 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 rounded transition-all cursor-pointer"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
               ))}
+
+              {/* Botón Crear Nueva Lista para Superadmin / Gerencia */}
+              {canManageTasks && (
+                <button
+                  type="button"
+                  onClick={() => setShowBoardModal(true)}
+                  className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-800/80 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30 hover:border-cyan-500/50 transition-all whitespace-nowrap cursor-pointer flex items-center gap-1"
+                  title="Crear Nueva Lista de Producción"
+                >
+                  <FolderPlus className="w-3.5 h-3.5" />
+                  <span className="hidden md:inline">Nueva Lista</span>
+                </button>
+              )}
             </div>
 
             {/* Search, Date Filter & My Tasks */}
@@ -1379,7 +1559,7 @@ export default function TaskManager({
                           <span>Editado</span>
                         </button>
 
-                        {/* 3. Archivado/Documentado */}
+                        {/* 3. Por Archivar */}
                         <button
                           onClick={(e) => handleToggleStage(card, 'documented', e)}
                           className={`px-2 py-1.5 rounded-lg text-[11px] font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer border ${
@@ -1389,7 +1569,7 @@ export default function TaskManager({
                           }`}
                         >
                           <Archive className={`w-3 h-3 ${card.isDocumented ? 'text-amber-400' : 'opacity-30'}`} />
-                          <span>Archivado</span>
+                          <span>Por Archivar</span>
                         </button>
 
                         {/* 4. Finalizado (Solo Jefes) */}
@@ -1409,10 +1589,24 @@ export default function TaskManager({
                           )}
                           <span>Finalizar</span>
                         </button>
+
+                        {/* 5. Descartar Material (Rojo Tenue) */}
+                        <button
+                          onClick={(e) => handleToggleStage(card, 'discarded', e)}
+                          className={`px-2 py-1.5 rounded-lg text-[11px] font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer border col-span-2 ${
+                            card.isDiscarded
+                              ? 'bg-red-500/20 text-red-300 border-red-500/40 shadow-[0_0_8px_rgba(239,68,68,0.2)]'
+                              : 'bg-slate-950/60 text-slate-400 hover:text-red-300 border-white/5 hover:border-red-500/30'
+                          }`}
+                          title="Descartar este material (se moverá a Material Descartado)"
+                        >
+                          <Trash2 className="w-3 h-3 text-red-400" />
+                          <span>Descartar Material</span>
+                        </button>
                       </div>
 
                       {/* Timestamps breakdown if any stage is completed */}
-                      {(card.isIngested || card.isEdited || card.isDocumented || card.isFinalized) && (
+                      {(card.isIngested || card.isEdited || card.isDocumented || card.isDiscarded || card.isFinalized) && (
                         <div className="p-2 rounded-xl bg-slate-950/80 border border-white/5 text-[10px] space-y-0.5 font-mono">
                           <div className="text-[9px] uppercase font-bold text-slate-500 font-sans mb-0.5">Registro de Marcas de Tiempo:</div>
                           {card.isIngested && (
@@ -1429,8 +1623,14 @@ export default function TaskManager({
                           )}
                           {card.isDocumented && (
                             <div className="flex items-center justify-between text-amber-300">
-                              <span>• Archivado:</span>
+                              <span>• Por Archivar:</span>
                               <span>{card.documentedAt ? new Date(card.documentedAt).toLocaleString('es-VE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : 'Registrado'}</span>
+                            </div>
+                          )}
+                          {card.isDiscarded && (
+                            <div className="flex items-center justify-between text-red-300">
+                              <span>• Descartado:</span>
+                              <span>{card.discardedAt ? new Date(card.discardedAt).toLocaleString('es-VE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : 'Registrado'}</span>
                             </div>
                           )}
                           {card.isFinalized && (
@@ -1849,6 +2049,131 @@ export default function TaskManager({
               })
             )}
           </div>
+        </div>
+      )}
+
+      {/* TAB 4: MATERIAL DESCARTADO */}
+      {activeMainTab === 'descartados' && (
+        <div className="space-y-4">
+          <div className="glass-card p-4 rounded-xl border border-red-500/20 bg-slate-900/60 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <Trash2 className="w-4 h-4 text-red-400" />
+                <span>Material Audiovisual Descartado</span>
+              </h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Materiales que fueron marcados como descartados. Siguen sumando en las horas ingestadas totales pero no en archivados.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="px-3 py-1 rounded-lg text-xs font-mono font-bold bg-red-500/10 text-red-300 border border-red-500/30">
+                Total: {discardedCards.length} descartados
+              </span>
+            </div>
+          </div>
+
+          {discardedCards.length === 0 ? (
+            <div className="glass-card p-12 text-center rounded-2xl border border-white/5 bg-slate-900/40">
+              <Trash2 className="w-12 h-12 text-slate-600 mx-auto mb-3" />
+              <h3 className="text-sm font-bold text-slate-300">No hay material descartado</h3>
+              <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+                Los materiales que sean marcados como descartados aparecerán en esta lista para su consulta o eventual restauración.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {discardedCards.map(card => {
+                const bObj = productionBoards.find(b => b.id === card.boardId);
+                return (
+                  <motion.div
+                    key={card.id}
+                    layout
+                    initial={{ opacity: 0, scale: 0.98 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="glass-card p-4 rounded-2xl border border-red-500/20 bg-slate-900/80 hover:border-red-500/40 transition-all space-y-3 relative group"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-red-500/20 text-red-300 border border-red-500/30">
+                          Descartado
+                        </span>
+                        <h3 className="text-sm font-bold text-white mt-1.5 line-clamp-2">{card.title}</h3>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEditTask(card)}
+                        className="p-1.5 text-slate-400 hover:text-white rounded-lg bg-slate-800 hover:bg-slate-700 transition-all cursor-pointer"
+                        title="Ver / Editar Tarea"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    {card.description && (
+                      <p className="text-xs text-slate-300 line-clamp-2 bg-slate-950/60 p-2 rounded-lg border border-white/5">
+                        {card.description}
+                      </p>
+                    )}
+
+                    <div className="p-2.5 rounded-xl bg-slate-950/80 border border-white/5 space-y-1 text-[11px] text-slate-300 font-mono">
+                      <div className="flex justify-between">
+                        <span className="text-slate-400 font-sans">Área:</span>
+                        <span className="font-bold text-cyan-300 font-sans">{bObj?.name || 'Producción'}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-400 font-sans">Duración Ingestada:</span>
+                        <span className="text-cyan-400 font-bold">{card.duration || '00:00:00'}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-400 font-sans">Descartado el:</span>
+                        <span className="text-red-300 font-bold">
+                          {card.discardedAt ? new Date(card.discardedAt).toLocaleDateString('es-VE') : 'Fecha N/A'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-2 border-t border-white/10 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!canManageTasks) {
+                            onAddNotificationToast('Acceso Restringido', 'Solo los Jefes de División o Gerencia pueden restaurar el material descartado.', 'info');
+                            return;
+                          }
+                          onSaveCard({
+                            ...card,
+                            isDiscarded: false,
+                            discardedAt: undefined
+                          });
+                          onAddNotificationToast('Material Restaurado', `El material "${card.title}" ha sido restaurado al flujo de producción.`, 'success');
+                        }}
+                        className="w-full py-1.5 px-3 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <ArrowRight className="w-3.5 h-3.5 rotate-180" />
+                        <span>Restaurar al Flujo</span>
+                      </button>
+
+                      {canManageTasks && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (window.confirm(`¿Estás seguro de eliminar definitivamente el registro "${card.title}"?`)) {
+                              onDeleteCard(card.id);
+                              onAddNotificationToast('Registro Eliminado', 'Se eliminó el material descartado.', 'info');
+                            }
+                          }}
+                          className="p-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 text-xs font-bold transition-all cursor-pointer"
+                          title="Eliminar definitivamente"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -2349,7 +2674,17 @@ export default function TaskManager({
                     </div>
                     <button
                       type="button"
-                      onClick={() => setTaskIsDepartmentAchievement(!taskIsDepartmentAchievement)}
+                      onClick={() => {
+                        if (taskIsDepartmentAchievement && !canManageTasks) {
+                          onAddNotificationToast(
+                            'Acceso Restringido',
+                            'Solo los Jefes de División, Coordinadores o Gerencia pueden desmarcar un Logro del Departamento.',
+                            'info'
+                          );
+                          return;
+                        }
+                        setTaskIsDepartmentAchievement(!taskIsDepartmentAchievement);
+                      }}
                       className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all border cursor-pointer ${
                         taskIsDepartmentAchievement
                           ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-[0_0_10px_rgba(245,158,11,0.2)]'
@@ -2443,6 +2778,14 @@ export default function TaskManager({
                                 type="checkbox"
                                 checked={item.completed}
                                 onChange={() => {
+                                  if (item.completed && !canManageTasks) {
+                                    onAddNotificationToast(
+                                      'Acceso Restringido',
+                                      'Solo los Jefes de División, Coordinadores o Gerencia pueden desmarcar ítems completados.',
+                                      'info'
+                                    );
+                                    return;
+                                  }
                                   setTaskChecklist(taskChecklist.map(i => i.id === item.id ? { ...i, completed: !i.completed } : i));
                                 }}
                                 className="rounded border-white/20 text-amber-500 focus:ring-amber-500 cursor-pointer"
@@ -2495,6 +2838,14 @@ export default function TaskManager({
                               checked={taskIsIngested}
                               onChange={(e) => {
                                 const checked = e.target.checked;
+                                if (!checked && !canManageTasks) {
+                                  onAddNotificationToast(
+                                    'Acceso Restringido',
+                                    'Solo los Jefes de División, Coordinadores o Gerencia pueden desmarcar la etapa de Ingesta.',
+                                    'info'
+                                  );
+                                  return;
+                                }
                                 setTaskIsIngested(checked);
                                 if (checked && !taskIngestedAt) {
                                   setTaskIngestedAt(new Date().toISOString());
@@ -2537,6 +2888,14 @@ export default function TaskManager({
                               checked={taskIsEdited}
                               onChange={(e) => {
                                 const checked = e.target.checked;
+                                if (!checked && !canManageTasks) {
+                                  onAddNotificationToast(
+                                    'Acceso Restringido',
+                                    'Solo los Jefes de División, Coordinadores o Gerencia pueden desmarcar la etapa de Edición.',
+                                    'info'
+                                  );
+                                  return;
+                                }
                                 setTaskIsEdited(checked);
                                 if (checked && !taskEditedAt) {
                                   setTaskEditedAt(new Date().toISOString());
@@ -2570,7 +2929,7 @@ export default function TaskManager({
                         )}
                       </div>
 
-                      {/* Stage 3: Archivado */}
+                      {/* Stage 3: Por Archivar */}
                       <div className={`p-3 rounded-xl border space-y-2 transition-all ${taskIsDocumented ? 'bg-amber-950/30 border-amber-500/40' : 'bg-slate-900/50 border-white/5 opacity-70'}`}>
                         <div className="flex items-center justify-between">
                           <label className="flex items-center gap-2 cursor-pointer font-bold text-xs text-amber-300">
@@ -2579,6 +2938,14 @@ export default function TaskManager({
                               checked={taskIsDocumented}
                               onChange={(e) => {
                                 const checked = e.target.checked;
+                                if (!checked && !canManageTasks) {
+                                  onAddNotificationToast(
+                                    'Acceso Restringido',
+                                    'Solo los Jefes de División, Coordinadores o Gerencia pueden desmarcar la etapa de Por Archivar.',
+                                    'info'
+                                  );
+                                  return;
+                                }
                                 setTaskIsDocumented(checked);
                                 if (checked && !taskDocumentedAt) {
                                   setTaskDocumentedAt(new Date().toISOString());
@@ -2589,14 +2956,14 @@ export default function TaskManager({
                               className="rounded border-white/20 text-amber-500 focus:ring-amber-500 cursor-pointer"
                             />
                             <Archive className="w-3.5 h-3.5" />
-                            <span>Archivado</span>
+                            <span>Por Archivar</span>
                           </label>
                           {taskIsDocumented && <span className="text-[9px] font-bold px-1.5 py-0.5 bg-amber-500/20 text-amber-300 rounded">Completado</span>}
                         </div>
 
                         {taskIsDocumented && (
                           <div>
-                            <label className="text-[10px] text-slate-400 font-medium block mb-1">Fecha y Hora de Archivado:</label>
+                            <label className="text-[10px] text-slate-400 font-medium block mb-1">Fecha y Hora de Por Archivar:</label>
                             <input
                               type="datetime-local"
                               disabled={!canManageTasks}
@@ -2608,6 +2975,59 @@ export default function TaskManager({
                               }}
                               className={`w-full bg-slate-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-amber-200 font-mono focus:outline-none focus:border-amber-500 ${!canManageTasks ? 'opacity-70 cursor-not-allowed bg-slate-900' : 'cursor-pointer'}`}
                             />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Estatus Especial: Descartar Material */}
+                      <div className={`p-3 rounded-xl border space-y-2 transition-all ${taskIsDiscarded ? 'bg-red-950/40 border-red-500/50' : 'bg-slate-900/50 border-white/5 opacity-70'}`}>
+                        <div className="flex items-center justify-between">
+                          <label className="flex items-center gap-2 cursor-pointer font-bold text-xs text-red-300">
+                            <input
+                              type="checkbox"
+                              checked={taskIsDiscarded}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                if (!checked && !canManageTasks) {
+                                  onAddNotificationToast(
+                                    'Acceso Restringido',
+                                    'Solo los Jefes de División, Coordinadores o Gerencia pueden restaurar el material descartado.',
+                                    'info'
+                                  );
+                                  return;
+                                }
+                                setTaskIsDiscarded(checked);
+                                if (checked && !taskDiscardedAt) {
+                                  setTaskDiscardedAt(new Date().toISOString());
+                                } else if (!checked) {
+                                  setTaskDiscardedAt(undefined);
+                                }
+                              }}
+                              className="rounded border-white/20 text-red-500 focus:ring-red-500 cursor-pointer"
+                            />
+                            <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                            <span>Descartar Material</span>
+                          </label>
+                          {taskIsDiscarded && <span className="text-[9px] font-bold px-1.5 py-0.5 bg-red-500/20 text-red-300 border border-red-500/30 rounded">Descartado</span>}
+                        </div>
+
+                        {taskIsDiscarded && (
+                          <div>
+                            <label className="text-[10px] text-slate-400 font-medium block mb-1">Fecha y Hora de Descarte:</label>
+                            <input
+                              type="datetime-local"
+                              disabled={!canManageTasks}
+                              value={formatForDatetimeLocal(taskDiscardedAt)}
+                              onChange={(e) => {
+                                if (e.target.value) {
+                                  setTaskDiscardedAt(new Date(e.target.value).toISOString());
+                                }
+                              }}
+                              className={`w-full bg-slate-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-red-200 font-mono focus:outline-none focus:border-red-500 ${!canManageTasks ? 'opacity-70 cursor-not-allowed bg-slate-900' : 'cursor-pointer'}`}
+                            />
+                            <p className="text-[10px] text-slate-400 mt-1">
+                              * El material se moverá a la pestaña &quot;Material Descartado&quot;. Seguirá contando con sus horas ingestadas pero no en archivados.
+                            </p>
                           </div>
                         )}
                       </div>
