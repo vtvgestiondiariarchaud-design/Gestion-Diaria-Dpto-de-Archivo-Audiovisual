@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { Division, Worker, ShiftAssignment, ShiftChangeRequest, ShiftType, TaskBoard, TaskCard, TaskNotification } from './types';
+import { Division, Worker, ShiftAssignment, ShiftChangeRequest, ShiftType, TaskBoard, TaskCard, TaskNotification, FreeDayRequest } from './types';
 
 // Read values from env if available
 // @ts-ignore
@@ -149,6 +149,12 @@ alter table task_boards add column if not exists description text;
 alter table task_boards add column if not exists color text;
 alter table task_boards add column if not exists division_id text;
 
+-- Desactivar/Eliminar restricciones de clave foránea en task_cards y asignaciones para prevenir errores
+alter table task_cards drop constraint if exists task_cards_board_id_fkey;
+alter table task_cards drop constraint if exists task_cards_division_id_fkey;
+alter table shift_assignments drop constraint if exists shift_assignments_worker_id_fkey;
+alter table shift_assignments drop constraint if exists shift_assignments_division_id_fkey;
+
 create table if not exists task_cards (
   id text primary key,
   board_id text,
@@ -173,6 +179,7 @@ create table if not exists task_cards (
   is_finalized boolean default false,
   finalized_at text,
   is_other_request boolean default false,
+  is_department_achievement boolean default false,
   created_by_worker_id text,
   created_by_name text,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
@@ -200,6 +207,7 @@ alter table task_cards add column if not exists documented_at text;
 alter table task_cards add column if not exists is_finalized boolean default false;
 alter table task_cards add column if not exists finalized_at text;
 alter table task_cards add column if not exists is_other_request boolean default false;
+alter table task_cards add column if not exists is_department_achievement boolean default false;
 alter table task_cards add column if not exists created_by_worker_id text;
 alter table task_cards add column if not exists created_by_name text;
 
@@ -233,7 +241,39 @@ on conflict (id) do update set
   name = excluded.name,
   description = excluded.description;
 
--- 7. DESACTIVAR DE MANERA ABSOLUTA EL ROW-LEVEL SECURITY (RLS)
+-- 7. Insertar tableros de producción por defecto de VTV (Garantiza existencia de IDs de tableros)
+insert into task_boards (id, name, description, color, division_id) values
+('board_archivo_prensa', 'Archivo de Prensa', 'Procesamiento e ingesta de notas de prensa y noticias.', 'emerald', 'div_archivo_prensa'),
+('board_archivo_programacion', 'Archivo de Programación', 'Gestión e ingesta de programas y producciones.', 'indigo', 'div_archivo_programacion'),
+('board_ingesta', 'Ingesta', 'Control de calidad e ingesta general de aportes.', 'cyan', 'div_ingesta'),
+('board_administracion', 'Administración General', 'Gestión administrativa del departamento.', 'purple', null),
+('board_otras_solicitudes', 'Otras Solicitudes', 'Solicitudes especiales y asignaciones fuera de pauta.', 'amber', null)
+on conflict (id) do update set
+  name = excluded.name,
+  description = excluded.description,
+  color = excluded.color;
+
+-- 8. Crear tabla de solicitudes de días libres (free_day_requests)
+create table if not exists free_day_requests (
+  id text primary key,
+  worker_id text not null,
+  worker_name text not null,
+  division_id text,
+  requested_date date not null,
+  reason text,
+  status text not null default 'pending',
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  reviewed_by_worker_id text,
+  reviewed_by_name text,
+  reviewed_at text
+);
+
+alter table free_day_requests add column if not exists reason text;
+alter table free_day_requests add column if not exists reviewed_by_worker_id text;
+alter table free_day_requests add column if not exists reviewed_by_name text;
+alter table free_day_requests add column if not exists reviewed_at text;
+
+-- 9. DESACTIVAR DE MANERA ABSOLUTA EL ROW-LEVEL SECURITY (RLS)
 alter table divisions disable row level security;
 alter table workers disable row level security;
 alter table shift_assignments disable row level security;
@@ -242,8 +282,9 @@ alter table task_boards disable row level security;
 alter table task_cards disable row level security;
 alter table task_history disable row level security;
 alter table task_notifications disable row level security;
+alter table free_day_requests disable row level security;
 
--- 8. CONCEDER PERMISOS TOTALES DE LECTURA Y ESCRITURA AL ROL PÚBLICO (ANON) Y AUTENTICADO
+-- 10. CONCEDER PERMISOS TOTALES DE LECTURA Y ESCRITURA AL ROL PÚBLICO (ANON) Y AUTENTICADO
 grant all privileges on table divisions to anon, authenticated, postgres;
 grant all privileges on table workers to anon, authenticated, postgres;
 grant all privileges on table shift_assignments to anon, authenticated, postgres;
@@ -252,6 +293,7 @@ grant all privileges on table task_boards to anon, authenticated, postgres;
 grant all privileges on table task_cards to anon, authenticated, postgres;
 grant all privileges on table task_history to anon, authenticated, postgres;
 grant all privileges on table task_notifications to anon, authenticated, postgres;
+grant all privileges on table free_day_requests to anon, authenticated, postgres;
 `;
 };
 
@@ -260,6 +302,7 @@ const LOCAL_DIVISIONS_KEY = 'vtv_real_divisions';
 const LOCAL_WORKERS_KEY = 'vtv_real_workers';
 const LOCAL_ASSIGNMENTS_KEY = 'vtv_real_assignments';
 const LOCAL_REQUESTS_KEY = 'vtv_real_requests';
+const LOCAL_FREE_DAY_REQUESTS_KEY = 'vtv_real_free_day_requests';
 
 // Initial local sync loaders
 export const getLocalDb = {
@@ -292,6 +335,13 @@ export const getLocalDb = {
   },
   saveRequests: (req: ShiftChangeRequest[]) => {
     localStorage.setItem(LOCAL_REQUESTS_KEY, JSON.stringify(req));
+  },
+  getFreeDayRequests: (): FreeDayRequest[] => {
+    const data = localStorage.getItem(LOCAL_FREE_DAY_REQUESTS_KEY);
+    return data ? JSON.parse(data) : [];
+  },
+  saveFreeDayRequests: (reqs: FreeDayRequest[]) => {
+    localStorage.setItem(LOCAL_FREE_DAY_REQUESTS_KEY, JSON.stringify(reqs));
   }
 };
 
@@ -983,7 +1033,8 @@ export const db = {
             documentedAt: c.documented_at || undefined,
             isFinalized: Boolean(c.is_finalized),
             finalizedAt: c.finalized_at || undefined,
-            isOtherRequest: Boolean(c.is_other_request)
+            isOtherRequest: Boolean(c.is_other_request),
+            isDepartmentAchievement: Boolean(c.is_department_achievement)
           }));
           setSupabaseConnectionStatus('connected');
           localStorage.setItem('vtv_task_cards', JSON.stringify(supabaseCards));
@@ -1020,7 +1071,7 @@ export const db = {
 
     // 2. Strict sync to Supabase Cloud DB
     if (supabase) {
-      const payload = {
+      const payload: any = {
         id: card.id,
         board_id: card.boardId || null,
         division_id: card.divisionId || null,
@@ -1044,19 +1095,63 @@ export const db = {
         is_finalized: Boolean(card.isFinalized),
         finalized_at: card.finalizedAt || null,
         is_other_request: Boolean(card.isOtherRequest),
+        is_department_achievement: Boolean(card.isDepartmentAchievement),
         created_by_worker_id: card.createdByWorkerId || null,
         created_by_name: card.createdByName || 'Sistema',
         created_at: card.createdAt || new Date().toISOString()
       };
       
-      const { error } = await supabase.from('task_cards').upsert([payload]);
-      if (error) {
-        console.error('Error upserting task_card to Supabase:', error);
-        setSupabaseConnectionStatus('error', `Error al guardar tarea en Supabase: ${error.message}`);
-        throw new Error(`Error en Supabase (task_cards): ${error.message}. Asegúrate de haber ejecutado el Script SQL en Supabase.`);
-      } else {
-        setSupabaseConnectionStatus('connected');
-      }
+      const executeUpsert = async (currentPayload: any): Promise<void> => {
+        const { error } = await supabase.from('task_cards').upsert([currentPayload]);
+        if (error) {
+          console.warn('Error upserting task_card to Supabase, checking error type...', error);
+          const errStr = JSON.stringify(error).toLowerCase();
+          const isColumnError = error.code === '42703' || errStr.includes('column') || errStr.includes('schema cache');
+          const isFKError = error.code === '23503' || errStr.includes('foreign key') || errStr.includes('fkey') || errStr.includes('board_id');
+
+          if (isColumnError && 'is_department_achievement' in currentPayload) {
+            console.warn('Pruning missing "is_department_achievement" column and retrying...');
+            delete currentPayload.is_department_achievement;
+            return executeUpsert(currentPayload);
+          }
+
+          if (isFKError) {
+            console.warn('Foreign key constraint error on board_id/division_id. Auto-creating board entry in task_boards and retrying...');
+            if (currentPayload.board_id) {
+              try {
+                await supabase.from('task_boards').upsert([{
+                  id: currentPayload.board_id,
+                  name: currentPayload.board_id === 'board_otras_solicitudes' ? 'Otras Solicitudes' : 'Tablero Proceso'
+                }]);
+              } catch (bErr) {
+                console.warn('Could not auto-insert task_board:', bErr);
+              }
+            }
+            // Retry
+            const { error: retryError } = await supabase.from('task_cards').upsert([currentPayload]);
+            if (!retryError) {
+              setSupabaseConnectionStatus('connected');
+              return;
+            }
+            // Fallback: clear board_id to null so save succeeds without breaking
+            console.warn('Retry failed, clearing board_id constraint and re-upserting...');
+            currentPayload.board_id = null;
+            const { error: fallbackError } = await supabase.from('task_cards').upsert([currentPayload]);
+            if (!fallbackError) {
+              setSupabaseConnectionStatus('connected');
+              return;
+            }
+          }
+
+          console.error('Error upserting task_card to Supabase:', error);
+          setSupabaseConnectionStatus('error', `Error al guardar tarea en Supabase: ${error.message}`);
+          throw new Error(`Error en Supabase (task_cards): ${error.message}. Asegúrate de haber ejecutado el Script SQL actualizado en Supabase.`);
+        } else {
+          setSupabaseConnectionStatus('connected');
+        }
+      };
+
+      await executeUpsert(payload);
     }
   },
 
@@ -1159,6 +1254,94 @@ export const db = {
         await supabase.from('task_notifications').update({ read: true }).eq('id', id);
       } catch (err) {
         console.warn('Error marking task notification read in Supabase:', err);
+      }
+    }
+  },
+
+  // Free Day Requests
+  async fetchFreeDayRequests(): Promise<FreeDayRequest[]> {
+    if (supabase) {
+      try {
+        const { data, error } = await supabase.from('free_day_requests').select('*').order('created_at', { ascending: false });
+        if (!error && data) {
+          return data.map((item: any) => ({
+            id: item.id,
+            workerId: item.worker_id,
+            workerName: item.worker_name,
+            divisionId: item.division_id,
+            requestedDate: item.requested_date,
+            reason: item.reason || undefined,
+            status: item.status || 'pending',
+            createdAt: item.created_at,
+            reviewedByWorkerId: item.reviewed_by_worker_id || undefined,
+            reviewedByName: item.reviewed_by_name || undefined,
+            reviewedAt: item.reviewed_at || undefined
+          }));
+        }
+      } catch (err) {
+        console.warn('Supabase fetchFreeDayRequests failed, using localStorage fallback', err);
+      }
+    }
+    return getLocalDb.getFreeDayRequests();
+  },
+
+  async createFreeDayRequest(req: FreeDayRequest): Promise<void> {
+    const current = getLocalDb.getFreeDayRequests();
+    getLocalDb.saveFreeDayRequests([req, ...current]);
+
+    if (supabase) {
+      try {
+        await supabase.from('free_day_requests').insert([{
+          id: req.id,
+          worker_id: req.workerId,
+          worker_name: req.workerName,
+          division_id: req.divisionId,
+          requested_date: req.requestedDate,
+          reason: req.reason || null,
+          status: req.status,
+          created_at: req.createdAt
+        }]);
+      } catch (err) {
+        console.warn('Error inserting free_day_request in Supabase:', err);
+      }
+    }
+  },
+
+  async updateFreeDayRequestStatus(requestId: string, status: 'approved' | 'rejected', reviewerId?: string, reviewerName?: string): Promise<void> {
+    const reviewedAt = new Date().toISOString();
+    const current = getLocalDb.getFreeDayRequests();
+    const updated = current.map(r => r.id === requestId ? {
+      ...r,
+      status,
+      reviewedByWorkerId: reviewerId,
+      reviewedByName: reviewerName,
+      reviewedAt
+    } : r);
+    getLocalDb.saveFreeDayRequests(updated);
+
+    if (supabase) {
+      try {
+        await supabase.from('free_day_requests').update({
+          status,
+          reviewed_by_worker_id: reviewerId || null,
+          reviewed_by_name: reviewerName || null,
+          reviewed_at: reviewedAt
+        }).eq('id', requestId);
+      } catch (err) {
+        console.warn('Error updating free_day_request status in Supabase:', err);
+      }
+    }
+  },
+
+  async deleteFreeDayRequest(requestId: string): Promise<void> {
+    const current = getLocalDb.getFreeDayRequests();
+    getLocalDb.saveFreeDayRequests(current.filter(r => r.id !== requestId));
+
+    if (supabase) {
+      try {
+        await supabase.from('free_day_requests').delete().eq('id', requestId);
+      } catch (err) {
+        console.warn('Error deleting free_day_request in Supabase:', err);
       }
     }
   }

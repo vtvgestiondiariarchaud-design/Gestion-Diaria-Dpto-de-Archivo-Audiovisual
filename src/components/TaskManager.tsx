@@ -55,6 +55,19 @@ const formatSecondsToHHMMSS = (totalSeconds: number): string => {
   return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 };
 
+// Helper to format ISO or Date string for <input type="datetime-local" />
+const formatForDatetimeLocal = (isoStr?: string) => {
+  if (!isoStr) return '';
+  try {
+    const d = new Date(isoStr);
+    if (isNaN(d.getTime())) return '';
+    const pad = (n: number) => n < 10 ? '0' + n : n;
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  } catch {
+    return '';
+  }
+};
+
 export default function TaskManager({
   boards,
   cards,
@@ -105,6 +118,7 @@ export default function TaskManager({
   // Selected Board Filter within Producción ('todos' | 'board_ingesta' | 'board_prensa' | 'board_programacion')
   const [selectedBoardId, setSelectedBoardId] = useState<string>('todos');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [dateFilter, setDateFilter] = useState<string>('');
   const [onlyMyTasks, setOnlyMyTasks] = useState<boolean>(false);
 
   // Modals state
@@ -149,6 +163,7 @@ export default function TaskManager({
   const [taskDocumentedAt, setTaskDocumentedAt] = useState<string | undefined>(undefined);
   const [taskIsFinalized, setTaskIsFinalized] = useState(false);
   const [taskFinalizedAt, setTaskFinalizedAt] = useState<string | undefined>(undefined);
+  const [taskIsDepartmentAchievement, setTaskIsDepartmentAchievement] = useState<boolean>(false);
 
   // Report Generator Filters State
   const [reportType, setReportType] = useState<'diario' | 'mensual' | 'anual'>('diario');
@@ -160,7 +175,10 @@ export default function TaskManager({
   const [reportWorkerFilter, setReportWorkerFilter] = useState<string>('todos');
   const [copiedText, setCopiedText] = useState<boolean>(false);
 
-  // Resolved list of production boards
+  // Quick checklist input state for individual cards in "Otras Solicitudes"
+  const [cardQuickCheckInput, setCardQuickCheckInput] = useState<{ [cardId: string]: string }>({});
+
+  // Resolved list of production boards (Excludes "Otras Solicitudes" & "Administración")
   const productionBoards = useMemo(() => {
     const defaults: TaskBoard[] = [
       { id: 'board_ingesta', name: 'Ingesta', description: 'Recepción, digitalización y control de material', color: 'cyan', createdAt: new Date().toISOString() },
@@ -174,7 +192,13 @@ export default function TaskManager({
         merged.push(d);
       }
     });
-    return merged.filter(b => b.id !== 'board_otras_solicitudes' && !b.name.toLowerCase().includes('otras solicitudes'));
+    return merged.filter(b => 
+      b.id !== 'board_otras_solicitudes' && 
+      b.id !== 'board_administracion' && 
+      !b.name.toLowerCase().includes('otras solicitudes') &&
+      !b.name.toLowerCase().includes('administración') &&
+      !b.name.toLowerCase().includes('administracion')
+    );
   }, [boards]);
 
   // Unread notifications for current user
@@ -196,34 +220,52 @@ export default function TaskManager({
     });
   }, [cards]);
 
+  // Helper to match card dates against dateFilter (YYYY-MM-DD)
+  const cardMatchesDateFilter = (card: TaskCard, filterDate: string) => {
+    if (!filterDate) return true;
+    const dates = [
+      card.createdAt,
+      card.startDate,
+      card.dueDate,
+      card.ingestedAt,
+      card.editedAt,
+      card.documentedAt,
+      card.finalizedAt
+    ].filter(Boolean) as string[];
+
+    return dates.some(d => {
+      if (d.startsWith(filterDate)) return true;
+      try {
+        const dt = new Date(d);
+        if (!isNaN(dt.getTime())) {
+          const pad = (n: number) => n < 10 ? '0' + n : n;
+          const ymd = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+          return ymd === filterDate;
+        }
+      } catch {}
+      return false;
+    });
+  };
+
   // Filtered cards for active Production Tab (Ingesta, Prensa, Programación)
   const productionCards = useMemo(() => {
-    const userDivisionId = currentSession?.divisionId || currentWorker?.divisionId;
-
     return sortedCardsDescending.filter(card => {
       // 1. Hide finalized tasks (they belong to Tareas Finalizadas tab)
       if (card.isFinalized) return false;
 
-      // 2. Hide "Otras Solicitudes"
-      if (card.isOtherRequest || card.boardId === 'board_otras_solicitudes') return false;
+      // 2. Hide "Otras Solicitudes" & "Administración"
+      if (card.isOtherRequest || card.boardId === 'board_otras_solicitudes' || card.boardId === 'board_administracion') return false;
 
       // 3. Privacy: Gerencia Exclusive tasks only visible to Gerencia
       if (card.isGerenciaOnly && !isGerenciaUser) return false;
 
-      // 4. Division isolation for regular workers
-      if (!isDivisionHeadUser) {
-        const isCardDivMatch = card.divisionId ? card.divisionId === userDivisionId : false;
-        const isAssigned = currentWorkerId ? card.assignedWorkerIds.includes(currentWorkerId) : false;
-        if (!isCardDivMatch && !isAssigned) return false;
-      }
-
-      // 5. Board filter
+      // 4. Board filter
       if (selectedBoardId !== 'todos' && card.boardId !== selectedBoardId) return false;
 
-      // 6. Only my tasks filter
+      // 5. Only my tasks filter
       if (onlyMyTasks && currentWorkerId && !card.assignedWorkerIds.includes(currentWorkerId)) return false;
 
-      // 7. Search query
+      // 6. Search query
       if (searchQuery.trim() !== '') {
         const q = searchQuery.toLowerCase();
         const matchesTitle = card.title.toLowerCase().includes(q);
@@ -235,30 +277,27 @@ export default function TaskManager({
         if (!matchesTitle && !matchesDesc && !matchesAssignee) return false;
       }
 
+      // 7. Date filter
+      if (dateFilter && !cardMatchesDateFilter(card, dateFilter)) return false;
+
       return true;
     });
-  }, [sortedCardsDescending, selectedBoardId, onlyMyTasks, searchQuery, currentWorkerId, isGerenciaUser, isDivisionHeadUser, currentSession, currentWorker, workers]);
+  }, [sortedCardsDescending, selectedBoardId, onlyMyTasks, searchQuery, dateFilter, currentWorkerId, isGerenciaUser, workers]);
 
-  // Filtered cards for "Otras Solicitudes" Tab
+  // Filtered cards for "Otras Solicitudes" Tab (Includes Administración and general requests)
   const otherRequestsCards = useMemo(() => {
-    const userDivisionId = currentSession?.divisionId || currentWorker?.divisionId;
-
     return sortedCardsDescending.filter(card => {
       // 1. Hide finalized tasks
       if (card.isFinalized) return false;
 
-      // 2. Must be "Otras Solicitudes"
-      if (!card.isOtherRequest && card.boardId !== 'board_otras_solicitudes') return false;
+      // 2. Must be "Otras Solicitudes" OR "Administración"
+      if (!card.isOtherRequest && card.boardId !== 'board_otras_solicitudes' && card.boardId !== 'board_administracion') return false;
 
       // 3. Privacy: Gerencia Exclusive tasks remain hidden except for Gerente & Adjunta
       if (card.isGerenciaOnly && !isGerenciaUser) return false;
 
-      // 4. Division isolation for regular workers
-      if (!isDivisionHeadUser) {
-        const isCardDivMatch = card.divisionId ? card.divisionId === userDivisionId : false;
-        const isAssigned = currentWorkerId ? card.assignedWorkerIds.includes(currentWorkerId) : false;
-        if (!isCardDivMatch && !isAssigned) return false;
-      }
+      // 4. Only my tasks filter
+      if (onlyMyTasks && currentWorkerId && !card.assignedWorkerIds.includes(currentWorkerId)) return false;
 
       // 5. Search query
       if (searchQuery.trim() !== '') {
@@ -268,9 +307,12 @@ export default function TaskManager({
         if (!matchesTitle && !matchesDesc) return false;
       }
 
+      // 6. Date filter
+      if (dateFilter && !cardMatchesDateFilter(card, dateFilter)) return false;
+
       return true;
     });
-  }, [sortedCardsDescending, searchQuery, isGerenciaUser, isDivisionHeadUser, currentSession, currentWorker]);
+  }, [sortedCardsDescending, onlyMyTasks, searchQuery, dateFilter, currentWorkerId, isGerenciaUser]);
 
   // Filtered cards for "Tareas Finalizadas" Tab (Hidden section / Apartado)
   const finalizedCards = useMemo(() => {
@@ -287,23 +329,18 @@ export default function TaskManager({
         return card.title.toLowerCase().includes(q) || card.description.toLowerCase().includes(q);
       }
 
+      // Date filter
+      if (dateFilter && !cardMatchesDateFilter(card, dateFilter)) return false;
+
       return true;
     });
-  }, [sortedCardsDescending, searchQuery, isGerenciaUser]);
+  }, [sortedCardsDescending, searchQuery, dateFilter, isGerenciaUser]);
 
   // Metrics for Report Generator based on dates, stage timestamps & duration math
   const reportMetrics = useMemo(() => {
-    const userDivisionId = currentSession?.divisionId || currentWorker?.divisionId;
-
     // Filter relevant cards by Division/Worker/Board filters
     const baseCards = cards.filter(card => {
       if (card.isGerenciaOnly && !isGerenciaUser) return false;
-
-      if (!isDivisionHeadUser) {
-        const isDivMatch = card.divisionId ? card.divisionId === userDivisionId : false;
-        const isAssigned = currentWorkerId ? card.assignedWorkerIds.includes(currentWorkerId) : false;
-        if (!isDivMatch && !isAssigned) return false;
-      }
 
       if (reportBoardFilter !== 'todos' && card.boardId !== reportBoardFilter) return false;
 
@@ -327,9 +364,18 @@ export default function TaskManager({
 
     const matchesPeriod = (dateStr?: string) => {
       if (!dateStr) return false;
-      if (reportType === 'diario') return dateStr.startsWith(reportDate);
-      if (reportType === 'mensual') return dateStr.startsWith(reportMonth);
-      if (reportType === 'anual') return dateStr.startsWith(reportYear);
+      let ymd = dateStr.slice(0, 10);
+      try {
+        const d = new Date(dateStr);
+        if (!isNaN(d.getTime())) {
+          const pad = (n: number) => n < 10 ? '0' + n : n;
+          ymd = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+        }
+      } catch {}
+
+      if (reportType === 'diario') return ymd === reportDate;
+      if (reportType === 'mensual') return ymd.slice(0, 7) === reportMonth;
+      if (reportType === 'anual') return ymd.slice(0, 4) === reportYear;
       return true;
     };
 
@@ -357,8 +403,78 @@ export default function TaskManager({
     // 4. Finalizados en el período
     const finalizadosEnPeriodo = baseCards.filter(c => c.isFinalized && matchesPeriod(c.finalizedAt || c.createdAt));
 
-    // 5. Otras Solicitudes (Logros de la división)
-    const logrosOtrasSolicitudes = baseCards.filter(c => c.isOtherRequest && c.isFinalized && matchesPeriod(c.finalizedAt || c.createdAt));
+    // 5. Logros de solicitudes (no administrativas ni gerenciales)
+    const departmentAchievements = baseCards.filter(c => {
+      // Excluir tareas administrativas y gerenciales
+      if (c.boardId === 'board_administracion') return false;
+      if (c.isGerenciaOnly) return false;
+
+      // Debe pertenecer al período seleccionado
+      if (!matchesPeriod(c.finalizedAt || c.createdAt || c.startDate)) return false;
+
+      // Debe contar como logro (booleano explícito o solicitud especial finalizada)
+      return Boolean(c.isDepartmentAchievement || (c.isOtherRequest && c.isFinalized));
+    });
+
+    // 6. Cálculo de días del Calendario Mensual (para informe mensual)
+    const [mY, mM] = reportMonth.split('-').map(Number);
+    const mYear = mY || new Date().getFullYear();
+    const mMonth = mM || (new Date().getMonth() + 1);
+    const daysInMonth = new Date(mYear, mMonth, 0).getDate();
+
+    const dayNamesFull = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+    const dayNamesShort = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+
+    const monthlyCalendarDays = [];
+    for (let d = 1; d <= daysInMonth; d++) {
+      const padDay = String(d).padStart(2, '0');
+      const padMonth = String(mMonth).padStart(2, '0');
+      const dateStr = `${mYear}-${padMonth}-${padDay}`;
+      const dt = new Date(mYear, mMonth - 1, d);
+      const dayOfWeekIndex = dt.getDay();
+
+      // Buscar tareas ingestadas en esta fecha
+      const dayTasks = baseCards.filter(c => {
+        if (!c.isIngested || c.isOtherRequest) return false;
+        const ingDate = c.ingestedAt || c.startDate || c.createdAt;
+        if (!ingDate) return false;
+        return ingDate.startsWith(dateStr);
+      });
+
+      const dayIngestedSeconds = dayTasks.reduce((sum, c) => sum + parseDurationToSeconds(c.duration), 0);
+
+      monthlyCalendarDays.push({
+        dayNum: d,
+        dateStr,
+        dayOfWeekFull: dayNamesFull[dayOfWeekIndex],
+        dayOfWeekShort: dayNamesShort[dayOfWeekIndex],
+        dayOfWeekIndex,
+        ingestedSeconds: dayIngestedSeconds,
+        ingestedHHMMSS: formatSecondsToHHMMSS(dayIngestedSeconds),
+        tasksCount: dayTasks.length,
+        tasks: dayTasks
+      });
+    }
+
+    // 7. Desglose del ahorro de tiempo por filtro (por tablero)
+    const savingsByFilter = productionBoards.map(board => {
+      const boardCards = editadosEnPeriodo.filter(c => c.boardId === board.id);
+      const savedSeconds = boardCards.reduce((sum, c) => {
+        const origSec = parseDurationToSeconds(c.duration);
+        const editSec = parseDurationToSeconds(c.editedDuration);
+        return sum + Math.max(0, origSec - editSec);
+      }, 0);
+      return {
+        boardId: board.id,
+        boardName: board.name,
+        count: boardCards.length,
+        savedSeconds,
+        savedHHMMSS: formatSecondsToHHMMSS(savedSeconds)
+      };
+    });
+
+    // 8. Cantidad de material entregado / finalizado y duración total editada
+    const deliveredTotalEditedSeconds = finalizadosEnPeriodo.reduce((sum, c) => sum + parseDurationToSeconds(c.editedDuration || c.duration), 0);
 
     return {
       totalBaseCards: baseCards.length,
@@ -368,13 +484,18 @@ export default function TaskManager({
       tiempoAhorradoHHMMSS: formatSecondsToHHMMSS(tiempoAhorradoSeconds),
       documentadosCount: documentadosEnPeriodo.length,
       finalizadosCount: finalizadosEnPeriodo.length,
-      logrosOtrasSolicitudesCount: logrosOtrasSolicitudes.length,
+      logrosOtrasSolicitudesCount: departmentAchievements.length,
       ingestadosEnPeriodo,
       editadosEnPeriodo,
       documentadosEnPeriodo,
-      finalizadosEnPeriodo
+      finalizadosEnPeriodo,
+      departmentAchievements,
+      monthlyCalendarDays,
+      savingsByFilter,
+      deliveredCount: finalizadosEnPeriodo.length,
+      deliveredTotalEditedHHMMSS: formatSecondsToHHMMSS(deliveredTotalEditedSeconds)
     };
-  }, [cards, reportType, reportDate, reportMonth, reportYear, reportBoardFilter, reportDivisionFilter, reportWorkerFilter, isGerenciaUser, isDivisionHeadUser, currentSession, currentWorker, workers]);
+  }, [cards, reportType, reportDate, reportMonth, reportYear, reportBoardFilter, reportDivisionFilter, reportWorkerFilter, isGerenciaUser, isDivisionHeadUser, currentSession, currentWorker, workers, productionBoards]);
 
   // Stage Toggle Handler for Cards directly from view or modal
   const handleToggleStage = (card: TaskCard, stage: 'ingested' | 'edited' | 'documented' | 'finalized', e?: React.MouseEvent) => {
@@ -429,12 +550,50 @@ export default function TaskManager({
     );
   };
 
+  // Checklist Helper Functions
+  const handleAddChecklistItemInModal = () => {
+    if (!newChecklistItemText.trim()) return;
+    const newItem = {
+      id: `chk_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      text: newChecklistItemText.trim(),
+      completed: false
+    };
+    setTaskChecklist(prev => [...prev, newItem]);
+    setNewChecklistItemText('');
+  };
+
+  const handleToggleChecklistItemOnCard = (card: TaskCard, itemId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const currentList = card.checklist || [];
+    const updatedList = currentList.map(item =>
+      item.id === itemId ? { ...item, completed: !item.completed } : item
+    );
+    const updatedCard = { ...card, checklist: updatedList };
+    onSaveCard(updatedCard);
+  };
+
+  const handleAddChecklistItemOnCard = (card: TaskCard, e: React.FormEvent) => {
+    e.preventDefault();
+    const text = cardQuickCheckInput[card.id] || '';
+    if (!text.trim()) return;
+    const currentList = card.checklist || [];
+    const newItem = {
+      id: `chk_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      text: text.trim(),
+      completed: false
+    };
+    const updatedCard = { ...card, checklist: [...currentList, newItem] };
+    onSaveCard(updatedCard);
+    setCardQuickCheckInput(prev => ({ ...prev, [card.id]: '' }));
+  };
+
   // Open Create Task Modal
   const handleOpenCreateTask = (defaultBoardId?: string, isOtherReq: boolean = false) => {
     setEditingCard(null);
-    setTaskBoardId(defaultBoardId || (isOtherReq ? 'board_otras_solicitudes' : 'board_ingesta'));
+    const initialIsOtherReq = isOtherReq || defaultBoardId === 'board_otras_solicitudes' || defaultBoardId === 'board_administracion';
+    setTaskBoardId(defaultBoardId || (initialIsOtherReq ? 'board_otras_solicitudes' : 'board_ingesta'));
     setTaskDivisionId(currentSession?.divisionId || currentWorker?.divisionId || '');
-    setTaskIsOtherRequest(isOtherReq || defaultBoardId === 'board_otras_solicitudes');
+    setTaskIsOtherRequest(initialIsOtherReq);
     setTaskIsGerenciaOnly(false);
     setTaskDuration('00:00:00');
     setTaskEditedDuration('00:00:00');
@@ -450,6 +609,7 @@ export default function TaskManager({
     setTaskDocumentedAt(undefined);
     setTaskIsFinalized(false);
     setTaskFinalizedAt(undefined);
+    setTaskIsDepartmentAchievement(false);
 
     const today = new Date().toISOString().split('T')[0];
     setTaskStartDate(today);
@@ -465,6 +625,7 @@ export default function TaskManager({
     }
 
     setTaskChecklist([]);
+    setNewChecklistItemText('');
     setShowTaskModal(true);
   };
 
@@ -473,7 +634,8 @@ export default function TaskManager({
     setEditingCard(card);
     setTaskBoardId(card.boardId);
     setTaskDivisionId(card.divisionId || '');
-    setTaskIsOtherRequest(card.isOtherRequest || card.boardId === 'board_otras_solicitudes');
+    const isOther = Boolean(card.isOtherRequest || card.boardId === 'board_otras_solicitudes' || card.boardId === 'board_administracion');
+    setTaskIsOtherRequest(isOther);
     setTaskIsGerenciaOnly(card.isGerenciaOnly || false);
     setTaskDuration(card.duration || '00:00:00');
     setTaskEditedDuration(card.editedDuration || '00:00:00');
@@ -484,6 +646,7 @@ export default function TaskManager({
     setTaskDueDate(card.dueDate || new Date().toISOString().split('T')[0]);
     setTaskAssignedWorkerIds(card.assignedWorkerIds || []);
     setTaskChecklist(card.checklist || []);
+    setNewChecklistItemText('');
 
     setTaskIsIngested(Boolean(card.isIngested));
     setTaskIngestedAt(card.ingestedAt);
@@ -493,6 +656,7 @@ export default function TaskManager({
     setTaskDocumentedAt(card.documentedAt);
     setTaskIsFinalized(Boolean(card.isFinalized));
     setTaskFinalizedAt(card.finalizedAt);
+    setTaskIsDepartmentAchievement(Boolean(card.isDepartmentAchievement));
 
     setShowTaskModal(true);
 
@@ -514,6 +678,7 @@ export default function TaskManager({
 
     const nowIso = new Date().toISOString();
     const cardId = editingCard ? editingCard.id : `task_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
+    const isOther = taskIsOtherRequest || taskBoardId === 'board_otras_solicitudes' || taskBoardId === 'board_administracion';
 
     const cardData: TaskCard = {
       id: cardId,
@@ -521,18 +686,19 @@ export default function TaskManager({
       divisionId: taskDivisionId || undefined,
       title: taskTitle.trim(),
       description: taskDesc.trim(),
-      status: taskIsFinalized ? 'Finalizado' : taskIsDocumented ? 'Archivando' : taskIsEdited ? 'Editado' : taskIsIngested ? 'Ingestado' : 'Pendiente',
+      status: taskIsFinalized ? 'Finalizado' : isOther ? 'Pendiente' : taskIsDocumented ? 'Archivando' : taskIsEdited ? 'Editado' : taskIsIngested ? 'Ingestado' : 'Pendiente',
       priority: taskPriority,
-      isOtherRequest: taskIsOtherRequest || taskBoardId === 'board_otras_solicitudes',
+      isOtherRequest: isOther,
       isGerenciaOnly: taskIsGerenciaOnly,
-      duration: taskDuration.trim() || '00:00:00',
-      editedDuration: taskEditedDuration.trim() || '00:00:00',
-      isIngested: taskIsIngested,
-      ingestedAt: taskIsIngested ? (taskIngestedAt || nowIso) : undefined,
-      isEdited: taskIsEdited,
-      editedAt: taskIsEdited ? (taskEditedAt || nowIso) : undefined,
-      isDocumented: taskIsDocumented,
-      documentedAt: taskIsDocumented ? (taskDocumentedAt || nowIso) : undefined,
+      isDepartmentAchievement: taskIsDepartmentAchievement,
+      duration: isOther ? '00:00:00' : (taskDuration.trim() || '00:00:00'),
+      editedDuration: isOther ? '00:00:00' : (taskEditedDuration.trim() || '00:00:00'),
+      isIngested: isOther ? false : taskIsIngested,
+      ingestedAt: isOther ? undefined : (taskIsIngested ? (taskIngestedAt || nowIso) : undefined),
+      isEdited: isOther ? false : taskIsEdited,
+      editedAt: isOther ? undefined : (taskIsEdited ? (taskEditedAt || nowIso) : undefined),
+      isDocumented: isOther ? false : taskIsDocumented,
+      documentedAt: isOther ? undefined : (taskIsDocumented ? (taskDocumentedAt || nowIso) : undefined),
       isFinalized: taskIsFinalized,
       finalizedAt: taskIsFinalized ? (taskFinalizedAt || nowIso) : undefined,
       startDate: taskStartDate,
@@ -595,9 +761,234 @@ export default function TaskManager({
     );
   };
 
-  // Print Report Handler
+  // Quick toggle for Department Achievement
+  const handleToggleDepartmentAchievement = (card: TaskCard, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const nextVal = !card.isDepartmentAchievement;
+    const updatedCard: TaskCard = {
+      ...card,
+      isDepartmentAchievement: nextVal
+    };
+    onSaveCard(updatedCard);
+    onAddNotificationToast(
+      nextVal ? 'Marcado como Logro' : 'Desmarcado como Logro',
+      `"${card.title}" ${nextVal ? 'ahora cuenta' : 'ya no cuenta'} como logro del departamento.`,
+      'info'
+    );
+  };
+
+  // Print Report Handler (Soporta Formato de Calendario Mensual en PDF)
   const handlePrintReport = () => {
-    window.print();
+    if (reportType === 'mensual') {
+      const printWin = window.open('', '_blank');
+      if (!printWin) {
+        window.print();
+        return;
+      }
+
+      const [mY, mM] = reportMonth.split('-').map(Number);
+      const monthsEs = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+      const monthName = monthsEs[(mM || 1) - 1] || 'Seleccionado';
+      const yearNum = mY || new Date().getFullYear();
+
+      const selectedDivName = divisions.find(d => d.id === reportDivisionFilter)?.name || 'Todas las Divisiones';
+      const selectedWorkerName = workers.find(w => w.id === reportWorkerFilter)?.name || 'Todos los Colaboradores';
+
+      // Build printable calendar table HTML
+      let calendarHtml = `
+        <table class="calendar-grid">
+          <thead>
+            <tr>
+              <th>Lunes</th>
+              <th>Martes</th>
+              <th>Miércoles</th>
+              <th>Jueves</th>
+              <th>Viernes</th>
+              <th>Sábado</th>
+              <th>Domingo</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+
+      const daysInMonth = new Date(yearNum, mM, 0).getDate();
+      const firstDayObj = new Date(yearNum, mM - 1, 1);
+      // Day of week index where 0=Monday, 6=Sunday
+      let firstDayOfWeek = (firstDayObj.getDay() + 6) % 7;
+
+      let currentDay = 1;
+      let weekRow = 0;
+
+      while (currentDay <= daysInMonth) {
+        calendarHtml += `<tr>`;
+        for (let col = 0; col < 7; col++) {
+          if ((weekRow === 0 && col < firstDayOfWeek) || currentDay > daysInMonth) {
+            calendarHtml += `<td class="empty-cell"></td>`;
+          } else {
+            const dayData = reportMetrics.monthlyCalendarDays.find(d => d.dayNum === currentDay);
+            const hhmmss = dayData ? dayData.ingestedHHMMSS : '00:00:00';
+            const hasHours = dayData && dayData.ingestedSeconds > 0;
+
+            calendarHtml += `
+              <td class="day-cell ${hasHours ? 'has-hours' : ''}">
+                <div class="day-header">
+                  <span class="day-name">${dayData?.dayOfWeekShort || ''}</span>
+                  <span class="day-num">${currentDay}</span>
+                </div>
+                <div class="day-body">
+                  <span class="label">Horas Ingestadas:</span>
+                  <span class="value">${hhmmss}</span>
+                </div>
+              </td>
+            `;
+            currentDay++;
+          }
+        }
+        calendarHtml += `</tr>`;
+        weekRow++;
+      }
+      calendarHtml += `</tbody></table>`;
+
+      // Build Savings breakdown HTML
+      let savingsHtml = `
+        <div class="section">
+          <h3>DESGLOSE DEL AHORRO DE TIEMPO POR FILTRO DE INGESTA</h3>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Área / Filtro</th>
+                <th>Materiales Procesados</th>
+                <th>Tiempo Ahorrado</th>
+              </tr>
+            </thead>
+            <tbody>
+      `;
+      reportMetrics.savingsByFilter.forEach(sf => {
+        savingsHtml += `
+          <tr>
+            <td>${sf.boardName}</td>
+            <td>${sf.count} items</td>
+            <td><strong>${sf.savedHHMMSS}</strong></td>
+          </tr>
+        `;
+      });
+      savingsHtml += `
+            <tr class="total-row">
+              <td>TOTAL AHORRO ACUMULADO</td>
+              <td>${reportMetrics.editadosCount} items</td>
+              <td><strong>${reportMetrics.tiempoAhorradoHHMMSS}</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      `;
+
+      // Build Delivered materials HTML
+      let deliveredHtml = `
+        <div class="section">
+          <h3>CANTIDAD DE MATERIAL ENTREGADO / FINALIZADO</h3>
+          <div class="summary-box">
+            <p><strong>Total Materiales Entregados:</strong> ${reportMetrics.finalizadosCount} items</p>
+            <p><strong>Duración Total Editada Entregada:</strong> ${reportMetrics.deliveredTotalEditedHHMMSS}</p>
+          </div>
+        </div>
+      `;
+
+      // Build Achievements HTML
+      let achievementsHtml = `
+        <div class="section">
+          <h3>LOGROS DE SOLICITUDES DEL DEPARTAMENTO (No Administrativas ni Gerenciales)</h3>
+          <p style="font-size: 11px; margin-bottom: 8px;">Total de logros alcanzados: <strong>${reportMetrics.departmentAchievements.length}</strong></p>
+      `;
+      if (reportMetrics.departmentAchievements.length === 0) {
+        achievementsHtml += `<p class="italic-text">(Sin logros registrados para el departamento en este período)</p>`;
+      } else {
+        achievementsHtml += `<table class="data-table"><thead><tr><th>Título de la Tarea</th><th>Área</th><th>Fecha</th><th>Descripción / Detalle</th></tr></thead><tbody>`;
+        reportMetrics.departmentAchievements.forEach(ach => {
+          const bObj = productionBoards.find(b => b.id === ach.boardId);
+          achievementsHtml += `
+            <tr>
+              <td><strong>${ach.title}</strong></td>
+              <td>${bObj?.name || (ach.isOtherRequest ? 'Otras Solicitudes' : 'VTV')}</td>
+              <td>${ach.finalizedAt ? new Date(ach.finalizedAt).toLocaleDateString('es-VE') : ach.dueDate}</td>
+              <td>${ach.description || '-'}</td>
+            </tr>
+          `;
+        });
+        achievementsHtml += `</tbody></table>`;
+      }
+      achievementsHtml += `</div>`;
+
+      printWin.document.write(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>Reporte Mensual Operativo - ${monthName} ${yearNum}</title>
+            <style>
+              @page { size: landscape; margin: 10mm; }
+              body { font-family: 'Segoe UI', Helvetica, Arial, sans-serif; padding: 15px; color: #0f172a; line-height: 1.4; font-size: 11px; }
+              .header { text-align: center; border-bottom: 2px solid #0284c7; padding-bottom: 8px; margin-bottom: 12px; }
+              .header h2 { margin: 0; font-size: 16px; font-weight: 800; text-transform: uppercase; color: #0f172a; }
+              .header h3 { margin: 4px 0 0 0; font-size: 13px; font-weight: 700; color: #0284c7; text-transform: uppercase; }
+              .meta-info { display: flex; justify-content: space-between; margin-bottom: 12px; font-size: 11px; background: #f8fafc; padding: 8px 12px; border-radius: 6px; border: 1px solid #e2e8f0; }
+              
+              .calendar-grid { width: 100%; border-collapse: collapse; margin-bottom: 15px; page-break-inside: avoid; }
+              .calendar-grid th { background: #0f172a; color: #ffffff; text-align: center; padding: 6px; font-size: 10px; text-transform: uppercase; border: 1px solid #0f172a; }
+              .calendar-grid td { border: 1px solid #cbd5e1; height: 55px; vertical-align: top; padding: 4px; width: 14.28%; }
+              .calendar-grid td.empty-cell { background: #f8fafc; border: 1px solid #e2e8f0; }
+              .calendar-grid td.has-hours { background: #f0fdf4; border: 1.5px solid #16a34a; }
+              .day-header { display: flex; justify-content: space-between; font-size: 10px; font-weight: bold; border-bottom: 1px solid #e2e8f0; padding-bottom: 2px; margin-bottom: 4px; }
+              .day-name { text-transform: uppercase; color: #64748b; font-size: 8px; }
+              .day-num { font-size: 11px; color: #0f172a; font-weight: 800; }
+              .day-body { font-size: 9px; line-height: 1.2; }
+              .day-body .label { display: block; color: #64748b; font-size: 8px; }
+              .day-body .value { font-weight: bold; font-family: monospace; font-size: 11px; color: #0284c7; }
+              
+              .section { margin-top: 12px; page-break-inside: avoid; }
+              .section h3 { font-size: 11px; font-weight: 800; border-bottom: 1.5px solid #0284c7; padding-bottom: 3px; margin-bottom: 6px; text-transform: uppercase; color: #0f172a; }
+              .data-table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+              .data-table th, .data-table td { border: 1px solid #cbd5e1; padding: 5px 8px; font-size: 10px; text-align: left; }
+              .data-table th { background: #f1f5f9; font-weight: bold; }
+              .total-row { font-weight: bold; background: #e2e8f0; }
+              .summary-box { background: #f8fafc; border: 1px solid #cbd5e1; padding: 8px 12px; border-radius: 6px; }
+              .summary-box p { margin: 2px 0; }
+              .italic-text { font-style: italic; color: #64748b; font-size: 10px; }
+              .footer { margin-top: 20px; border-top: 1px solid #e2e8f0; padding-top: 6px; text-align: center; font-size: 9px; color: #64748b; }
+            </style>
+          </head>
+          <body>
+            <div class="header">
+              <h2>VENEZOLANA DE TELEVISIÓN - VTV</h2>
+              <h3>REPORTE MENSUAL OPERATIVO Y MÉTRICAS DE TIEMPOS DE INGESTA</h3>
+            </div>
+            
+            <div class="meta-info">
+              <div><strong>MES Y AÑO:</strong> ${monthName.toUpperCase()} ${yearNum}</div>
+              <div><strong>DIVISIÓN:</strong> ${selectedDivName}</div>
+              <div><strong>COLABORADOR:</strong> ${selectedWorkerName}</div>
+              <div><strong>FECHA EMISIÓN:</strong> ${new Date().toLocaleDateString('es-VE')}</div>
+            </div>
+
+            ${calendarHtml}
+            ${savingsHtml}
+            ${deliveredHtml}
+            ${achievementsHtml}
+
+            <div class="footer">
+              Documento Oficial generado por el Sistema de Asistencia y Gestión de Guardia VTV • ${new Date().toLocaleString('es-VE')}
+            </div>
+            <script>
+              window.onload = function() {
+                window.print();
+              };
+            </script>
+          </body>
+        </html>
+      `);
+      printWin.document.close();
+    } else {
+      window.print();
+    }
   };
 
   // Copy Text Report Handler
@@ -740,7 +1131,7 @@ export default function TaskManager({
           <Layers className="w-4 h-4 text-cyan-400" />
           <span>Producción Audiovisual</span>
           <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-cyan-500/10 text-cyan-300 font-mono font-bold">
-            {cards.filter(c => !c.isFinalized && !c.isOtherRequest && c.boardId !== 'board_otras_solicitudes').length}
+            {cards.filter(c => !c.isFinalized && !c.isOtherRequest && c.boardId !== 'board_otras_solicitudes' && c.boardId !== 'board_administracion').length}
           </span>
         </button>
 
@@ -755,7 +1146,7 @@ export default function TaskManager({
           <Award className="w-4 h-4 text-amber-400" />
           <span>Otras Solicitudes</span>
           <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-amber-500/10 text-amber-300 font-mono font-bold">
-            {cards.filter(c => !c.isFinalized && (c.isOtherRequest || c.boardId === 'board_otras_solicitudes')).length}
+            {cards.filter(c => !c.isFinalized && (c.isOtherRequest || c.boardId === 'board_otras_solicitudes' || c.boardId === 'board_administracion')).length}
           </span>
         </button>
 
@@ -801,7 +1192,7 @@ export default function TaskManager({
                     : 'bg-slate-800/50 text-slate-400 hover:text-white'
                 }`}
               >
-                <span>Todas las Listas (3)</span>
+                <span>Todas las Listas ({productionBoards.length})</span>
               </button>
 
               {productionBoards.map(b => (
@@ -823,9 +1214,9 @@ export default function TaskManager({
               ))}
             </div>
 
-            {/* Search & My Tasks */}
-            <div className="flex items-center gap-2">
-              <div className="relative w-full sm:w-56">
+            {/* Search, Date Filter & My Tasks */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="relative w-full sm:w-48">
                 <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
                 <input
                   type="text"
@@ -834,6 +1225,28 @@ export default function TaskManager({
                   onChange={e => setSearchQuery(e.target.value)}
                   className="w-full bg-slate-950 border border-white/10 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-500"
                 />
+              </div>
+
+              {/* Date Search Filter */}
+              <div className="relative flex items-center gap-1">
+                <Calendar className="w-3.5 h-3.5 text-cyan-400 absolute left-2.5 pointer-events-none" />
+                <input
+                  type="date"
+                  value={dateFilter}
+                  onChange={e => setDateFilter(e.target.value)}
+                  title="Filtrar tareas por fecha"
+                  className="bg-slate-950 border border-white/10 rounded-lg pl-8 pr-2 py-1.5 text-xs text-cyan-200 focus:outline-none focus:border-cyan-500 cursor-pointer font-mono"
+                />
+                {dateFilter && (
+                  <button
+                    type="button"
+                    onClick={() => setDateFilter('')}
+                    className="px-1.5 py-1 text-[10px] font-bold text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 rounded border border-rose-500/30 cursor-pointer"
+                    title="Limpiar filtro de fecha"
+                  >
+                    ✕
+                  </button>
+                )}
               </div>
 
               {currentWorkerId && (
@@ -1086,7 +1499,7 @@ export default function TaskManager({
       {/* TAB 2: OTRAS SOLICITUDES & TAREAS DE GERENCIA */}
       {activeMainTab === 'solicitudes' && (
         <div className="space-y-4">
-          <div className="glass-card p-4 rounded-xl border border-white/10 bg-slate-900/60 flex items-center justify-between">
+          <div className="glass-card p-4 rounded-xl border border-white/10 bg-slate-900/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <Award className="w-4 h-4 text-amber-400" />
@@ -1097,13 +1510,61 @@ export default function TaskManager({
               </p>
             </div>
 
-            <button
-              onClick={() => handleOpenCreateTask('board_otras_solicitudes', true)}
-              className="px-3 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Añadir Solicitud</span>
-            </button>
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="relative w-full sm:w-48">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  placeholder="Buscar solicitudes..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  className="w-full bg-slate-950 border border-white/10 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div className="relative flex items-center gap-1">
+                <Calendar className="w-3.5 h-3.5 text-amber-400 absolute left-2.5 pointer-events-none" />
+                <input
+                  type="date"
+                  value={dateFilter}
+                  onChange={e => setDateFilter(e.target.value)}
+                  title="Filtrar por fecha"
+                  className="bg-slate-950 border border-white/10 rounded-lg pl-8 pr-2 py-1.5 text-xs text-amber-200 focus:outline-none focus:border-amber-500 cursor-pointer font-mono"
+                />
+                {dateFilter && (
+                  <button
+                    type="button"
+                    onClick={() => setDateFilter('')}
+                    className="px-1.5 py-1 text-[10px] font-bold text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 rounded border border-rose-500/30 cursor-pointer"
+                    title="Limpiar filtro de fecha"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
+              {currentWorkerId && (
+                <button
+                  onClick={() => setOnlyMyTasks(!onlyMyTasks)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer border ${
+                    onlyMyTasks
+                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                      : 'bg-slate-900 text-slate-400 border-white/10 hover:text-white'
+                  }`}
+                >
+                  <UserCheck className="w-3.5 h-3.5" />
+                  <span>Solo mis tareas</span>
+                </button>
+              )}
+
+              <button
+                onClick={() => handleOpenCreateTask('board_otras_solicitudes', true)}
+                className="px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Añadir Solicitud</span>
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -1116,6 +1577,10 @@ export default function TaskManager({
             ) : (
               otherRequestsCards.map(card => {
                 const isSelfAssigned = currentWorkerId ? card.assignedWorkerIds.includes(currentWorkerId) : false;
+                const totalItems = card.checklist?.length || 0;
+                const completedItems = card.checklist?.filter(i => i.completed).length || 0;
+                const pct = totalItems > 0 ? Math.round((completedItems / totalItems) * 100) : 0;
+                const isAdminBoard = card.boardId === 'board_administracion';
 
                 return (
                   <motion.div
@@ -1125,21 +1590,38 @@ export default function TaskManager({
                     animate={{ opacity: 1, y: 0 }}
                     className="glass-card p-4 rounded-2xl border border-white/10 bg-slate-900/90 hover:border-amber-500/40 transition-all space-y-3 relative group"
                   >
-                    <div className="flex items-center justify-between">
-                      {card.isGerenciaOnly && (
-                        <span className="px-2 py-0.5 rounded-md text-[9px] font-black font-mono bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
-                          <ShieldAlert className="w-2.5 h-2.5 text-amber-400" />
-                          Exclusiva Gerencia
+                    <div className="flex items-center justify-between flex-wrap gap-1">
+                      <div className="flex items-center gap-1.5">
+                        {isAdminBoard ? (
+                          <span className="px-2 py-0.5 rounded-md text-[9px] font-bold font-mono bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                            Administración
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-md text-[9px] font-bold font-mono bg-purple-500/15 text-purple-300 border border-purple-500/30">
+                            Otras Solicitudes
+                          </span>
+                        )}
+                        {card.isGerenciaOnly && (
+                          <span className="px-2 py-0.5 rounded-md text-[9px] font-black font-mono bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
+                            <ShieldAlert className="w-2.5 h-2.5 text-amber-400" />
+                            Exclusiva Gerencia
+                          </span>
+                        )}
+                      </div>
+
+                      {totalItems > 0 && (
+                        <span className={`text-[10px] font-bold font-mono px-2 py-0.5 rounded-md border ${
+                          pct === 100 ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+                        }`}>
+                          {completedItems}/{totalItems} ({pct}%)
                         </span>
                       )}
-                      <span className="px-2 py-0.5 rounded-md text-[9px] font-bold font-mono bg-purple-500/10 text-purple-300 border border-purple-500/20">
-                        Otras Solicitudes
-                      </span>
                     </div>
 
                     <div className="cursor-pointer" onClick={() => handleOpenEditTask(card)}>
-                      <h4 className="text-sm font-bold text-white group-hover:text-amber-300 transition-colors">
-                        {card.title}
+                      <h4 className="text-sm font-bold text-white group-hover:text-amber-300 transition-colors flex items-center justify-between">
+                        <span>{card.title}</span>
+                        <Edit3 className="w-3.5 h-3.5 text-slate-500 group-hover:text-amber-300 opacity-0 group-hover:opacity-100 transition-all" />
                       </h4>
                       {card.description && (
                         <p className="text-xs text-slate-400 mt-1 line-clamp-2">
@@ -1148,7 +1630,78 @@ export default function TaskManager({
                       )}
                     </div>
 
-                    {/* Stage Buttons */}
+                    {/* CUSTOM CHECKLIST LIST (No Ingestada/Editada/Archivada buttons) */}
+                    <div className="pt-2 border-t border-white/5 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="text-[10px] text-amber-300 font-bold uppercase tracking-wider flex items-center gap-1">
+                          <CheckSquare className="w-3 h-3 text-amber-400" />
+                          <span>Lista de Verificación:</span>
+                        </div>
+                        {totalItems > 0 && (
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            {pct === 100 ? '✓ Verificación Completa' : `${completedItems} de ${totalItems} listos`}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Progress Bar */}
+                      {totalItems > 0 && (
+                        <div className="w-full bg-slate-950 h-1.5 rounded-full overflow-hidden border border-white/5">
+                          <div
+                            className="bg-gradient-to-r from-amber-500 to-emerald-400 h-full transition-all duration-300"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      )}
+
+                      {/* Checklist Items */}
+                      <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1 scrollbar-thin">
+                        {card.checklist && card.checklist.length > 0 ? (
+                          card.checklist.map((item) => (
+                            <div
+                              key={item.id}
+                              onClick={(e) => handleToggleChecklistItemOnCard(card, item.id, e)}
+                              className={`flex items-start gap-2 p-2 rounded-xl text-xs cursor-pointer border transition-all ${
+                                item.completed
+                                  ? 'bg-emerald-950/30 border-emerald-500/30 text-emerald-300/80 line-through'
+                                  : 'bg-slate-950/80 border-white/10 text-slate-200 hover:border-amber-500/40 hover:bg-slate-900'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={item.completed}
+                                onChange={() => {}} // Click on wrapper handles toggle
+                                className="mt-0.5 rounded border-white/20 text-amber-500 focus:ring-amber-500 cursor-pointer shrink-0"
+                              />
+                              <span className="flex-1 leading-snug break-words">{item.text}</span>
+                            </div>
+                          ))
+                        ) : (
+                          <p className="text-[11px] text-slate-500 italic py-1">
+                            Sin lista de verificación. Haz clic en la tarea para añadir puntos de control.
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Quick Add Checklist Item on Card */}
+                      <form onSubmit={(e) => handleAddChecklistItemOnCard(card, e)} className="flex items-center gap-1.5 pt-1">
+                        <input
+                          type="text"
+                          placeholder="+ Añadir ítem a la lista..."
+                          value={cardQuickCheckInput[card.id] || ''}
+                          onChange={(e) => setCardQuickCheckInput({ ...cardQuickCheckInput, [card.id]: e.target.value })}
+                          className="flex-1 bg-slate-950/90 border border-white/10 rounded-lg px-2.5 py-1 text-[11px] text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
+                        />
+                        <button
+                          type="submit"
+                          className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-[11px] font-bold rounded-lg transition-all cursor-pointer shrink-0"
+                        >
+                          Añadir
+                        </button>
+                      </form>
+                    </div>
+
+                    {/* Stage / Finalize Button */}
                     <div className="pt-2 border-t border-white/5 space-y-1.5">
                       <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Aprobación y Logro:</div>
                       <div className="flex items-center gap-2">
@@ -1176,7 +1729,7 @@ export default function TaskManager({
       {/* TAB 3: TAREAS FINALIZADAS (APARTADO OCULTO DE HISTÓRICO) */}
       {activeMainTab === 'finalizadas' && (
         <div className="space-y-4">
-          <div className="glass-card p-4 rounded-xl border border-white/10 bg-slate-900/60 flex items-center justify-between">
+          <div className="glass-card p-4 rounded-xl border border-white/10 bg-slate-900/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-400" />
@@ -1185,6 +1738,40 @@ export default function TaskManager({
               <p className="text-xs text-slate-400 mt-0.5">
                 Muestra todas las tareas y solicitudes aprobadas y concluidas por la coordinación y gerencia.
               </p>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="relative w-full sm:w-48">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  placeholder="Buscar finalizadas..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  className="w-full bg-slate-950 border border-white/10 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="relative flex items-center gap-1">
+                <Calendar className="w-3.5 h-3.5 text-emerald-400 absolute left-2.5 pointer-events-none" />
+                <input
+                  type="date"
+                  value={dateFilter}
+                  onChange={e => setDateFilter(e.target.value)}
+                  title="Filtrar por fecha"
+                  className="bg-slate-950 border border-white/10 rounded-lg pl-8 pr-2 py-1.5 text-xs text-emerald-200 focus:outline-none focus:border-emerald-500 cursor-pointer font-mono"
+                />
+                {dateFilter && (
+                  <button
+                    type="button"
+                    onClick={() => setDateFilter('')}
+                    className="px-1.5 py-1 text-[10px] font-bold text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 rounded border border-rose-500/30 cursor-pointer"
+                    title="Limpiar filtro de fecha"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1427,6 +2014,151 @@ export default function TaskManager({
               </div>
             </div>
 
+            {/* MONTHLY CALENDAR GRID (When reportType === 'mensual') */}
+            {reportType === 'mensual' && (
+              <div className="space-y-4 pt-4 border-t border-white/10">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-slate-950/80 p-4 rounded-2xl border border-white/10">
+                  <div>
+                    <h3 className="text-sm font-black text-white uppercase tracking-wider flex items-center gap-2">
+                      <Calendar className="w-4 h-4 text-cyan-400" />
+                      <span>Calendario Mensual de Ingesta</span>
+                    </h3>
+                    <p className="text-[11px] text-slate-400">
+                      Mes y Año: <strong className="text-cyan-300 font-mono">{reportMonth}</strong> • Total Días: {reportMetrics.monthlyCalendarDays.length}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="flex items-center gap-1.5 text-slate-400">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/80 border border-emerald-400"></span> Con ingesta
+                    </span>
+                    <span className="flex items-center gap-1.5 text-slate-400">
+                      <span className="w-2.5 h-2.5 rounded-full bg-slate-800 border border-white/10"></span> Sin ingesta
+                    </span>
+                  </div>
+                </div>
+
+                {/* Calendar Grid Header */}
+                <div className="grid grid-cols-7 gap-1 text-center font-bold text-[10px] uppercase text-slate-400 bg-slate-950 p-2 rounded-xl border border-white/10">
+                  <div>Lun</div>
+                  <div>Mar</div>
+                  <div>Mié</div>
+                  <div>Jue</div>
+                  <div>Vie</div>
+                  <div>Sáb</div>
+                  <div>Dom</div>
+                </div>
+
+                {/* Calendar Grid Cells */}
+                <div className="grid grid-cols-7 gap-1.5">
+                  {/* Empty cells padding for first week alignment */}
+                  {(() => {
+                    const [mY, mM] = reportMonth.split('-').map(Number);
+                    const firstDayObj = new Date(mY || new Date().getFullYear(), (mM || 1) - 1, 1);
+                    const firstDayOfWeek = (firstDayObj.getDay() + 6) % 7;
+                    const blanks = [];
+                    for (let i = 0; i < firstDayOfWeek; i++) {
+                      blanks.push(<div key={`blank_${i}`} className="p-2 min-h-[70px] rounded-xl bg-slate-950/30 border border-white/5 opacity-30"></div>);
+                    }
+                    return blanks;
+                  })()}
+
+                  {reportMetrics.monthlyCalendarDays.map(day => {
+                    const hasData = day.ingestedSeconds > 0;
+                    return (
+                      <div
+                        key={day.dayNum}
+                        className={`p-2.5 min-h-[75px] rounded-xl border transition-all flex flex-col justify-between ${
+                          hasData
+                            ? 'bg-emerald-950/20 border-emerald-500/40 shadow-[0_0_12px_rgba(16,185,129,0.1)] hover:border-emerald-400'
+                            : 'bg-slate-950/60 border-white/5 hover:border-white/20'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold uppercase text-slate-400">{day.dayOfWeekShort}</span>
+                          <span className={`text-xs font-black font-mono rounded-full w-5 h-5 flex items-center justify-center ${hasData ? 'bg-emerald-500/30 text-emerald-300' : 'text-white'}`}>
+                            {day.dayNum}
+                          </span>
+                        </div>
+
+                        <div className="mt-1 space-y-0.5">
+                          <span className="text-[9px] text-slate-400 block font-medium">Horas Ingestadas:</span>
+                          <span className={`text-xs font-bold font-mono block ${hasData ? 'text-emerald-300' : 'text-slate-500'}`}>
+                            {day.ingestedHHMMSS}
+                          </span>
+                        </div>
+
+                        {day.tasksCount > 0 && (
+                          <div className="mt-1">
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-cyan-950 text-cyan-300 border border-cyan-500/30">
+                              {day.tasksCount} item{day.tasksCount > 1 ? 's' : ''}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* ADDITIONAL MONTHLY SECTIONS: DESGLOSE DE AHORRO Y MATERIAL ENTREGADO */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                  {/* Desglose de ahorro por filtro */}
+                  <div className="p-4 rounded-2xl bg-slate-950/80 border border-white/10 space-y-3">
+                    <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-emerald-400" />
+                      <span>Desglose del Ahorro por Filtro</span>
+                    </h4>
+                    <div className="space-y-2">
+                      {reportMetrics.savingsByFilter.map(sf => (
+                        <div key={sf.boardId} className="flex items-center justify-between p-2 rounded-xl bg-slate-900 border border-white/5 text-xs">
+                          <span className="text-slate-300 font-medium">{sf.boardName}</span>
+                          <div className="flex items-center gap-3 font-mono">
+                            <span className="text-slate-500 text-[10px]">{sf.count} items</span>
+                            <span className="text-emerald-300 font-bold">{sf.savedHHMMSS}</span>
+                          </div>
+                        </div>
+                      ))}
+                      <div className="flex items-center justify-between p-2.5 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-xs font-bold">
+                        <span className="text-emerald-200">Total Ahorro Acumulado</span>
+                        <span className="text-emerald-300 font-mono">{reportMetrics.tiempoAhorradoHHMMSS}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Cantidad de material entregado */}
+                  <div className="p-4 rounded-2xl bg-slate-950/80 border border-white/10 space-y-3">
+                    <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                      <Scissors className="w-4 h-4 text-blue-400" />
+                      <span>Cantidad de Material Entregado</span>
+                    </h4>
+                    <div className="p-3.5 rounded-xl bg-blue-950/20 border border-blue-500/30 space-y-2">
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="text-slate-300">Total Materiales Entregados:</span>
+                        <span className="font-bold text-white font-mono text-sm">{reportMetrics.finalizadosCount} items</span>
+                      </div>
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="text-slate-300">Duración Total Editada Entregada:</span>
+                        <span className="font-bold text-blue-300 font-mono text-sm">{reportMetrics.deliveredTotalEditedHHMMSS}</span>
+                      </div>
+                    </div>
+
+                    {/* Section Logros de Solicitudes (no administrativas ni gerenciales) */}
+                    <div className="space-y-2 pt-2 border-t border-white/10">
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                          <Award className="w-3.5 h-3.5 text-amber-400" />
+                          Logros de Solicitudes ({reportMetrics.departmentAchievements.length})
+                        </span>
+                        <span className="text-[10px] text-slate-400">No admin / gerenciales</span>
+                      </div>
+                      <p className="text-[10px] text-slate-400">
+                        Solicitudes especiales que cuentan como logro del departamento para la gerencia.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* DAILY / MONTHLY BREAKDOWN TABLE */}
             <div className="space-y-3 pt-4 border-t border-white/10">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
@@ -1544,7 +2276,7 @@ export default function TaskManager({
                   />
                 </div>
 
-                {/* Classification: General vs Otras Solicitudes */}
+                {/* Classification: General vs Otras Solicitudes / Administración */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="text-xs font-bold text-slate-300 block mb-1">Lista / Área *</label>
@@ -1553,7 +2285,7 @@ export default function TaskManager({
                       onChange={(e) => {
                         const val = e.target.value;
                         setTaskBoardId(val);
-                        if (val === 'board_otras_solicitudes') {
+                        if (val === 'board_otras_solicitudes' || val === 'board_administracion') {
                           setTaskIsOtherRequest(true);
                         } else {
                           setTaskIsOtherRequest(false);
@@ -1561,10 +2293,15 @@ export default function TaskManager({
                       }}
                       className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
                     >
-                      {productionBoards.map(b => (
-                        <option key={b.id} value={b.id}>{b.name}</option>
-                      ))}
-                      <option value="board_otras_solicitudes">Otras Solicitudes</option>
+                      <optgroup label="Procesos Audiovisuales">
+                        {productionBoards.map(b => (
+                          <option key={b.id} value={b.id}>{b.name}</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="Administración y Otras Solicitudes">
+                        <option value="board_administracion">Administración</option>
+                        <option value="board_otras_solicitudes">Otras Solicitudes / Iniciativas</option>
+                      </optgroup>
                     </select>
                   </div>
 
@@ -1583,20 +2320,46 @@ export default function TaskManager({
                   </div>
                 </div>
 
-                {/* Exclusiva de Gerencia Toggle */}
-                <div className="flex items-center gap-2 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20">
-                  <input
-                    type="checkbox"
-                    id="isGerenciaOnly"
-                    checked={taskIsGerenciaOnly}
-                    onChange={(e) => setTaskIsGerenciaOnly(e.target.checked)}
-                    className="rounded border-white/20 text-amber-500 focus:ring-amber-500 cursor-pointer"
-                  />
-                  <label htmlFor="isGerenciaOnly" className="text-xs font-bold text-amber-300 cursor-pointer flex items-center gap-1.5">
-                    <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
-                    Tarea Exclusiva de Gerencia (Oculta para usuarios generales)
-                  </label>
-                </div>
+                {/* Exclusiva de Gerencia Toggle (Solo visible para Gerente / Adjunta) */}
+                {isGerenciaUser && (
+                  <div className="flex items-center gap-2 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                    <input
+                      type="checkbox"
+                      id="isGerenciaOnly"
+                      checked={taskIsGerenciaOnly}
+                      onChange={(e) => setTaskIsGerenciaOnly(e.target.checked)}
+                      className="rounded border-white/20 text-amber-500 focus:ring-amber-500 cursor-pointer"
+                    />
+                    <label htmlFor="isGerenciaOnly" className="text-xs font-bold text-amber-300 cursor-pointer flex items-center gap-1.5">
+                      <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+                      Tarea Exclusiva de Gerencia (Oculta para usuarios generales)
+                    </label>
+                  </div>
+                )}
+
+                {/* Logro del Departamento Toggle (No administrativa ni gerencial) */}
+                {taskBoardId !== 'board_administracion' && !taskIsGerenciaOnly && (
+                  <div className="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-white/10">
+                    <div className="flex items-center gap-2.5">
+                      <Award className="w-4 h-4 text-amber-400" />
+                      <div>
+                        <span className="text-xs font-bold text-white block">Logro del Departamento</span>
+                        <span className="text-[10px] text-slate-400 block">Determina si esta solicitud cuenta como logro para los reportes gerenciales</span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setTaskIsDepartmentAchievement(!taskIsDepartmentAchievement)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all border cursor-pointer ${
+                        taskIsDepartmentAchievement
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-[0_0_10px_rgba(245,158,11,0.2)]'
+                          : 'bg-slate-900 text-slate-400 border-white/10 hover:text-white'
+                      }`}
+                    >
+                      {taskIsDepartmentAchievement ? '🏆 Sí, es Logro' : 'No es logro'}
+                    </button>
+                  </div>
+                )}
 
                 {/* Duración Material Original & Editado (Omit si es Otras Solicitudes) */}
                 {!taskIsOtherRequest && (
@@ -1625,48 +2388,275 @@ export default function TaskManager({
                   </div>
                 )}
 
-                {/* WORKFLOW STAGE BOOLEANS IN MODAL */}
-                <div className="space-y-2 p-3.5 rounded-xl bg-slate-950 border border-white/10">
-                  <div className="text-xs font-bold text-slate-300 uppercase">Etapas del Flujo de Trabajo:</div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    <label className={`p-2 rounded-xl border text-xs font-bold flex items-center gap-1.5 cursor-pointer ${taskIsIngested ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40' : 'bg-slate-900 text-slate-400 border-white/5'}`}>
-                      <input type="checkbox" checked={taskIsIngested} onChange={(e) => setTaskIsIngested(e.target.checked)} className="hidden" />
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Ingestado</span>
-                    </label>
+                {/* WORKFLOW STAGE BOOLEANS & TIMESTAMPS IN MODAL */}
+                {taskIsOtherRequest || taskBoardId === 'board_otras_solicitudes' || taskBoardId === 'board_administracion' ? (
+                  /* CUSTOM CHECKLIST MANAGER (For Administración and Otras Solicitudes) */
+                  <div className="space-y-3 p-3.5 rounded-xl bg-slate-950 border border-white/10">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-bold text-amber-300 uppercase flex items-center gap-1.5">
+                        <CheckSquare className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Lista de Verificación Personalizada ({taskChecklist.filter(i => i.completed).length}/{taskChecklist.length})</span>
+                      </div>
+                      {taskChecklist.length > 0 && (
+                        <span className="text-[10px] font-mono text-emerald-400 font-bold">
+                          {Math.round((taskChecklist.filter(i => i.completed).length / taskChecklist.length) * 100)}% Completado
+                        </span>
+                      )}
+                    </div>
 
-                    <label className={`p-2 rounded-xl border text-xs font-bold flex items-center gap-1.5 cursor-pointer ${taskIsEdited ? 'bg-blue-500/20 text-blue-300 border-blue-500/40' : 'bg-slate-900 text-slate-400 border-white/5'}`}>
-                      <input type="checkbox" checked={taskIsEdited} onChange={(e) => setTaskIsEdited(e.target.checked)} className="hidden" />
-                      <Scissors className="w-3.5 h-3.5" />
-                      <span>Editado</span>
-                    </label>
-
-                    <label className={`p-2 rounded-xl border text-xs font-bold flex items-center gap-1.5 cursor-pointer ${taskIsDocumented ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-slate-900 text-slate-400 border-white/5'}`}>
-                      <input type="checkbox" checked={taskIsDocumented} onChange={(e) => setTaskIsDocumented(e.target.checked)} className="hidden" />
-                      <Archive className="w-3.5 h-3.5" />
-                      <span>Archivado</span>
-                    </label>
-
-                    <label
-                      onClick={() => {
-                        if (!canManageTasks) {
-                          onAddNotificationToast('Acceso Restringido', 'Solo Jefes o Coordinadores pueden finalizar.', 'info');
-                        }
-                      }}
-                      className={`p-2 rounded-xl border text-xs font-bold flex items-center gap-1.5 ${canManageTasks ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'} ${taskIsFinalized ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-slate-900 text-slate-400 border-white/5'}`}
-                    >
+                    {/* Input to add item */}
+                    <div className="flex items-center gap-2">
                       <input
-                        type="checkbox"
-                        disabled={!canManageTasks}
-                        checked={taskIsFinalized}
-                        onChange={(e) => setTaskIsFinalized(e.target.checked)}
-                        className="hidden"
+                        type="text"
+                        placeholder="Escribe un punto de control (ej. Elaborar reporte, coordinar transporte)..."
+                        value={newChecklistItemText}
+                        onChange={(e) => setNewChecklistItemText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleAddChecklistItemInModal();
+                          }
+                        }}
+                        className="flex-1 bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
                       />
-                      <Crown className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>Finalizado</span>
-                    </label>
+                      <button
+                        type="button"
+                        onClick={handleAddChecklistItemInModal}
+                        className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1 shrink-0"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Añadir</span>
+                      </button>
+                    </div>
+
+                    {/* Checklist items list */}
+                    <div className="space-y-1.5 max-h-52 overflow-y-auto pr-1 scrollbar-thin">
+                      {taskChecklist.length === 0 ? (
+                        <p className="text-xs text-slate-500 italic py-2 text-center">
+                          No hay elementos en la lista de verificación. Agrega tareas específicas de control.
+                        </p>
+                      ) : (
+                        taskChecklist.map((item, index) => (
+                          <div key={item.id || index} className="flex items-center justify-between gap-2 p-2 rounded-xl bg-slate-900/90 border border-white/5">
+                            <label className="flex items-center gap-2.5 flex-1 cursor-pointer min-w-0">
+                              <input
+                                type="checkbox"
+                                checked={item.completed}
+                                onChange={() => {
+                                  setTaskChecklist(taskChecklist.map(i => i.id === item.id ? { ...i, completed: !i.completed } : i));
+                                }}
+                                className="rounded border-white/20 text-amber-500 focus:ring-amber-500 cursor-pointer"
+                              />
+                              <span className={`text-xs ${item.completed ? 'line-through text-slate-500 font-normal' : 'text-slate-200 font-medium'} truncate`}>
+                                {item.text}
+                              </span>
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setTaskChecklist(taskChecklist.filter(i => i.id !== item.id));
+                              }}
+                              className="p-1 text-slate-500 hover:text-rose-400 rounded transition-colors cursor-pointer"
+                              title="Eliminar punto"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  /* STANDARD AUDIOVISUAL STAGES */
+                  <div className="space-y-3 p-3.5 rounded-xl bg-slate-950 border border-white/10">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="text-xs font-bold text-slate-300 uppercase flex items-center gap-1.5">
+                        <Calendar className="w-3.5 h-3.5 text-cyan-400" />
+                        <span>Etapas del Flujo y Fechas de Registro</span>
+                      </div>
+                      {canManageTasks ? (
+                        <span className="text-[10px] text-cyan-400 font-bold bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/30">
+                          Edición de Fechas Habilitada (Coordinador)
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-slate-500 font-medium flex items-center gap-1">
+                          <Lock className="w-3 h-3 text-slate-500" /> Fechas fijas (Solo Coordinadores modifican)
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {/* Stage 1: Ingestado */}
+                      <div className={`p-3 rounded-xl border space-y-2 transition-all ${taskIsIngested ? 'bg-cyan-950/30 border-cyan-500/40' : 'bg-slate-900/50 border-white/5 opacity-70'}`}>
+                        <div className="flex items-center justify-between">
+                          <label className="flex items-center gap-2 cursor-pointer font-bold text-xs text-cyan-300">
+                            <input
+                              type="checkbox"
+                              checked={taskIsIngested}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                setTaskIsIngested(checked);
+                                if (checked && !taskIngestedAt) {
+                                  setTaskIngestedAt(new Date().toISOString());
+                                } else if (!checked) {
+                                  setTaskIngestedAt(undefined);
+                                }
+                              }}
+                              className="rounded border-white/20 text-cyan-500 focus:ring-cyan-500 cursor-pointer"
+                            />
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Ingestado</span>
+                          </label>
+                          {taskIsIngested && <span className="text-[9px] font-bold px-1.5 py-0.5 bg-cyan-500/20 text-cyan-300 rounded">Completado</span>}
+                        </div>
+
+                        {taskIsIngested && (
+                          <div>
+                            <label className="text-[10px] text-slate-400 font-medium block mb-1">Fecha y Hora de Ingesta:</label>
+                            <input
+                              type="datetime-local"
+                              disabled={!canManageTasks}
+                              value={formatForDatetimeLocal(taskIngestedAt)}
+                              onChange={(e) => {
+                                if (e.target.value) {
+                                  setTaskIngestedAt(new Date(e.target.value).toISOString());
+                                }
+                              }}
+                              className={`w-full bg-slate-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-cyan-200 font-mono focus:outline-none focus:border-cyan-500 ${!canManageTasks ? 'opacity-70 cursor-not-allowed bg-slate-900' : 'cursor-pointer'}`}
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Stage 2: Editado */}
+                      <div className={`p-3 rounded-xl border space-y-2 transition-all ${taskIsEdited ? 'bg-blue-950/30 border-blue-500/40' : 'bg-slate-900/50 border-white/5 opacity-70'}`}>
+                        <div className="flex items-center justify-between">
+                          <label className="flex items-center gap-2 cursor-pointer font-bold text-xs text-blue-300">
+                            <input
+                              type="checkbox"
+                              checked={taskIsEdited}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                setTaskIsEdited(checked);
+                                if (checked && !taskEditedAt) {
+                                  setTaskEditedAt(new Date().toISOString());
+                                } else if (!checked) {
+                                  setTaskEditedAt(undefined);
+                                }
+                              }}
+                              className="rounded border-white/20 text-blue-500 focus:ring-blue-500 cursor-pointer"
+                            />
+                            <Scissors className="w-3.5 h-3.5" />
+                            <span>Editado</span>
+                          </label>
+                          {taskIsEdited && <span className="text-[9px] font-bold px-1.5 py-0.5 bg-blue-500/20 text-blue-300 rounded">Completado</span>}
+                        </div>
+
+                        {taskIsEdited && (
+                          <div>
+                            <label className="text-[10px] text-slate-400 font-medium block mb-1">Fecha y Hora de Edición:</label>
+                            <input
+                              type="datetime-local"
+                              disabled={!canManageTasks}
+                              value={formatForDatetimeLocal(taskEditedAt)}
+                              onChange={(e) => {
+                                if (e.target.value) {
+                                  setTaskEditedAt(new Date(e.target.value).toISOString());
+                                }
+                              }}
+                              className={`w-full bg-slate-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-blue-200 font-mono focus:outline-none focus:border-blue-500 ${!canManageTasks ? 'opacity-70 cursor-not-allowed bg-slate-900' : 'cursor-pointer'}`}
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Stage 3: Archivado */}
+                      <div className={`p-3 rounded-xl border space-y-2 transition-all ${taskIsDocumented ? 'bg-amber-950/30 border-amber-500/40' : 'bg-slate-900/50 border-white/5 opacity-70'}`}>
+                        <div className="flex items-center justify-between">
+                          <label className="flex items-center gap-2 cursor-pointer font-bold text-xs text-amber-300">
+                            <input
+                              type="checkbox"
+                              checked={taskIsDocumented}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                setTaskIsDocumented(checked);
+                                if (checked && !taskDocumentedAt) {
+                                  setTaskDocumentedAt(new Date().toISOString());
+                                } else if (!checked) {
+                                  setTaskDocumentedAt(undefined);
+                                }
+                              }}
+                              className="rounded border-white/20 text-amber-500 focus:ring-amber-500 cursor-pointer"
+                            />
+                            <Archive className="w-3.5 h-3.5" />
+                            <span>Archivado</span>
+                          </label>
+                          {taskIsDocumented && <span className="text-[9px] font-bold px-1.5 py-0.5 bg-amber-500/20 text-amber-300 rounded">Completado</span>}
+                        </div>
+
+                        {taskIsDocumented && (
+                          <div>
+                            <label className="text-[10px] text-slate-400 font-medium block mb-1">Fecha y Hora de Archivado:</label>
+                            <input
+                              type="datetime-local"
+                              disabled={!canManageTasks}
+                              value={formatForDatetimeLocal(taskDocumentedAt)}
+                              onChange={(e) => {
+                                if (e.target.value) {
+                                  setTaskDocumentedAt(new Date(e.target.value).toISOString());
+                                }
+                              }}
+                              className={`w-full bg-slate-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-amber-200 font-mono focus:outline-none focus:border-amber-500 ${!canManageTasks ? 'opacity-70 cursor-not-allowed bg-slate-900' : 'cursor-pointer'}`}
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Stage 4: Finalizado */}
+                      <div className={`p-3 rounded-xl border space-y-2 transition-all ${taskIsFinalized ? 'bg-emerald-950/30 border-emerald-500/40' : 'bg-slate-900/50 border-white/5 opacity-70'}`}>
+                        <div className="flex items-center justify-between">
+                          <label className={`flex items-center gap-2 font-bold text-xs text-emerald-300 ${canManageTasks ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                            <input
+                              type="checkbox"
+                              disabled={!canManageTasks}
+                              checked={taskIsFinalized}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                setTaskIsFinalized(checked);
+                                if (checked && !taskFinalizedAt) {
+                                  setTaskFinalizedAt(new Date().toISOString());
+                                } else if (!checked) {
+                                  setTaskFinalizedAt(undefined);
+                                }
+                              }}
+                              className="rounded border-white/20 text-emerald-500 focus:ring-emerald-500 cursor-pointer"
+                            />
+                            <Crown className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>Finalizado</span>
+                          </label>
+                          {taskIsFinalized && <span className="text-[9px] font-bold px-1.5 py-0.5 bg-emerald-500/20 text-emerald-300 rounded">Autorizado</span>}
+                        </div>
+
+                        {taskIsFinalized && (
+                          <div>
+                            <label className="text-[10px] text-slate-400 font-medium block mb-1">Fecha y Hora de Finalización:</label>
+                            <input
+                              type="datetime-local"
+                              disabled={!canManageTasks}
+                              value={formatForDatetimeLocal(taskFinalizedAt)}
+                              onChange={(e) => {
+                                if (e.target.value) {
+                                  setTaskFinalizedAt(new Date(e.target.value).toISOString());
+                                }
+                              }}
+                              className={`w-full bg-slate-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-emerald-200 font-mono focus:outline-none focus:border-emerald-500 ${!canManageTasks ? 'opacity-70 cursor-not-allowed bg-slate-900' : 'cursor-pointer'}`}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* Personal Asignado */}
                 <div className="space-y-2 p-3.5 rounded-xl bg-slate-950 border border-white/10">

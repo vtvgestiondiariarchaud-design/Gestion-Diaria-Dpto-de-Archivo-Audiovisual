@@ -128,8 +128,9 @@ export interface TaskCard {
   isFinalized?: boolean;
   finalizedAt?: string;
 
-  // Clasificación para Otras Solicitudes
+  // Clasificación para Otras Solicitudes y Logros
   isOtherRequest?: boolean;
+  isDepartmentAchievement?: boolean; // Determina si la tarea cuenta como logro del departamento (excluye gerencia y administración)
 
   history?: TaskHistoryItem[];
 }
@@ -152,5 +153,19 @@ export interface TaskNotification {
   message: string;
   createdAt: string;
   read: boolean;
+}
+
+export interface FreeDayRequest {
+  id: string;
+  workerId: string;
+  workerName: string;
+  divisionId: string;
+  requestedDate: string; // YYYY-MM-DD
+  reason?: string;
+  status: 'pending' | 'approved' | 'rejected';
+  createdAt: string;
+  reviewedByWorkerId?: string;
+  reviewedByName?: string;
+  reviewedAt?: string;
 }
 

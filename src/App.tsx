@@ -7,8 +7,8 @@ import {
   Umbrella, Kanban, CheckSquare
 } from 'lucide-react';
 
-import { Division, Worker, ShiftAssignment, ShiftChangeRequest, UserRole, TaskBoard, TaskCard, TaskNotification } from './types';
-import { db, DEFAULT_DIVISIONS, isSupabaseConfigured, supabaseConnectionStatus, lastSupabaseError, supabase } from './supabaseClient';
+import { Division, Worker, ShiftAssignment, ShiftChangeRequest, UserRole, TaskBoard, TaskCard, TaskNotification, FreeDayRequest } from './types';
+import { db, getLocalDb, DEFAULT_DIVISIONS, isSupabaseConfigured, supabaseConnectionStatus, lastSupabaseError, supabase } from './supabaseClient';
 
 import TaskManager from './components/TaskManager';
 import TrelloBoard from './components/TrelloBoard';
@@ -209,6 +209,7 @@ export default function App() {
   }, [workers, divisions]);
   const [assignments, setAssignments] = useState<ShiftAssignment[]>([]);
   const [requests, setRequests] = useState<ShiftChangeRequest[]>([]);
+  const [freeDayRequests, setFreeDayRequests] = useState<FreeDayRequest[]>([]);
 
   // Task System States
   const [taskBoards, setTaskBoards] = useState<TaskBoard[]>([]);
@@ -361,6 +362,7 @@ export default function App() {
       const fetchedWorkers = await db.fetchWorkers();
       const fetchedAssignments = await db.fetchAssignments();
       const fetchedRequests = await db.fetchRequests();
+      const fetchedFreeDayRequests = await db.fetchFreeDayRequests();
 
       // Fetch Tasks System Data
       const fetchedTaskBoards = await db.fetchTaskBoards();
@@ -538,6 +540,7 @@ export default function App() {
       setWorkers(mergedWorkers);
       setAssignments(fetchedAssignments);
       setRequests(fetchedRequests);
+      setFreeDayRequests(fetchedFreeDayRequests);
 
       setDbStatus(supabaseConnectionStatus);
       setDbError(lastSupabaseError);
@@ -1869,6 +1872,12 @@ export default function App() {
                         onUpdateWorkers={handleUpdateWorkers}
                         userRole={currentSession.role}
                         userDivisionId={currentSession.divisionId}
+                        currentSession={currentSession}
+                        freeDayRequests={freeDayRequests}
+                        onUpdateFreeDayRequests={(updatedReqs) => {
+                          setFreeDayRequests(updatedReqs);
+                          getLocalDb.saveFreeDayRequests(updatedReqs);
+                        }}
                         onUpdateAssignments={handleUpdateAssignments}
                         onAddNotification={addNotification}
                       />
