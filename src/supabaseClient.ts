@@ -354,57 +354,65 @@ export const db = {
   // Divisions
   async fetchDivisions(): Promise<Division[]> {
     if (!supabase) {
-      throw new Error('Supabase no está configurado. Por favor, define VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY en tus variables de entorno.');
+      return getLocalDb.getDivisions();
     }
-    const { data, error } = await supabase.from('divisions').select('*');
-    if (error) {
-      console.error('Error fetching divisions from Supabase:', error);
-      setSupabaseConnectionStatus('error', error.message);
-      throw error;
-    }
-    if (data && data.length === 0) {
-      console.log('Seeding default divisions to Supabase...');
-      const payload = DEFAULT_DIVISIONS.map(d => ({
-        id: d.id,
-        name: d.name,
-        description: d.description,
-        coordinator_id: d.coordinatorId,
-        coordinator_name: d.coordinatorName
-      }));
-      const { error: seedError } = await supabase.from('divisions').insert(payload);
-      if (seedError) {
-        console.warn('Error seeding divisions to Supabase:', seedError);
-        setSupabaseConnectionStatus('error', seedError.message);
-        const errStr = JSON.stringify(seedError).toLowerCase();
-        const isColumnError = seedError.code === '42703' || errStr.includes('coordinator_') || errStr.includes('column');
-        if (isColumnError) {
-          console.warn('Retrying divisions seed without coordinator columns...');
-          const fallbackPayload = DEFAULT_DIVISIONS.map(d => ({
-            id: d.id,
-            name: d.name,
-            description: d.description
-          }));
-          const { error: retrySeedError } = await supabase.from('divisions').insert(fallbackPayload);
-          if (retrySeedError) {
-            console.error('Error seeding divisions fallback:', retrySeedError);
-            throw retrySeedError;
+    try {
+      const { data, error } = await supabase.from('divisions').select('*');
+      if (error) {
+        console.warn('Error fetching divisions from Supabase:', error.message);
+        setSupabaseConnectionStatus('error', `Error al consultar 'divisions': ${error.message}. Por favor ejecuta el Script SQL en Supabase.`);
+        return getLocalDb.getDivisions();
+      }
+      if (data && data.length === 0) {
+        console.log('Seeding default divisions to Supabase...');
+        const payload = DEFAULT_DIVISIONS.map(d => ({
+          id: d.id,
+          name: d.name,
+          description: d.description,
+          coordinator_id: d.coordinatorId,
+          coordinator_name: d.coordinatorName
+        }));
+        const { error: seedError } = await supabase.from('divisions').insert(payload);
+        if (seedError) {
+          console.warn('Error seeding divisions to Supabase:', seedError);
+          setSupabaseConnectionStatus('error', seedError.message);
+          const errStr = JSON.stringify(seedError).toLowerCase();
+          const isColumnError = seedError.code === '42703' || errStr.includes('coordinator_') || errStr.includes('column');
+          if (isColumnError) {
+            console.warn('Retrying divisions seed without coordinator columns...');
+            const fallbackPayload = DEFAULT_DIVISIONS.map(d => ({
+              id: d.id,
+              name: d.name,
+              description: d.description
+            }));
+            const { error: retrySeedError } = await supabase.from('divisions').insert(fallbackPayload);
+            if (retrySeedError) {
+              console.error('Error seeding divisions fallback:', retrySeedError);
+              return getLocalDb.getDivisions();
+            } else {
+              setSupabaseConnectionStatus('connected');
+              return DEFAULT_DIVISIONS;
+            }
           } else {
-            setSupabaseConnectionStatus('connected');
-            return DEFAULT_DIVISIONS;
+            return getLocalDb.getDivisions();
           }
-        } else {
-          throw seedError;
         }
       }
+      setSupabaseConnectionStatus('connected');
+      const mapped = (data || []).map(item => ({
+        id: item.id,
+        name: item.name,
+        description: item.description || '',
+        coordinatorId: item.coordinator_id || null,
+        coordinatorName: item.coordinator_name || null
+      }));
+      getLocalDb.saveDivisions(mapped);
+      return mapped;
+    } catch (err: any) {
+      console.warn('Supabase fetchDivisions failed, using local storage fallback:', err);
+      setSupabaseConnectionStatus('error', err?.message || 'Error de conexión con Supabase');
+      return getLocalDb.getDivisions();
     }
-    setSupabaseConnectionStatus('connected');
-    return (data || []).map(item => ({
-      id: item.id,
-      name: item.name,
-      description: item.description || '',
-      coordinatorId: item.coordinator_id || null,
-      coordinatorName: item.coordinator_name || null
-    }));
   },
 
   async createDivision(division: Division): Promise<void> {
@@ -533,45 +541,63 @@ export const db = {
   // Workers
   async fetchWorkers(): Promise<Worker[]> {
     if (!supabase) {
-      throw new Error('Supabase no está configurado.');
+      return getLocalDb.getWorkers();
     }
-    const { data, error } = await supabase.from('workers').select('*');
-    if (error) {
-      console.error('Error fetching workers from Supabase:', error);
-      setSupabaseConnectionStatus('error', error.message);
-      throw error;
-    }
-    return (data || []).map(w => {
-      let mealsPreferenceObj = undefined;
-      if (w.meals_preference) {
-        try {
-          mealsPreferenceObj = JSON.parse(w.meals_preference);
-        } catch (e) {
-          console.warn('Error parsing meals_preference JSON:', e);
-        }
+    try {
+      const { data, error } = await supabase.from('workers').select('*');
+      if (error) {
+        console.warn('Error fetching workers from Supabase:', error.message);
+        setSupabaseConnectionStatus('error', `Error al consultar 'workers': ${error.message}. Ejecuta el Script SQL en Supabase.`);
+        return getLocalDb.getWorkers();
       }
-      return {
-        id: w.id,
-        name: w.name,
-        email: w.email,
-        cargo: w.cargo,
-        divisionId: w.division_id,
-        role: w.role as any,
-        cedula: w.cedula,
-        password: w.password || '',
-        mustChangePassword: w.must_change_password === true || w.must_change_password === 'true',
-        fixedShift: (w.fixed_shift || 'pool') as any,
-        vacationStart: w.vacation_start || undefined,
-        vacationEnd: w.vacation_end || undefined,
-        manualFreeDaysAdjustment: Number(w.manual_free_days_adjustment) || 0,
-        mealsPreference: mealsPreferenceObj
-      };
-    });
+      setSupabaseConnectionStatus('connected');
+      const mapped = (data || []).map(w => {
+        let mealsPreferenceObj = undefined;
+        if (w.meals_preference) {
+          try {
+            mealsPreferenceObj = JSON.parse(w.meals_preference);
+          } catch (e) {
+            console.warn('Error parsing meals_preference JSON:', e);
+          }
+        }
+        return {
+          id: w.id,
+          name: w.name,
+          email: w.email,
+          cargo: w.cargo,
+          divisionId: w.division_id,
+          role: w.role as any,
+          cedula: w.cedula,
+          password: w.password || '',
+          mustChangePassword: w.must_change_password === true || w.must_change_password === 'true',
+          fixedShift: (w.fixed_shift || 'pool') as any,
+          vacationStart: w.vacation_start || undefined,
+          vacationEnd: w.vacation_end || undefined,
+          manualFreeDaysAdjustment: Number(w.manual_free_days_adjustment) || 0,
+          mealsPreference: mealsPreferenceObj
+        };
+      });
+      getLocalDb.saveWorkers(mapped);
+      return mapped;
+    } catch (err: any) {
+      console.warn('Supabase fetchWorkers failed, using local storage fallback:', err);
+      setSupabaseConnectionStatus('error', err?.message || 'Error de conexión con Supabase');
+      return getLocalDb.getWorkers();
+    }
   },
 
   async registerWorker(worker: Worker): Promise<void> {
+    const local = getLocalDb.getWorkers();
+    const idx = local.findIndex(w => w.id === worker.id);
+    if (idx >= 0) {
+      local[idx] = worker;
+    } else {
+      local.push(worker);
+    }
+    getLocalDb.saveWorkers(local);
+
     if (!supabase) {
-      throw new Error('Supabase no está configurado.');
+      return;
     }
     const payload: any = {
       id: worker.id,
@@ -681,8 +707,15 @@ export const db = {
   },
 
   async updateWorker(worker: Worker): Promise<void> {
+    const local = getLocalDb.getWorkers();
+    const idx = local.findIndex(w => w.id === worker.id);
+    if (idx >= 0) {
+      local[idx] = { ...local[idx], ...worker };
+      getLocalDb.saveWorkers(local);
+    }
+
     if (!supabase) {
-      throw new Error('Supabase no está configurado.');
+      return;
     }
     const payload: any = {
       name: worker.name,
@@ -810,78 +843,113 @@ export const db = {
   // Shift Assignments
   async fetchAssignments(): Promise<ShiftAssignment[]> {
     if (!supabase) {
-      throw new Error('Supabase no está configurado.');
+      return getLocalDb.getAssignments();
     }
-    const { data, error } = await supabase.from('shift_assignments').select('*');
-    if (error) {
-      console.error('Error fetching shift assignments from Supabase:', error);
-      setSupabaseConnectionStatus('error', error.message);
-      throw error;
+    try {
+      const { data, error } = await supabase.from('shift_assignments').select('*');
+      if (error) {
+        console.warn('Error fetching shift assignments from Supabase:', error.message);
+        setSupabaseConnectionStatus('error', `Error al consultar 'shift_assignments': ${error.message}. Ejecuta el Script SQL en Supabase.`);
+        return getLocalDb.getAssignments();
+      }
+      setSupabaseConnectionStatus('connected');
+      const mapped = (data || []).map(a => ({
+        id: a.id,
+        workerId: a.worker_id,
+        divisionId: a.division_id,
+        date: a.date,
+        shiftType: a.shift_type as any
+      }));
+      getLocalDb.saveAssignments(mapped);
+      return mapped;
+    } catch (err: any) {
+      console.warn('Supabase fetchAssignments failed, using local storage fallback:', err);
+      setSupabaseConnectionStatus('error', err?.message || 'Error de conexión con Supabase');
+      return getLocalDb.getAssignments();
     }
-    return (data || []).map(a => ({
-      id: a.id,
-      workerId: a.worker_id,
-      divisionId: a.division_id,
-      date: a.date,
-      shiftType: a.shift_type as any
-    }));
   },
 
   async upsertAssignment(assignment: ShiftAssignment): Promise<void> {
-    if (!supabase) {
-      throw new Error('Supabase no está configurado.');
+    const current = getLocalDb.getAssignments();
+    const idx = current.findIndex(a => a.id === assignment.id);
+    if (idx >= 0) {
+      current[idx] = assignment;
+    } else {
+      current.push(assignment);
     }
-    const { error } = await supabase.from('shift_assignments').upsert({
-      id: assignment.id,
-      worker_id: assignment.workerId,
-      division_id: assignment.divisionId,
-      date: assignment.date,
-      shift_type: assignment.shiftType
-    });
-    if (error) {
-      console.error('Error upserting assignment in Supabase:', error);
-      throw error;
+    getLocalDb.saveAssignments(current);
+
+    if (supabase) {
+      try {
+        const { error } = await supabase.from('shift_assignments').upsert({
+          id: assignment.id,
+          worker_id: assignment.workerId,
+          division_id: assignment.divisionId,
+          date: assignment.date,
+          shift_type: assignment.shiftType
+        });
+        if (error) {
+          console.warn('Error upserting assignment in Supabase:', error);
+        }
+      } catch (err) {
+        console.warn('Error upserting assignment in Supabase:', err);
+      }
     }
   },
 
   async deleteAssignmentsForDivisionAndDate(divisionId: string, date: string): Promise<void> {
-    if (!supabase) {
-      throw new Error('Supabase no está configurado.');
-    }
-    const { error } = await supabase
-      .from('shift_assignments')
-      .delete()
-      .eq('division_id', divisionId)
-      .eq('date', date);
-    if (error) {
-      console.error('Error deleting assignments in Supabase:', error);
-      throw error;
+    const current = getLocalDb.getAssignments();
+    const filtered = current.filter(a => !(a.divisionId === divisionId && a.date === date));
+    getLocalDb.saveAssignments(filtered);
+
+    if (supabase) {
+      try {
+        const { error } = await supabase
+          .from('shift_assignments')
+          .delete()
+          .eq('division_id', divisionId)
+          .eq('date', date);
+        if (error) {
+          console.warn('Error deleting assignments in Supabase:', error);
+        }
+      } catch (err) {
+        console.warn('Error deleting assignments in Supabase:', err);
+      }
     }
   },
 
   // Shift Change Requests
   async fetchRequests(): Promise<ShiftChangeRequest[]> {
     if (!supabase) {
-      throw new Error('Supabase no está configurado.');
+      return getLocalDb.getRequests();
     }
-    const { data, error } = await supabase.from('shift_change_requests').select('*').order('created_at', { ascending: false });
-    if (error) {
-      console.error('Error fetching shift requests from Supabase:', error);
-      setSupabaseConnectionStatus('error', error.message);
-      throw error;
+    try {
+      const { data, error } = await supabase.from('shift_change_requests').select('*').order('created_at', { ascending: false });
+      if (error) {
+        console.warn('Error fetching shift requests from Supabase:', error.message);
+        setSupabaseConnectionStatus('error', `Error al consultar 'shift_change_requests': ${error.message}. Ejecuta el Script SQL en Supabase.`);
+        return getLocalDb.getRequests();
+      }
+      setSupabaseConnectionStatus('connected');
+      const mapped = (data || []).map(r => ({
+        id: r.id,
+        requesterId: r.requester_id,
+        requesterName: r.requester_name,
+        targetWorkerId: r.target_worker_id,
+        targetWorkerName: r.target_worker_name,
+        divisionId: r.division_id,
+        date: r.date,
+        reason: r.reason,
+        status: r.status as any,
+        createdAt: r.created_at
+      }));
+      getLocalDb.saveRequests(mapped);
+      return mapped;
+    } catch (err: any) {
+      console.warn('Supabase fetchRequests failed, using local storage fallback:', err);
+      setSupabaseConnectionStatus('error', err?.message || 'Error de conexión con Supabase');
+      return getLocalDb.getRequests();
     }
-    return (data || []).map(r => ({
-      id: r.id,
-      requesterId: r.requester_id,
-      requesterName: r.requester_name,
-      targetWorkerId: r.target_worker_id,
-      targetWorkerName: r.target_worker_name,
-      divisionId: r.division_id,
-      date: r.date,
-      reason: r.reason,
-      status: r.status as any,
-      createdAt: r.created_at
-    }));
   },
 
   async createRequest(req: ShiftChangeRequest): Promise<void> {
@@ -965,20 +1033,24 @@ export const db = {
     }
 
     if (supabase) {
-      const { error } = await supabase.from('task_boards').upsert([{
-        id: board.id,
-        name: board.name,
-        description: board.description || '',
-        color: board.color || 'cyan',
-        division_id: board.divisionId || null,
-        created_at: board.createdAt || new Date().toISOString()
-      }]);
-      if (error) {
-        console.error('Error upserting task_board to Supabase:', error);
-        setSupabaseConnectionStatus('error', `Error en 'task_boards': ${error.message}`);
-        throw new Error(`Error en Supabase (task_boards): ${error.message}`);
-      } else {
-        setSupabaseConnectionStatus('connected');
+      try {
+        const { error } = await supabase.from('task_boards').upsert([{
+          id: board.id,
+          name: board.name,
+          description: board.description || '',
+          color: board.color || 'cyan',
+          division_id: board.divisionId || null,
+          created_at: board.createdAt || new Date().toISOString()
+        }]);
+        if (error) {
+          console.warn('Error upserting task_board to Supabase:', error.message);
+          setSupabaseConnectionStatus('error', `Error en 'task_boards': ${error.message}. Por favor ejecuta el Script SQL en Supabase.`);
+        } else {
+          setSupabaseConnectionStatus('connected');
+        }
+      } catch (err: any) {
+        console.warn('Supabase createTaskBoard failed:', err);
+        setSupabaseConnectionStatus('error', err?.message || 'Error en Supabase');
       }
     }
   },
@@ -996,11 +1068,14 @@ export const db = {
     }
 
     if (supabase) {
-      const { error } = await supabase.from('task_boards').delete().eq('id', boardId);
-      if (error) {
-        console.error('Error deleting task_board from Supabase:', error);
-        setSupabaseConnectionStatus('error', `Error en 'task_boards': ${error.message}`);
-        throw new Error(`Error en Supabase al eliminar tablero: ${error.message}`);
+      try {
+        const { error } = await supabase.from('task_boards').delete().eq('id', boardId);
+        if (error) {
+          console.warn('Error deleting task_board from Supabase:', error.message);
+          setSupabaseConnectionStatus('error', `Error en 'task_boards': ${error.message}`);
+        }
+      } catch (err: any) {
+        console.warn('Supabase deleteTaskBoard failed:', err);
       }
     }
   },
@@ -1040,7 +1115,12 @@ export const db = {
             isOtherRequest: Boolean(c.is_other_request),
             isDepartmentAchievement: Boolean(c.is_department_achievement),
             isDiscarded: Boolean(c.is_discarded),
-            discardedAt: c.discarded_at || undefined
+            discardedAt: c.discarded_at || undefined,
+            linkedTaskIds: (() => {
+              if (!c.linked_task_ids) return [];
+              if (Array.isArray(c.linked_task_ids)) return c.linked_task_ids;
+              try { return JSON.parse(c.linked_task_ids); } catch { return []; }
+            })()
           }));
           setSupabaseConnectionStatus('connected');
           localStorage.setItem('vtv_task_cards', JSON.stringify(supabaseCards));
@@ -1104,6 +1184,7 @@ export const db = {
         is_department_achievement: Boolean(card.isDepartmentAchievement),
         is_discarded: Boolean(card.isDiscarded),
         discarded_at: card.discardedAt || null,
+        linked_task_ids: JSON.stringify(card.linkedTaskIds || []),
         created_by_worker_id: card.createdByWorkerId || null,
         created_by_name: card.createdByName || 'Sistema',
         created_at: card.createdAt || new Date().toISOString()
@@ -1116,6 +1197,12 @@ export const db = {
           const errStr = JSON.stringify(error).toLowerCase();
           const isColumnError = error.code === '42703' || errStr.includes('column') || errStr.includes('schema cache');
           const isFKError = error.code === '23503' || errStr.includes('foreign key') || errStr.includes('fkey') || errStr.includes('board_id');
+
+          if (isColumnError && 'linked_task_ids' in currentPayload) {
+            console.warn('Pruning missing "linked_task_ids" column and retrying...');
+            delete currentPayload.linked_task_ids;
+            return executeUpsert(currentPayload);
+          }
 
           if (isColumnError && 'is_department_achievement' in currentPayload) {
             console.warn('Pruning missing "is_department_achievement" column and retrying...');
@@ -1151,15 +1238,19 @@ export const db = {
             }
           }
 
-          console.error('Error upserting task_card to Supabase:', error);
-          setSupabaseConnectionStatus('error', `Error al guardar tarea en Supabase: ${error.message}`);
-          throw new Error(`Error en Supabase (task_cards): ${error.message}. Asegúrate de haber ejecutado el Script SQL actualizado en Supabase.`);
+          console.warn('Error upserting task_card to Supabase:', error.message);
+          setSupabaseConnectionStatus('error', `Error al guardar tarea en Supabase: ${error.message}. Por favor ejecuta el Script SQL en Supabase.`);
         } else {
           setSupabaseConnectionStatus('connected');
         }
       };
 
-      await executeUpsert(payload);
+      try {
+        await executeUpsert(payload);
+      } catch (err: any) {
+        console.warn('Supabase upsertTaskCard error:', err);
+        setSupabaseConnectionStatus('error', err?.message || 'Error guardando tarea en Supabase');
+      }
     }
   },
 
@@ -1176,11 +1267,14 @@ export const db = {
     }
 
     if (supabase) {
-      const { error } = await supabase.from('task_cards').delete().eq('id', cardId);
-      if (error) {
-        console.error('Error deleting task_card from Supabase:', error);
-        setSupabaseConnectionStatus('error', `Error al eliminar tarea en Supabase: ${error.message}`);
-        throw new Error(`Error en Supabase al eliminar tarea: ${error.message}`);
+      try {
+        const { error } = await supabase.from('task_cards').delete().eq('id', cardId);
+        if (error) {
+          console.warn('Error deleting task_card from Supabase:', error.message);
+          setSupabaseConnectionStatus('error', `Error al eliminar tarea en Supabase: ${error.message}`);
+        }
+      } catch (err: any) {
+        console.warn('Supabase deleteTaskCard error:', err);
       }
     }
   },

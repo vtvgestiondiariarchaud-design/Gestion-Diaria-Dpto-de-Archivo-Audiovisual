@@ -6,7 +6,7 @@ import {
   Bell, Check, Tag, Sparkles, FolderPlus, ShieldAlert, ArrowRight,
   UserCheck, AlertTriangle, Layers, FileText, Printer, Copy, Database,
   Code2, Download, ExternalLink, BarChart3, Eye, Lock, Crown, Scissors,
-  FileCheck, Archive, Award, CheckCheck, BellOff
+  FileCheck, Archive, Award, CheckCheck, BellOff, Link2
 } from 'lucide-react';
 import { TaskBoard, TaskCard, TaskNotification, TaskStatus, Worker, Division, UserRole } from '../types';
 
@@ -172,6 +172,7 @@ export default function TaskManager({
   const [taskIsDepartmentAchievement, setTaskIsDepartmentAchievement] = useState<boolean>(false);
   const [taskIsDiscarded, setTaskIsDiscarded] = useState<boolean>(false);
   const [taskDiscardedAt, setTaskDiscardedAt] = useState<string | undefined>(undefined);
+  const [taskLinkedTaskIds, setTaskLinkedTaskIds] = useState<string[]>([]);
 
   // Report Generator Filters State
   const [reportType, setReportType] = useState<'diario' | 'mensual' | 'anual'>('diario');
@@ -435,11 +436,24 @@ export default function TaskManager({
       return true;
     };
 
-    // 1. Ingestados en el período
-    const ingestadosEnPeriodo = baseCards.filter(c => c.isIngested && matchesPeriod(c.ingestedAt || c.startDate || c.createdAt));
+    const getCardIngestedYMD = (c: TaskCard) => {
+      const raw = c.ingestedAt || c.startDate || c.createdAt;
+      if (!raw) return '';
+      try {
+        const d = new Date(raw);
+        if (!isNaN(d.getTime())) {
+          const pad = (n: number) => n < 10 ? '0' + n : n;
+          return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+        }
+      } catch {}
+      return raw.slice(0, 10);
+    };
+
+    // 1. Ingestados en el período (basado en la fecha/hora que tiene la tarea marcada en ingesta)
+    const ingestadosEnPeriodo = baseCards.filter(c => c.isIngested && matchesPeriod(getCardIngestedYMD(c)));
     
     // Horas de Ingesta: se suman inmediatamente tan pronto como se marca la tarea como ingestado (si no es otra solicitud)
-    const ingestadosValidos = baseCards.filter(c => c.isIngested && !c.isOtherRequest && matchesPeriod(c.ingestedAt || c.startDate || c.createdAt));
+    const ingestadosValidos = baseCards.filter(c => c.isIngested && !c.isOtherRequest && matchesPeriod(getCardIngestedYMD(c)));
     const totalIngestaSeconds = ingestadosValidos.reduce((sum, c) => sum + parseDurationToSeconds(c.duration), 0);
 
     // 2. Editados en el período
@@ -492,12 +506,10 @@ export default function TaskManager({
       const dt = new Date(mYear, mMonth - 1, d);
       const dayOfWeekIndex = dt.getDay();
 
-      // Buscar tareas ingestadas en esta fecha
+      // Buscar tareas ingestadas en esta fecha basada en su fecha/hora de ingesta
       const dayTasks = baseCards.filter(c => {
         if (!c.isIngested || c.isOtherRequest) return false;
-        const ingDate = c.ingestedAt || c.startDate || c.createdAt;
-        if (!ingDate) return false;
-        return ingDate.startsWith(dateStr);
+        return getCardIngestedYMD(c) === dateStr;
       });
 
       const dayIngestedSeconds = dayTasks.reduce((sum, c) => sum + parseDurationToSeconds(c.duration), 0);
@@ -626,20 +638,52 @@ export default function TaskManager({
         updatedCard.status = 'Archivando' as any;
       }
     } else if (stage === 'discarded') {
-      const nextVal = !card.isDiscarded;
-      if (!nextVal && !canManageTasks) {
+      if (!canManageTasks) {
         onAddNotificationToast(
           'Acceso Restringido',
-          'Solo los Jefes de División, Coordinadores o Gerencia pueden restaurar o desmarcar el material descartado.',
+          'Solo los Jefes de División, Coordinadores o Gerencia pueden marcar como descartar o restaurar el material.',
           'info'
         );
         return;
       }
+      const nextVal = !card.isDiscarded;
       updatedCard.isDiscarded = nextVal;
       updatedCard.discardedAt = nextVal ? (card.discardedAt || nowIso) : undefined;
     }
 
+    // Auto self-assign on modification
+    if (currentWorkerId) {
+      const arr = updatedCard.assignedWorkerIds || [];
+      if (!arr.includes(currentWorkerId)) {
+        updatedCard.assignedWorkerIds = [...arr, currentWorkerId];
+      }
+    }
+
     onSaveCard(updatedCard);
+
+    // Propagate stage changes to linked tasks if stage is documented or finalized
+    if ((stage === 'documented' || stage === 'finalized') && card.linkedTaskIds && card.linkedTaskIds.length > 0) {
+      card.linkedTaskIds.forEach(linkedId => {
+        const linkedCard = cards.find(c => c.id === linkedId);
+        if (linkedCard) {
+          const syncCard = { ...linkedCard };
+          if (currentWorkerId) {
+            const arr = syncCard.assignedWorkerIds || [];
+            if (!arr.includes(currentWorkerId)) syncCard.assignedWorkerIds = [...arr, currentWorkerId];
+          }
+          if (stage === 'documented') {
+            syncCard.isDocumented = updatedCard.isDocumented;
+            syncCard.documentedAt = updatedCard.documentedAt;
+            if (updatedCard.isDocumented) syncCard.status = 'Archivando' as any;
+          } else if (stage === 'finalized') {
+            syncCard.isFinalized = updatedCard.isFinalized;
+            syncCard.finalizedAt = updatedCard.finalizedAt;
+            if (updatedCard.isFinalized) syncCard.status = 'Finalizado' as any;
+          }
+          onSaveCard(syncCard);
+        }
+      });
+    }
     onAddNotificationToast(
       'Etapa Actualizada',
       `Se actualizó el estado de la etapa en "${card.title}".`,
@@ -720,6 +764,7 @@ export default function TaskManager({
     setTaskIsDepartmentAchievement(false);
     setTaskIsDiscarded(false);
     setTaskDiscardedAt(undefined);
+    setTaskLinkedTaskIds([]);
 
     const today = new Date().toISOString().split('T')[0];
     setTaskStartDate(today);
@@ -769,6 +814,7 @@ export default function TaskManager({
     setTaskIsDepartmentAchievement(Boolean(card.isDepartmentAchievement));
     setTaskIsDiscarded(Boolean(card.isDiscarded));
     setTaskDiscardedAt(card.discardedAt);
+    setTaskLinkedTaskIds(card.linkedTaskIds || []);
 
     setShowTaskModal(true);
 
@@ -791,6 +837,11 @@ export default function TaskManager({
     const nowIso = new Date().toISOString();
     const cardId = editingCard ? editingCard.id : `task_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
     const isOther = taskIsOtherRequest || taskBoardId === 'board_otras_solicitudes' || taskBoardId === 'board_administracion';
+
+    let finalAssigned = [...taskAssignedWorkerIds];
+    if (currentWorkerId && !finalAssigned.includes(currentWorkerId)) {
+      finalAssigned.push(currentWorkerId);
+    }
 
     const cardData: TaskCard = {
       id: cardId,
@@ -817,12 +868,24 @@ export default function TaskManager({
       finalizedAt: taskIsFinalized ? (taskFinalizedAt || nowIso) : undefined,
       startDate: taskStartDate,
       dueDate: taskDueDate,
-      assignedWorkerIds: taskAssignedWorkerIds,
+      assignedWorkerIds: finalAssigned,
       checklist: taskChecklist,
       createdAt: editingCard ? editingCard.createdAt : nowIso,
       createdByWorkerId: editingCard ? editingCard.createdByWorkerId : currentSession?.userId,
-      createdByName: editingCard ? editingCard.createdByName : currentSession?.name
+      createdByName: editingCard ? editingCard.createdByName : currentSession?.name,
+      linkedTaskIds: taskLinkedTaskIds
     };
+
+    if (!canManageTasks) {
+      if (!editingCard?.isDiscarded && cardData.isDiscarded) {
+        onAddNotificationToast('Acceso Restringido', 'Solo los Jefes de División, Coordinadores o Gerencia pueden descartar el material.', 'info');
+        return;
+      }
+      if (!editingCard?.isFinalized && cardData.isFinalized) {
+        onAddNotificationToast('Acceso Restringido', 'Solo los Jefes de División, Coordinadores o Gerencia pueden colocar tareas como finalizadas.', 'info');
+        return;
+      }
+    }
 
     if (editingCard && !canManageTasks) {
       if (editingCard.isIngested && !cardData.isIngested) {
@@ -851,7 +914,35 @@ export default function TaskManager({
       }
     }
 
+    // Save main card
     onSaveCard(cardData);
+
+    // Sync linked tasks
+    taskLinkedTaskIds.forEach(linkedId => {
+      const linkedCard = cards.find(c => c.id === linkedId);
+      if (linkedCard) {
+        const existingLinks = linkedCard.linkedTaskIds || [];
+        const updatedLinks = Array.from(new Set([...existingLinks, cardId]));
+        const updatedLinkedCard: TaskCard = {
+          ...linkedCard,
+          linkedTaskIds: updatedLinks
+        };
+        if (currentWorkerId && !updatedLinkedCard.assignedWorkerIds.includes(currentWorkerId)) {
+          updatedLinkedCard.assignedWorkerIds = [...updatedLinkedCard.assignedWorkerIds, currentWorkerId];
+        }
+        if (cardData.isDocumented) {
+          updatedLinkedCard.isDocumented = true;
+          updatedLinkedCard.documentedAt = cardData.documentedAt || nowIso;
+          updatedLinkedCard.status = 'Archivando' as any;
+        }
+        if (cardData.isFinalized) {
+          updatedLinkedCard.isFinalized = true;
+          updatedLinkedCard.finalizedAt = cardData.finalizedAt || nowIso;
+          updatedLinkedCard.status = 'Finalizado';
+        }
+        onSaveCard(updatedLinkedCard);
+      }
+    });
     setShowTaskModal(false);
     onAddNotificationToast(
       editingCard ? 'Tarea Actualizada' : 'Tarea Creada',
@@ -1500,6 +1591,16 @@ export default function TaskManager({
                         <span className="px-2 py-0.5 rounded-md text-[10px] font-bold font-mono bg-cyan-500/10 text-cyan-300 border border-cyan-500/20">
                           {bObj?.name || 'Ingesta'}
                         </span>
+                        {(card.isOtherRequest || card.boardId === 'board_otras_solicitudes' || card.boardId === 'board_administracion') && (
+                          <span className="px-2 py-0.5 rounded-md text-[9px] font-bold font-mono bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm flex items-center gap-1">
+                            <Tag className="w-2.5 h-2.5 text-amber-400" /> Otras Solicitudes
+                          </span>
+                        )}
+                        {card.linkedTaskIds && card.linkedTaskIds.length > 0 && (
+                          <span className="px-2 py-0.5 rounded-md text-[9px] font-bold font-mono bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm flex items-center gap-1">
+                            <Link2 className="w-2.5 h-2.5 text-cyan-400" /> {card.linkedTaskIds.length} vinculada{card.linkedTaskIds.length > 1 ? 's' : ''}
+                          </span>
+                        )}
                         {card.duration && card.duration !== '00:00:00' && (
                           <span className="px-2 py-0.5 rounded-md text-[10px] font-bold font-mono bg-slate-950 text-cyan-400 border border-cyan-500/30 flex items-center gap-1">
                             <Clock className="w-3 h-3 text-cyan-400" />
@@ -1815,13 +1916,12 @@ export default function TaskManager({
                   >
                     <div className="flex items-center justify-between flex-wrap gap-1">
                       <div className="flex items-center gap-1.5">
-                        {isAdminBoard ? (
-                          <span className="px-2 py-0.5 rounded-md text-[9px] font-bold font-mono bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-                            Administración
-                          </span>
-                        ) : (
-                          <span className="px-2 py-0.5 rounded-md text-[9px] font-bold font-mono bg-purple-500/15 text-purple-300 border border-purple-500/30">
-                            Otras Solicitudes
+                        <span className="px-2 py-0.5 rounded-md text-[9px] font-bold font-mono bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm flex items-center gap-1">
+                          <Tag className="w-2.5 h-2.5 text-amber-400" /> Otras Solicitudes
+                        </span>
+                        {card.linkedTaskIds && card.linkedTaskIds.length > 0 && (
+                          <span className="px-2 py-0.5 rounded-md text-[9px] font-bold font-mono bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm flex items-center gap-1">
+                            <Link2 className="w-2.5 h-2.5 text-cyan-400" /> {card.linkedTaskIds.length} vinculada{card.linkedTaskIds.length > 1 ? 's' : ''}
                           </span>
                         )}
                         {card.isGerenciaOnly && (
@@ -3005,16 +3105,17 @@ export default function TaskManager({
                       {/* Estatus Especial: Descartar Material */}
                       <div className={`p-3 rounded-xl border space-y-2 transition-all ${taskIsDiscarded ? 'bg-red-950/40 border-red-500/50' : 'bg-slate-900/50 border-white/5 opacity-70'}`}>
                         <div className="flex items-center justify-between">
-                          <label className="flex items-center gap-2 cursor-pointer font-bold text-xs text-red-300">
+                          <label className={`flex items-center gap-2 font-bold text-xs text-red-300 ${canManageTasks ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
                             <input
                               type="checkbox"
+                              disabled={!canManageTasks}
                               checked={taskIsDiscarded}
                               onChange={(e) => {
                                 const checked = e.target.checked;
-                                if (!checked && !canManageTasks) {
+                                if (!canManageTasks) {
                                   onAddNotificationToast(
                                     'Acceso Restringido',
-                                    'Solo los Jefes de División, Coordinadores o Gerencia pueden restaurar el material descartado.',
+                                    'Solo los Jefes de División, Coordinadores o Gerencia pueden descartar o restaurar el material.',
                                     'info'
                                   );
                                   return;
@@ -3100,6 +3201,67 @@ export default function TaskManager({
                     </div>
                   </div>
                 )}
+
+                {/* TARES VINCULADAS (LINKED TASKS) */}
+                <div className="space-y-3 p-3.5 rounded-xl bg-slate-950 border border-white/10">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="text-xs font-bold text-cyan-300 uppercase flex items-center gap-1.5">
+                      <Link2 className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Vinculación de Tareas (Archivado & Finalización Conjunta)</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400">
+                      * Si están vinculadas se marcan juntas en Por Archivar y Finalizar.
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <select
+                      value=""
+                      onChange={(e) => {
+                        const selectedId = e.target.value;
+                        if (selectedId && !taskLinkedTaskIds.includes(selectedId)) {
+                          setTaskLinkedTaskIds([...taskLinkedTaskIds, selectedId]);
+                        }
+                      }}
+                      className="flex-1 bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
+                    >
+                      <option value="">-- Vincular con otra tarea existente --</option>
+                      {cards
+                        .filter(c => c.id !== editingCard?.id && !taskLinkedTaskIds.includes(c.id))
+                        .slice()
+                        .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
+                        .map(c => (
+                          <option key={c.id} value={c.id}>
+                            {c.title} ({c.boardId === 'board_ingesta' ? 'Ingesta' : c.boardId === 'board_prensa' ? 'Prensa' : c.boardId === 'board_programacion' ? 'Programación' : 'Otras'})
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+
+                  {taskLinkedTaskIds.length > 0 ? (
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {taskLinkedTaskIds.map(linkedId => {
+                        const lCard = cards.find(c => c.id === linkedId);
+                        return (
+                          <span key={linkedId} className="px-2.5 py-1 rounded-lg text-xs font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 flex items-center gap-2">
+                            <Link2 className="w-3 h-3 text-cyan-400" />
+                            <span>{lCard?.title || linkedId}</span>
+                            <button
+                              type="button"
+                              onClick={() => setTaskLinkedTaskIds(taskLinkedTaskIds.filter(id => id !== linkedId))}
+                              className="text-slate-400 hover:text-rose-400 font-bold ml-1 cursor-pointer"
+                              title="Desvincular"
+                            >
+                              ✕
+                            </button>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-slate-500 italic">No hay tareas vinculadas a este registro.</p>
+                  )}
+                </div>
 
                 {/* Personal Asignado */}
                 <div className="space-y-2 p-3.5 rounded-xl bg-slate-950 border border-white/10">

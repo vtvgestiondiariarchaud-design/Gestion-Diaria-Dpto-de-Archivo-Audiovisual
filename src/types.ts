@@ -135,6 +135,7 @@ export interface TaskCard {
   discardedAt?: string;
 
   history?: TaskHistoryItem[];
+  linkedTaskIds?: string[];
 }
 
 export interface TaskBoard {
