@@ -169,7 +169,7 @@ export default function TaskManager({
   const [taskDocumentedAt, setTaskDocumentedAt] = useState<string | undefined>(undefined);
   const [taskIsFinalized, setTaskIsFinalized] = useState(false);
   const [taskFinalizedAt, setTaskFinalizedAt] = useState<string | undefined>(undefined);
-  const [taskIsDepartmentAchievement, setTaskIsDepartmentAchievement] = useState<boolean>(false);
+  const [taskIsDepartmentAchievement, setTaskIsDepartmentAchievement] = useState<boolean>(true);
   const [taskIsDiscarded, setTaskIsDiscarded] = useState<boolean>(false);
   const [taskDiscardedAt, setTaskDiscardedAt] = useState<string | undefined>(undefined);
   const [taskLinkedTaskIds, setTaskLinkedTaskIds] = useState<string[]>([]);
@@ -761,7 +761,7 @@ export default function TaskManager({
     setTaskDocumentedAt(undefined);
     setTaskIsFinalized(false);
     setTaskFinalizedAt(undefined);
-    setTaskIsDepartmentAchievement(false);
+    setTaskIsDepartmentAchievement(true);
     setTaskIsDiscarded(false);
     setTaskDiscardedAt(undefined);
     setTaskLinkedTaskIds([]);
@@ -811,7 +811,7 @@ export default function TaskManager({
     setTaskDocumentedAt(card.documentedAt);
     setTaskIsFinalized(Boolean(card.isFinalized));
     setTaskFinalizedAt(card.finalizedAt);
-    setTaskIsDepartmentAchievement(Boolean(card.isDepartmentAchievement));
+    setTaskIsDepartmentAchievement(card.isDepartmentAchievement !== undefined ? Boolean(card.isDepartmentAchievement) : true);
     setTaskIsDiscarded(Boolean(card.isDiscarded));
     setTaskDiscardedAt(card.discardedAt);
     setTaskLinkedTaskIds(card.linkedTaskIds || []);
