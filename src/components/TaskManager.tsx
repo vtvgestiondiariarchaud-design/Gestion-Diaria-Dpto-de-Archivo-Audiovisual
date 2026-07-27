@@ -6,7 +6,7 @@ import {
   Bell, Check, Tag, Sparkles, FolderPlus, ShieldAlert, ArrowRight,
   UserCheck, AlertTriangle, Layers, FileText, Printer, Copy, Database,
   Code2, Download, ExternalLink, BarChart3, Eye, Lock, Crown, Scissors,
-  FileCheck, Archive, Award
+  FileCheck, Archive, Award, CheckCheck, BellOff
 } from 'lucide-react';
 import { TaskBoard, TaskCard, TaskNotification, TaskStatus, Worker, Division, UserRole } from '../types';
 
@@ -29,6 +29,9 @@ interface TaskManagerProps {
   onSaveCard: (card: TaskCard) => void;
   onDeleteCard: (cardId: string) => void;
   onMarkNotificationRead: (id: string) => void;
+  onMarkAllNotificationsRead?: (workerId?: string) => void;
+  onClearAllNotifications?: (workerId?: string) => void;
+  onDeleteNotification?: (id: string) => void;
   onAddNotificationToast: (title: string, desc: string, type: 'success' | 'info') => void;
 }
 
@@ -80,6 +83,9 @@ export default function TaskManager({
   onSaveCard,
   onDeleteCard,
   onMarkNotificationRead,
+  onMarkAllNotificationsRead,
+  onClearAllNotifications,
+  onDeleteNotification,
   onAddNotificationToast
 }: TaskManagerProps) {
   const currentWorker = useMemo(() => {
@@ -203,15 +209,32 @@ export default function TaskManager({
     );
   }, [boards]);
 
-  // Unread notifications for current user
+  // Notification tab filter state: 'todas', 'unread', 'read'
+  const [notificationTab, setNotificationTab] = useState<'todas' | 'unread' | 'read'>('todas');
+
+  // Notifications for current user (or all if workerId matches or general)
   const userNotifications = useMemo(() => {
-    if (!currentWorkerId) return [];
-    return notifications.filter(n => n.workerId === currentWorkerId);
+    if (!currentWorkerId) return notifications;
+    return notifications.filter(n => !n.workerId || n.workerId === currentWorkerId);
   }, [notifications, currentWorkerId]);
 
   const unreadCount = useMemo(() => {
     return userNotifications.filter(n => !n.read).length;
   }, [userNotifications]);
+
+  const readCount = useMemo(() => {
+    return userNotifications.filter(n => n.read).length;
+  }, [userNotifications]);
+
+  const filteredNotifications = useMemo(() => {
+    if (notificationTab === 'unread') {
+      return userNotifications.filter(n => !n.read);
+    }
+    if (notificationTab === 'read') {
+      return userNotifications.filter(n => n.read);
+    }
+    return userNotifications;
+  }, [userNotifications, notificationTab]);
 
   // Sorted cards by date descending (newest on top)
   const sortedCardsDescending = useMemo(() => {
@@ -536,7 +559,7 @@ export default function TaskManager({
   }, [cards, reportType, reportDate, reportMonth, reportYear, reportBoardFilter, reportDivisionFilter, reportWorkerFilter, isGerenciaUser, isDivisionHeadUser, currentSession, currentWorker, workers, productionBoards]);
 
   // Stage Toggle Handler for Cards directly from view or modal
-  const handleToggleStage = (card: TaskCard, stage: 'ingested' | 'edited' | 'documented' | 'finalized', e?: React.MouseEvent) => {
+  const handleToggleStage = (card: TaskCard, stage: 'ingested' | 'edited' | 'documented' | 'finalized' | 'discarded', e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
 
     const nowIso = new Date().toISOString();
@@ -3186,6 +3209,261 @@ export default function TaskManager({
                   </div>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* NOTIFICATION CENTER MODAL */}
+      <AnimatePresence>
+        {showNotificationCenter && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md overflow-y-auto">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="bg-slate-900 border border-white/15 rounded-2xl w-full max-w-2xl overflow-hidden shadow-2xl my-8"
+            >
+              {/* Header */}
+              <div className="p-5 border-b border-white/10 bg-slate-950 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400">
+                    <Bell className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-white flex items-center gap-2">
+                      <span>Centro de Notificaciones</span>
+                      {unreadCount > 0 && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-500/20 text-rose-300 border border-rose-500/40">
+                          {unreadCount} sin leer
+                        </span>
+                      )}
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Notificaciones de tareas asignadas para <strong className="text-slate-200">{currentWorker?.name || currentSession?.name || 'tu usuario'}</strong>.
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setShowNotificationCenter(false)}
+                  className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-white/10 transition-all cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Action Toolbar & Tabs */}
+              <div className="p-4 border-b border-white/10 bg-slate-900/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                {/* Tabs */}
+                <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-white/5">
+                  <button
+                    onClick={() => setNotificationTab('todas')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                      notificationTab === 'todas'
+                        ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <span>Todas</span>
+                    <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-800 text-slate-300 font-mono">
+                      {userNotifications.length}
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={() => setNotificationTab('unread')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                      notificationTab === 'unread'
+                        ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <span>Sin leer</span>
+                    {unreadCount > 0 && (
+                      <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-rose-500 text-white font-mono font-black">
+                        {unreadCount}
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => setNotificationTab('read')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                      notificationTab === 'read'
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <span>Leídas</span>
+                    <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-800 text-slate-300 font-mono">
+                      {readCount}
+                    </span>
+                  </button>
+                </div>
+
+                {/* Bulk Action Buttons */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  {unreadCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (onMarkAllNotificationsRead) {
+                          onMarkAllNotificationsRead(currentWorkerId);
+                        } else {
+                          userNotifications.forEach(n => onMarkNotificationRead(n.id));
+                        }
+                        onAddNotificationToast('Notificaciones Leídas', 'Se marcaron todas las notificaciones como leídas.', 'info');
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                      title="Marcar todas como leídas"
+                    >
+                      <CheckCheck className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Marcar leídas</span>
+                    </button>
+                  )}
+
+                  {userNotifications.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm('¿Estás seguro de borrar TODAS tus notificaciones de tareas? Esta acción no se puede deshacer.')) {
+                          if (onClearAllNotifications) {
+                            onClearAllNotifications(currentWorkerId);
+                          } else {
+                            userNotifications.forEach(n => {
+                              if (onDeleteNotification) onDeleteNotification(n.id);
+                            });
+                          }
+                          onAddNotificationToast('Notificaciones Borradas', 'Se han eliminado todas las notificaciones.', 'info');
+                        }
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                      title="Borrar todas las notificaciones"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                      <span>Borrar todas</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Notification List */}
+              <div className="p-5 space-y-3 max-h-[60vh] overflow-y-auto scrollbar-thin">
+                {filteredNotifications.length === 0 ? (
+                  <div className="text-center py-12 space-y-3">
+                    <div className="w-12 h-12 rounded-full bg-slate-800 border border-white/10 flex items-center justify-center mx-auto text-slate-500">
+                      <BellOff className="w-6 h-6 text-slate-400" />
+                    </div>
+                    <p className="text-sm font-bold text-slate-300">
+                      {notificationTab === 'unread' ? 'No tienes notificaciones sin leer' : notificationTab === 'read' ? 'No tienes notificaciones leídas' : 'No hay notificaciones registradas'}
+                    </p>
+                    <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                      Cuando se te asigne una nueva tarea de producción o solicitud, recibirás un aviso automático aquí.
+                    </p>
+                  </div>
+                ) : (
+                  filteredNotifications.map((n) => {
+                    const taskObj = cards.find(c => c.id === n.taskId);
+                    return (
+                      <div
+                        key={n.id}
+                        className={`p-4 rounded-xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                          !n.read
+                            ? 'bg-slate-900 border-cyan-500/40 shadow-[0_0_15px_rgba(6,182,212,0.1)]'
+                            : 'bg-slate-950/60 border-white/5 opacity-80 hover:opacity-100'
+                        }`}
+                      >
+                        <div className="space-y-1 flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {!n.read && (
+                              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" title="Sin leer" />
+                            )}
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 font-mono">
+                              {n.boardName || 'Tablero'}
+                            </span>
+                            {n.taskTitle && (
+                              <span className="text-xs font-bold text-white truncate max-w-[280px]" title={n.taskTitle}>
+                                {n.taskTitle}
+                              </span>
+                            )}
+                            <span className="text-[10px] text-slate-500 font-mono ml-auto sm:ml-0">
+                              {n.createdAt ? new Date(n.createdAt).toLocaleString('es-VE', { dateStyle: 'short', timeStyle: 'short' }) : ''}
+                            </span>
+                          </div>
+
+                          <p className="text-xs text-slate-300 leading-relaxed">
+                            {n.message}
+                          </p>
+                        </div>
+
+                        {/* Actions per notification */}
+                        <div className="flex items-center gap-2 shrink-0 self-end sm:self-center pt-2 sm:pt-0 border-t sm:border-t-0 border-white/5">
+                          {taskObj && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!n.read) {
+                                  onMarkNotificationRead(n.id);
+                                }
+                                setShowNotificationCenter(false);
+                                handleOpenEditTask(taskObj);
+                              }}
+                              className="px-2.5 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/30 text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                              title="Ver Tarea Asignada"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>Ver Tarea</span>
+                            </button>
+                          )}
+
+                          {!n.read && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onMarkNotificationRead(n.id);
+                                onAddNotificationToast('Notificación Leída', 'Marcada como leída.', 'info');
+                              }}
+                              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-400 transition-colors cursor-pointer"
+                              title="Marcar como leída"
+                            >
+                              <Check className="w-4 h-4" />
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (onDeleteNotification) {
+                                onDeleteNotification(n.id);
+                              } else {
+                                onMarkNotificationRead(n.id);
+                              }
+                              onAddNotificationToast('Notificación Eliminada', 'Se borró la notificación.', 'info');
+                            }}
+                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-colors cursor-pointer"
+                            title="Eliminar esta notificación"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="p-4 border-t border-white/10 bg-slate-950 flex items-center justify-between text-xs text-slate-400">
+                <span>Total: {userNotifications.length} notificaciones ({unreadCount} sin leer)</span>
+                <button
+                  type="button"
+                  onClick={() => setShowNotificationCenter(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold transition-all cursor-pointer"
+                >
+                  Cerrar
+                </button>
+              </div>
             </motion.div>
           </div>
         )}

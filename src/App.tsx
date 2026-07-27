@@ -723,6 +723,27 @@ export default function App() {
     await db.markTaskNotificationRead(id);
   };
 
+  const handleMarkAllNotificationsRead = async (workerId?: string) => {
+    const updated = taskNotifications.map(n => (!workerId || n.workerId === workerId) ? { ...n, read: true } : n);
+    setTaskNotifications(updated);
+    localStorage.setItem('vtv_task_notifications', JSON.stringify(updated));
+    await db.markAllTaskNotificationsRead(workerId);
+  };
+
+  const handleClearAllNotifications = async (workerId?: string) => {
+    const updated = workerId ? taskNotifications.filter(n => n.workerId !== workerId) : [];
+    setTaskNotifications(updated);
+    localStorage.setItem('vtv_task_notifications', JSON.stringify(updated));
+    await db.clearAllTaskNotifications(workerId);
+  };
+
+  const handleDeleteNotification = async (id: string) => {
+    const updated = taskNotifications.filter(n => n.id !== id);
+    setTaskNotifications(updated);
+    localStorage.setItem('vtv_task_notifications', JSON.stringify(updated));
+    await db.deleteTaskNotification(id);
+  };
+
   // Update selected division ID when session changes
   useEffect(() => {
     if (currentSession && currentSession.role === 'coordinator' && currentSession.divisionId) {
@@ -1801,6 +1822,9 @@ export default function App() {
                         onSaveCard={handleSaveCard}
                         onDeleteCard={handleDeleteCard}
                         onMarkNotificationRead={handleMarkNotificationRead}
+                        onMarkAllNotificationsRead={handleMarkAllNotificationsRead}
+                        onClearAllNotifications={handleClearAllNotifications}
+                        onDeleteNotification={handleDeleteNotification}
                         onAddNotificationToast={addNotification}
                       />
                     )}

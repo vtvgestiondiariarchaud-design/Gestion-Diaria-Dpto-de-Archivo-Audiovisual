@@ -1266,6 +1266,85 @@ export const db = {
     }
   },
 
+  async markAllTaskNotificationsRead(workerId?: string): Promise<void> {
+    try {
+      const saved = localStorage.getItem('vtv_task_notifications');
+      if (saved) {
+        let all: TaskNotification[] = JSON.parse(saved);
+        all = all.map(n => (!workerId || n.workerId === workerId) ? { ...n, read: true } : n);
+        localStorage.setItem('vtv_task_notifications', JSON.stringify(all));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+
+    if (supabase) {
+      try {
+        let query = supabase.from('task_notifications').update({ read: true });
+        if (workerId) {
+          query = query.eq('worker_id', workerId);
+        } else {
+          query = query.neq('id', '');
+        }
+        await query;
+      } catch (err) {
+        console.warn('Error marking all task notifications read in Supabase:', err);
+      }
+    }
+  },
+
+  async clearAllTaskNotifications(workerId?: string): Promise<void> {
+    try {
+      const saved = localStorage.getItem('vtv_task_notifications');
+      if (saved) {
+        let all: TaskNotification[] = JSON.parse(saved);
+        if (workerId) {
+          all = all.filter(n => n.workerId !== workerId);
+        } else {
+          all = [];
+        }
+        localStorage.setItem('vtv_task_notifications', JSON.stringify(all));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+
+    if (supabase) {
+      try {
+        let query = supabase.from('task_notifications').delete();
+        if (workerId) {
+          query = query.eq('worker_id', workerId);
+        } else {
+          query = query.neq('id', '');
+        }
+        await query;
+      } catch (err) {
+        console.warn('Error clearing task notifications in Supabase:', err);
+      }
+    }
+  },
+
+  async deleteTaskNotification(id: string): Promise<void> {
+    try {
+      const saved = localStorage.getItem('vtv_task_notifications');
+      if (saved) {
+        let all: TaskNotification[] = JSON.parse(saved);
+        all = all.filter(n => n.id !== id);
+        localStorage.setItem('vtv_task_notifications', JSON.stringify(all));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+
+    if (supabase) {
+      try {
+        await supabase.from('task_notifications').delete().eq('id', id);
+      } catch (err) {
+        console.warn('Error deleting task notification from Supabase:', err);
+      }
+    }
+  },
+
   // Free Day Requests
   async fetchFreeDayRequests(): Promise<FreeDayRequest[]> {
     if (supabase) {
