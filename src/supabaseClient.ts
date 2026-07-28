@@ -1147,16 +1147,24 @@ export const db = {
           }));
           setSupabaseConnectionStatus('connected');
 
+          // Retrieve blacklist of deleted card IDs to prevent resurrecting deleted cards
+          const deletedIdsRaw = localStorage.getItem('vtv_deleted_card_ids');
+          const deletedCardIds = new Set<string>(deletedIdsRaw ? JSON.parse(deletedIdsRaw) : []);
+
           // Non-destructive merge with local storage cards
           const saved = localStorage.getItem('vtv_task_cards');
           const localCards: TaskCard[] = saved ? JSON.parse(saved) : [];
 
           const mergedMap = new Map<string, TaskCard>();
-          // Remote first
-          supabaseCards.forEach(c => mergedMap.set(c.id, c));
-          // Local second (preserve any local-only tasks and sync them back to Supabase)
+          // Remote first (ignoring blacklisted deleted cards)
+          supabaseCards.forEach(c => {
+            if (!deletedCardIds.has(c.id)) {
+              mergedMap.set(c.id, c);
+            }
+          });
+          // Local second (preserve any local-only tasks and sync them back to Supabase if not deleted)
           localCards.forEach(lc => {
-            if (!mergedMap.has(lc.id)) {
+            if (!deletedCardIds.has(lc.id) && !mergedMap.has(lc.id)) {
               mergedMap.set(lc.id, lc);
               db.upsertTaskCard(lc).catch(err => console.warn('Syncing missing local card to Supabase:', err));
             }
@@ -1176,7 +1184,10 @@ export const db = {
     }
 
     const saved = localStorage.getItem('vtv_task_cards');
-    return saved ? JSON.parse(saved) : [];
+    const deletedIdsRaw = localStorage.getItem('vtv_deleted_card_ids');
+    const deletedCardIds = new Set<string>(deletedIdsRaw ? JSON.parse(deletedIdsRaw) : []);
+    const localCards: TaskCard[] = saved ? JSON.parse(saved) : [];
+    return localCards.filter(c => !deletedCardIds.has(c.id));
   },
 
   async upsertTaskCard(card: TaskCard): Promise<void> {
@@ -1336,10 +1347,26 @@ export const db = {
 
   async deleteTaskCard(cardId: string): Promise<void> {
     try {
+      // 1. Record ID in deleted blacklist
+      const deletedIdsRaw = localStorage.getItem('vtv_deleted_card_ids');
+      const deletedCardIds: string[] = deletedIdsRaw ? JSON.parse(deletedIdsRaw) : [];
+      if (!deletedCardIds.includes(cardId)) {
+        deletedCardIds.push(cardId);
+        localStorage.setItem('vtv_deleted_card_ids', JSON.stringify(deletedCardIds));
+      }
+
+      // 2. Remove from local cards and clean linked references
       const saved = localStorage.getItem('vtv_task_cards');
       if (saved) {
         let cards: TaskCard[] = JSON.parse(saved);
-        cards = cards.filter(c => c.id !== cardId);
+        cards = cards
+          .filter(c => c.id !== cardId)
+          .map(c => {
+            if (c.linkedTaskIds && c.linkedTaskIds.includes(cardId)) {
+              return { ...c, linkedTaskIds: c.linkedTaskIds.filter(id => id !== cardId) };
+            }
+            return c;
+          });
         localStorage.setItem('vtv_task_cards', JSON.stringify(cards));
       }
     } catch (e) {
@@ -1352,6 +1379,8 @@ export const db = {
         if (error) {
           console.warn('Error deleting task_card from Supabase:', error.message);
           setSupabaseConnectionStatus('error', `Error al eliminar tarea en Supabase: ${error.message}`);
+        } else {
+          setSupabaseConnectionStatus('connected');
         }
       } catch (err: any) {
         console.warn('Supabase deleteTaskCard error:', err);

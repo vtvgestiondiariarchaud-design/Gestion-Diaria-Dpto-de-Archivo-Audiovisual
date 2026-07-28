@@ -724,15 +724,27 @@ export default function App() {
   };
 
   const handleDeleteCard = async (cardId: string) => {
-    const updatedCards = taskCards.filter(c => c.id !== cardId);
+    const updatedCards = taskCards
+      .filter(c => c.id !== cardId)
+      .map(c => {
+        if (c.linkedTaskIds && c.linkedTaskIds.includes(cardId)) {
+          return { ...c, linkedTaskIds: c.linkedTaskIds.filter(id => id !== cardId) };
+        }
+        return c;
+      });
     setTaskCards(updatedCards);
     localStorage.setItem('vtv_task_cards', JSON.stringify(updatedCards));
+
+    const updatedNotifs = taskNotifications.filter(n => n.taskId !== cardId);
+    setTaskNotifications(updatedNotifs);
+    localStorage.setItem('vtv_task_notifications', JSON.stringify(updatedNotifs));
+
     try {
       await db.deleteTaskCard(cardId);
-      addNotification('Tarea Eliminada', 'La tarea se eliminó de Supabase.', 'success');
+      addNotification('Tarea Eliminada', 'La tarea se eliminó de forma permanente del sistema.', 'success');
     } catch (err: any) {
       console.error('Error deleting card:', err);
-      addNotification('Error en Supabase', err.message || 'No se pudo eliminar la tarea.', 'info');
+      addNotification('Error al eliminar', err.message || 'No se pudo eliminar la tarea.', 'info');
     }
   };
 

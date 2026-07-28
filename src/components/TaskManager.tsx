@@ -630,6 +630,7 @@ export default function TaskManager({
   const [taskIsDiscarded, setTaskIsDiscarded] = useState<boolean>(false);
   const [taskDiscardedAt, setTaskDiscardedAt] = useState<string | undefined>(undefined);
   const [taskLinkedTaskIds, setTaskLinkedTaskIds] = useState<string[]>([]);
+  const [linkSearchQuery, setLinkSearchQuery] = useState<string>('');
 
   // Report Generator Filters State
   const [reportType, setReportType] = useState<'diario' | 'mensual' | 'anual'>('diario');
@@ -1611,6 +1612,7 @@ export default function TaskManager({
 
     setTaskChecklist([]);
     setNewChecklistItemText('');
+    setLinkSearchQuery('');
     setShowTaskModal(true);
   };
 
@@ -1645,6 +1647,7 @@ export default function TaskManager({
     setTaskIsDiscarded(Boolean(card.isDiscarded));
     setTaskDiscardedAt(card.discardedAt);
     setTaskLinkedTaskIds(card.linkedTaskIds || []);
+    setLinkSearchQuery('');
 
     setShowTaskModal(true);
 
@@ -2571,15 +2574,34 @@ export default function TaskManager({
                         )}
                       </div>
 
-                      {card.priority && (
-                        <span className={`px-2 py-0.5 rounded-md text-[9px] font-extrabold uppercase font-mono ${
-                          card.priority === 'urgente' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 animate-pulse' :
-                          card.priority === 'alta' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' :
-                          'bg-blue-500/20 text-blue-300'
-                        }`}>
-                          {card.priority}
-                        </span>
-                      )}
+                      <div className="flex items-center gap-1.5">
+                        {card.priority && (
+                          <span className={`px-2 py-0.5 rounded-md text-[9px] font-extrabold uppercase font-mono ${
+                            card.priority === 'urgente' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 animate-pulse' :
+                            card.priority === 'alta' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' :
+                            'bg-blue-500/20 text-blue-300'
+                          }`}>
+                            {card.priority}
+                          </span>
+                        )}
+
+                        {(canManageTasks || isDivisionHeadUser || isGerenciaUser || card.createdByWorkerId === currentWorkerId) && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (window.confirm(`¿Estás seguro de eliminar permanentemente la tarea "${card.title}"?`)) {
+                                onDeleteCard(card.id);
+                                onAddNotificationToast('Tarea Eliminada', 'Se eliminó la tarea permanentemente.', 'info');
+                              }
+                            }}
+                            title="Eliminar tarea permanentemente"
+                            className="p-1 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded transition-all cursor-pointer opacity-70 group-hover:opacity-100"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     {/* Title & Description */}
@@ -4356,20 +4378,32 @@ export default function TaskManager({
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="space-y-2">
+                    <div className="relative w-full">
+                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+                      <input
+                        type="text"
+                        placeholder="Buscar tarea para vincular por título o descripción..."
+                        value={linkSearchQuery}
+                        onChange={(e) => setLinkSearchQuery(e.target.value)}
+                        className="w-full bg-slate-900 border border-white/10 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-500"
+                      />
+                    </div>
                     <select
                       value=""
                       onChange={(e) => {
                         const selectedId = e.target.value;
                         if (selectedId && !taskLinkedTaskIds.includes(selectedId)) {
                           setTaskLinkedTaskIds([...taskLinkedTaskIds, selectedId]);
+                          setLinkSearchQuery('');
                         }
                       }}
-                      className="flex-1 bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
+                      className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
                     >
-                      <option value="">-- Vincular con otra tarea existente --</option>
+                      <option value="">-- Seleccionar tarea a vincular --</option>
                       {cards
                         .filter(c => c.id !== editingCard?.id && !taskLinkedTaskIds.includes(c.id))
+                        .filter(c => !linkSearchQuery || c.title.toLowerCase().includes(linkSearchQuery.toLowerCase()) || (c.description && c.description.toLowerCase().includes(linkSearchQuery.toLowerCase())))
                         .slice()
                         .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
                         .map(c => (
@@ -4442,6 +4476,16 @@ export default function TaskManager({
                             type="button"
                             onClick={() => {
                               if (isAssigned) {
+                                const isSelf = currentWorkerId === w.id || currentSession?.userId === w.id;
+                                const canUnassignOthers = canManageTasks || isDivisionHeadUser || isGerenciaUser;
+                                if (!isSelf && !canUnassignOthers) {
+                                  onAddNotificationToast(
+                                    'Acción Restringida',
+                                    'Solo puedes desasignarte a ti mismo de una tarea. Para desasignar a otros colaboradores se requiere ser Coordinador, Jefe de División o Gerencia.',
+                                    'info'
+                                  );
+                                  return;
+                                }
                                 setTaskAssignedWorkerIds(taskAssignedWorkerIds.filter(id => id !== w.id));
                               } else {
                                 setTaskAssignedWorkerIds([...taskAssignedWorkerIds, w.id]);
@@ -4480,19 +4524,20 @@ export default function TaskManager({
 
                 {/* Submit Actions */}
                 <div className="flex items-center justify-between pt-3 border-t border-white/10">
-                  {editingCard && canManageTasks ? (
+                  {editingCard && (canManageTasks || isDivisionHeadUser || isGerenciaUser || editingCard.createdByWorkerId === currentWorkerId || (editingCard.assignedWorkerIds || []).includes(currentWorkerId || '')) ? (
                     <button
                       type="button"
                       onClick={() => {
-                        if (confirm(`¿Eliminar la tarea "${taskTitle}"?`)) {
+                        if (window.confirm(`¿Estás seguro de eliminar la tarea "${taskTitle}" de forma permanente?`)) {
                           onDeleteCard(editingCard.id);
                           setShowTaskModal(false);
-                          onAddNotificationToast('Tarea Eliminada', 'Se eliminó el registro con éxito.', 'info');
+                          onAddNotificationToast('Tarea Eliminada', 'Se eliminó la tarea permanentemente.', 'info');
                         }
                       }}
-                      className="px-3 py-2 rounded-xl bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-bold hover:bg-rose-500/30 transition-all cursor-pointer"
+                      className="px-3.5 py-2 rounded-xl bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-bold hover:bg-rose-500/30 transition-all cursor-pointer flex items-center gap-1.5"
                     >
-                      Eliminar Tarea
+                      <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                      <span>Eliminar Tarea</span>
                     </button>
                   ) : <div />}
 
