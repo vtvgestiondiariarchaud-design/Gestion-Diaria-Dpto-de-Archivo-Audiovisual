@@ -6,7 +6,8 @@ import {
   Bell, Check, Tag, Sparkles, FolderPlus, ShieldAlert, ArrowRight,
   UserCheck, AlertTriangle, Layers, FileText, Printer, Copy, Database,
   Code2, Download, ExternalLink, BarChart3, Eye, Lock, Crown, Scissors,
-  FileCheck, Archive, Award, CheckCheck, BellOff, Link2, History
+  FileCheck, Archive, Award, CheckCheck, BellOff, Link2, History,
+  ChevronUp, RotateCcw, Unlock, Sliders
 } from 'lucide-react';
 import { TaskBoard, TaskCard, TaskNotification, TaskStatus, Worker, Division, UserRole } from '../types';
 
@@ -109,6 +110,291 @@ const formatSecondsToHHMMSS = (totalSeconds: number): string => {
   const mins = Math.floor((totalSeconds % 3600) / 60);
   const secs = Math.floor(totalSeconds % 60);
   return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+};
+
+// Componente interactivo de ruleta / temporizador para horas, minutos y segundos con candado de seguridad
+interface DurationPickerWheelProps {
+  label: string;
+  value: string; // HH:MM:SS format
+  onChange: (val: string) => void;
+  accentColor?: 'cyan' | 'blue';
+  syncFromValue?: string;
+  syncLabel?: string;
+}
+
+const DurationPickerWheel: React.FC<DurationPickerWheelProps> = ({
+  label,
+  value,
+  onChange,
+  accentColor = 'cyan',
+  syncFromValue,
+  syncLabel = 'Copiar de Ingestado'
+}) => {
+  const [isLocked, setIsLocked] = useState<boolean>(false);
+
+  // Parse string into H, M, S
+  const parseVal = (str: string) => {
+    if (!str) return { h: 0, m: 0, s: 0 };
+    const clean = str.trim();
+    if (clean.includes(':')) {
+      const parts = clean.split(':').map(p => parseInt(p, 10) || 0);
+      if (parts.length === 3) return { h: parts[0], m: parts[1], s: parts[2] };
+      if (parts.length === 2) return { h: parts[0], m: parts[1], s: 0 };
+    }
+    const mins = parseFloat(clean) || 0;
+    const h = Math.floor(mins / 60);
+    const m = Math.floor(mins % 60);
+    return { h, m, s: 0 };
+  };
+
+  const { h, m, s } = parseVal(value);
+
+  const updateParts = (newH: number, newM: number, newS: number) => {
+    if (isLocked) return;
+    const safeH = Math.max(0, Math.min(99, newH));
+    const safeM = Math.max(0, Math.min(59, newM));
+    const safeS = Math.max(0, Math.min(59, newS));
+
+    const hh = safeH.toString().padStart(2, '0');
+    const mm = safeM.toString().padStart(2, '0');
+    const ss = safeS.toString().padStart(2, '0');
+    onChange(`${hh}:${mm}:${ss}`);
+  };
+
+  const adjustUnit = (unit: 'h' | 'm' | 's', delta: number) => {
+    if (isLocked) return;
+    if (unit === 'h') {
+      updateParts(h + delta, m, s);
+    } else if (unit === 'm') {
+      let totalMins = h * 60 + m + delta;
+      if (totalMins < 0) totalMins = 0;
+      const nextH = Math.floor(totalMins / 60);
+      const nextM = totalMins % 60;
+      updateParts(nextH, nextM, s);
+    } else if (unit === 's') {
+      let totalSecs = h * 3600 + m * 60 + s + delta;
+      if (totalSecs < 0) totalSecs = 0;
+      const nextH = Math.floor(totalSecs / 3600);
+      const nextM = Math.floor((totalSecs % 3600) / 60);
+      const nextS = totalSecs % 60;
+      updateParts(nextH, nextM, nextS);
+    }
+  };
+
+  const colorStyles = accentColor === 'cyan' ? {
+    border: 'border-cyan-500/40',
+    bg: 'bg-cyan-950/20',
+    text: 'text-cyan-300',
+    badge: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30',
+    focus: 'focus:border-cyan-400 focus:ring-cyan-400/20',
+    btn: 'bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-200 border-cyan-500/40',
+    wheelBg: 'bg-slate-900 border-cyan-500/30 shadow-[0_0_15px_rgba(6,182,212,0.15)]'
+  } : {
+    border: 'border-blue-500/40',
+    bg: 'bg-blue-950/20',
+    text: 'text-blue-300',
+    badge: 'bg-blue-500/20 text-blue-300 border-blue-500/30',
+    focus: 'focus:border-blue-400 focus:ring-blue-400/20',
+    btn: 'bg-blue-500/20 hover:bg-blue-500/30 text-blue-200 border-blue-500/40',
+    wheelBg: 'bg-slate-900 border-blue-500/30 shadow-[0_0_15px_rgba(59,130,246,0.15)]'
+  };
+
+  return (
+    <div className={`p-3.5 rounded-2xl border ${colorStyles.border} ${colorStyles.bg} space-y-3 transition-all relative`}>
+      {/* Header with Title & Safety Lock / Sync Controls */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-1.5">
+          <Clock className={`w-4 h-4 ${colorStyles.text}`} />
+          <span className={`text-xs font-extrabold uppercase ${colorStyles.text}`}>{label}</span>
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          {syncFromValue !== undefined && (
+            <button
+              type="button"
+              disabled={isLocked}
+              onClick={() => {
+                if (!isLocked) onChange(syncFromValue || '00:00:00');
+              }}
+              title={syncLabel}
+              className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 cursor-pointer ${
+                isLocked ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500 border-white/5' : colorStyles.btn
+              }`}
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>{syncLabel}</span>
+            </button>
+          )}
+
+          {/* Candado de Seguridad */}
+          <button
+            type="button"
+            onClick={() => setIsLocked(!isLocked)}
+            className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 cursor-pointer ${
+              isLocked
+                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-[0_0_10px_rgba(245,158,11,0.2)]'
+                : 'bg-slate-800/80 text-slate-400 border-white/10 hover:text-white'
+            }`}
+            title={isLocked ? 'Desbloquear edición de tiempo' : 'Bloquear con candado de seguridad para evitar cambios accidentales'}
+          >
+            {isLocked ? (
+              <>
+                <Lock className="w-3 h-3 text-amber-400" />
+                <span>Bloqueado</span>
+              </>
+            ) : (
+              <>
+                <Unlock className="w-3 h-3 text-slate-400" />
+                <span>Candado</span>
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Timer Wheel / Spinner Wheels for HH : MM : SS */}
+      <div className={`p-3 rounded-xl ${colorStyles.wheelBg} border flex items-center justify-center gap-2 sm:gap-4`}>
+        {/* HORAS COLUMN */}
+        <div className="flex flex-col items-center">
+          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Horas</span>
+          <button
+            type="button"
+            disabled={isLocked}
+            onClick={() => adjustUnit('h', 1)}
+            className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            title="Aumentar Hora (+1h)"
+          >
+            <ChevronUp className="w-4 h-4" />
+          </button>
+          <input
+            type="number"
+            min={0}
+            max={99}
+            disabled={isLocked}
+            value={h.toString().padStart(2, '0')}
+            onChange={(e) => updateParts(parseInt(e.target.value, 10) || 0, m, s)}
+            className={`w-14 sm:w-16 h-11 text-center bg-slate-950 border border-white/10 rounded-xl text-lg font-mono font-extrabold text-white focus:outline-none ${colorStyles.focus} ${isLocked ? 'opacity-60 cursor-not-allowed bg-slate-900' : ''}`}
+          />
+          <button
+            type="button"
+            disabled={isLocked}
+            onClick={() => adjustUnit('h', -1)}
+            className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            title="Disminuir Hora (-1h)"
+          >
+            <ChevronDown className="w-4 h-4" />
+          </button>
+        </div>
+
+        <span className="text-xl font-mono font-bold text-slate-500 self-center pt-3">:</span>
+
+        {/* MINUTOS COLUMN */}
+        <div className="flex flex-col items-center">
+          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Minutos</span>
+          <button
+            type="button"
+            disabled={isLocked}
+            onClick={() => adjustUnit('m', 1)}
+            className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            title="Aumentar Minuto (+1m)"
+          >
+            <ChevronUp className="w-4 h-4" />
+          </button>
+          <input
+            type="number"
+            min={0}
+            max={59}
+            disabled={isLocked}
+            value={m.toString().padStart(2, '0')}
+            onChange={(e) => updateParts(h, parseInt(e.target.value, 10) || 0, s)}
+            className={`w-14 sm:w-16 h-11 text-center bg-slate-950 border border-white/10 rounded-xl text-lg font-mono font-extrabold text-white focus:outline-none ${colorStyles.focus} ${isLocked ? 'opacity-60 cursor-not-allowed bg-slate-900' : ''}`}
+          />
+          <button
+            type="button"
+            disabled={isLocked}
+            onClick={() => adjustUnit('m', -1)}
+            className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            title="Disminuir Minuto (-1m)"
+          >
+            <ChevronDown className="w-4 h-4" />
+          </button>
+        </div>
+
+        <span className="text-xl font-mono font-bold text-slate-500 self-center pt-3">:</span>
+
+        {/* SEGUNDOS COLUMN */}
+        <div className="flex flex-col items-center">
+          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Segundos</span>
+          <button
+            type="button"
+            disabled={isLocked}
+            onClick={() => adjustUnit('s', 1)}
+            className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            title="Aumentar Segundo (+1s)"
+          >
+            <ChevronUp className="w-4 h-4" />
+          </button>
+          <input
+            type="number"
+            min={0}
+            max={59}
+            disabled={isLocked}
+            value={s.toString().padStart(2, '0')}
+            onChange={(e) => updateParts(h, m, parseInt(e.target.value, 10) || 0)}
+            className={`w-14 sm:w-16 h-11 text-center bg-slate-950 border border-white/10 rounded-xl text-lg font-mono font-extrabold text-white focus:outline-none ${colorStyles.focus} ${isLocked ? 'opacity-60 cursor-not-allowed bg-slate-900' : ''}`}
+          />
+          <button
+            type="button"
+            disabled={isLocked}
+            onClick={() => adjustUnit('s', -1)}
+            className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            title="Disminuir Segundo (-1s)"
+          >
+            <ChevronDown className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Quick preset buttons */}
+      <div className="flex items-center justify-between flex-wrap gap-1.5 pt-1">
+        <span className="text-[10px] text-slate-400 font-medium">Ajustes Rápidos:</span>
+        <div className="flex items-center gap-1 flex-wrap">
+          <button
+            type="button"
+            disabled={isLocked}
+            onClick={() => adjustUnit('m', 15)}
+            className="px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-[10px] font-mono text-slate-300 transition-colors cursor-pointer border border-white/5"
+          >
+            +15m
+          </button>
+          <button
+            type="button"
+            disabled={isLocked}
+            onClick={() => adjustUnit('m', 30)}
+            className="px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-[10px] font-mono text-slate-300 transition-colors cursor-pointer border border-white/5"
+          >
+            +30m
+          </button>
+          <button
+            type="button"
+            disabled={isLocked}
+            onClick={() => adjustUnit('h', 1)}
+            className="px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-[10px] font-mono text-slate-300 transition-colors cursor-pointer border border-white/5"
+          >
+            +1h
+          </button>
+          <button
+            type="button"
+            disabled={isLocked}
+            onClick={() => onChange('00:00:00')}
+            className="px-2 py-0.5 rounded-md bg-rose-500/10 hover:bg-rose-500/20 disabled:opacity-30 disabled:cursor-not-allowed text-[10px] font-mono text-rose-300 transition-colors cursor-pointer border border-rose-500/20"
+          >
+            00:00:00
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 };
 
 export interface CardTaskGroup {
@@ -3983,30 +4269,24 @@ export default function TaskManager({
                   </div>
                 )}
 
-                {/* Duración Material Original & Editado (Omit si es Otras Solicitudes) */}
+                {/* Duración Material Original & Editado con Ruleta / Candado */}
                 {!taskIsOtherRequest && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 rounded-xl bg-slate-950 border border-white/10">
-                    <div>
-                      <label className="text-xs font-bold text-cyan-300 block mb-1">Tiempo Material Original (HH:MM:SS)</label>
-                      <input
-                        type="text"
-                        placeholder="01:30:00"
-                        value={taskDuration}
-                        onChange={(e) => setTaskDuration(e.target.value)}
-                        className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-cyan-500"
-                      />
-                    </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <DurationPickerWheel
+                      label="Tiempo Material Ingestado / Original"
+                      value={taskDuration}
+                      onChange={(val) => setTaskDuration(val)}
+                      accentColor="cyan"
+                    />
 
-                    <div>
-                      <label className="text-xs font-bold text-blue-300 block mb-1">Tiempo Material Editado (HH:MM:SS)</label>
-                      <input
-                        type="text"
-                        placeholder="01:00:00"
-                        value={taskEditedDuration}
-                        onChange={(e) => setTaskEditedDuration(e.target.value)}
-                        className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-blue-500"
-                      />
-                    </div>
+                    <DurationPickerWheel
+                      label="Tiempo Material Editado"
+                      value={taskEditedDuration}
+                      onChange={(val) => setTaskEditedDuration(val)}
+                      accentColor="blue"
+                      syncFromValue={taskDuration}
+                      syncLabel="Copiar de Ingestado"
+                    />
                   </div>
                 )}
 
