@@ -182,6 +182,7 @@ create table if not exists task_cards (
   is_department_achievement boolean default false,
   is_discarded boolean default false,
   discarded_at text,
+  linked_task_ids text, -- JSON string
   created_by_worker_id text,
   created_by_name text,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
@@ -212,6 +213,7 @@ alter table task_cards add column if not exists is_other_request boolean default
 alter table task_cards add column if not exists is_department_achievement boolean default false;
 alter table task_cards add column if not exists is_discarded boolean default false;
 alter table task_cards add column if not exists discarded_at text;
+alter table task_cards add column if not exists linked_task_ids text;
 alter table task_cards add column if not exists created_by_worker_id text;
 alter table task_cards add column if not exists created_by_name text;
 
@@ -577,8 +579,21 @@ export const db = {
           mealsPreference: mealsPreferenceObj
         };
       });
-      getLocalDb.saveWorkers(mapped);
-      return mapped;
+
+      // Non-destructive merge with local storage
+      const localWorkers = getLocalDb.getWorkers();
+      const map = new Map<string, Worker>();
+      mapped.forEach(w => map.set(w.id, w));
+      localWorkers.forEach(lw => {
+        if (!map.has(lw.id)) {
+          map.set(lw.id, lw);
+          db.registerWorker(lw).catch(e => console.warn('Syncing local worker to Supabase:', e));
+        }
+      });
+
+      const merged = Array.from(map.values());
+      getLocalDb.saveWorkers(merged);
+      return merged;
     } catch (err: any) {
       console.warn('Supabase fetchWorkers failed, using local storage fallback:', err);
       setSupabaseConnectionStatus('error', err?.message || 'Error de conexión con Supabase');
@@ -1088,18 +1103,26 @@ export const db = {
         if (!error && data) {
           supabaseCards = data.map(c => ({
             id: c.id,
-            boardId: c.board_id,
-            divisionId: c.division_id,
+            boardId: c.board_id || 'board_ingesta',
+            divisionId: c.division_id || undefined,
             title: c.title,
             description: c.description || '',
-            status: c.status as any,
-            startDate: c.start_date,
-            dueDate: c.due_date,
-            assignedWorkerIds: c.assigned_worker_ids ? JSON.parse(c.assigned_worker_ids) : [],
-            checklist: c.checklist ? JSON.parse(c.checklist) : [],
-            createdAt: c.created_at,
-            createdByWorkerId: c.created_by_worker_id,
-            createdByName: c.created_by_name,
+            status: c.status as any || 'Pendiente',
+            startDate: c.start_date || new Date().toISOString().split('T')[0],
+            dueDate: c.due_date || new Date().toISOString().split('T')[0],
+            assignedWorkerIds: (() => {
+              if (!c.assigned_worker_ids) return [];
+              if (Array.isArray(c.assigned_worker_ids)) return c.assigned_worker_ids;
+              try { return JSON.parse(c.assigned_worker_ids); } catch { return []; }
+            })(),
+            checklist: (() => {
+              if (!c.checklist) return [];
+              if (Array.isArray(c.checklist)) return c.checklist;
+              try { return JSON.parse(c.checklist); } catch { return []; }
+            })(),
+            createdAt: c.created_at || new Date().toISOString(),
+            createdByWorkerId: c.created_by_worker_id || undefined,
+            createdByName: c.created_by_name || 'Sistema',
             priority: c.priority as any || 'media',
             isGerenciaOnly: Boolean(c.is_gerencia_only),
             duration: c.duration || '00:00:00',
@@ -1123,8 +1146,25 @@ export const db = {
             })()
           }));
           setSupabaseConnectionStatus('connected');
-          localStorage.setItem('vtv_task_cards', JSON.stringify(supabaseCards));
-          return supabaseCards;
+
+          // Non-destructive merge with local storage cards
+          const saved = localStorage.getItem('vtv_task_cards');
+          const localCards: TaskCard[] = saved ? JSON.parse(saved) : [];
+
+          const mergedMap = new Map<string, TaskCard>();
+          // Remote first
+          supabaseCards.forEach(c => mergedMap.set(c.id, c));
+          // Local second (preserve any local-only tasks and sync them back to Supabase)
+          localCards.forEach(lc => {
+            if (!mergedMap.has(lc.id)) {
+              mergedMap.set(lc.id, lc);
+              db.upsertTaskCard(lc).catch(err => console.warn('Syncing missing local card to Supabase:', err));
+            }
+          });
+
+          const mergedList = Array.from(mergedMap.values());
+          localStorage.setItem('vtv_task_cards', JSON.stringify(mergedList));
+          return mergedList;
         } else if (error) {
           console.error('Error fetching task_cards from Supabase:', error);
           setSupabaseConnectionStatus('error', `Error al consultar 'task_cards': ${error.message}. Ejecuta el Script SQL en Supabase.`);
@@ -1155,7 +1195,7 @@ export const db = {
       console.error('Error saving task_card to localStorage:', e);
     }
 
-    // 2. Strict sync to Supabase Cloud DB
+    // 2. Sync to Supabase Cloud DB with dynamic column pruning and FK error auto-recovery
     if (supabase) {
       const payload: any = {
         id: card.id,
@@ -1166,8 +1206,8 @@ export const db = {
         status: card.status,
         start_date: card.startDate || null,
         due_date: card.dueDate || null,
-        assigned_worker_ids: JSON.stringify(card.assignedWorkerIds || []),
-        checklist: JSON.stringify(card.checklist || []),
+        assigned_worker_ids: card.assignedWorkerIds || [],
+        checklist: card.checklist || [],
         priority: card.priority || 'media',
         is_gerencia_only: Boolean(card.isGerenciaOnly),
         duration: card.duration || '00:00:00',
@@ -1184,7 +1224,7 @@ export const db = {
         is_department_achievement: Boolean(card.isDepartmentAchievement),
         is_discarded: Boolean(card.isDiscarded),
         discarded_at: card.discardedAt || null,
-        linked_task_ids: JSON.stringify(card.linkedTaskIds || []),
+        linked_task_ids: card.linkedTaskIds || [],
         created_by_worker_id: card.createdByWorkerId || null,
         created_by_name: card.createdByName || 'Sistema',
         created_at: card.createdAt || new Date().toISOString()
@@ -1193,21 +1233,64 @@ export const db = {
       const executeUpsert = async (currentPayload: any): Promise<void> => {
         const { error } = await supabase.from('task_cards').upsert([currentPayload]);
         if (error) {
-          console.warn('Error upserting task_card to Supabase, checking error type...', error);
+          console.warn('Error upserting task_card to Supabase, checking error details...', error);
           const errStr = JSON.stringify(error).toLowerCase();
           const isColumnError = error.code === '42703' || errStr.includes('column') || errStr.includes('schema cache');
           const isFKError = error.code === '23503' || errStr.includes('foreign key') || errStr.includes('fkey') || errStr.includes('board_id');
+          const isArrayFormatError = error.code === '22P02' || errStr.includes('malformed array') || errStr.includes('array literal') || errStr.includes('invalid input syntax');
 
-          if (isColumnError && 'linked_task_ids' in currentPayload) {
-            console.warn('Pruning missing "linked_task_ids" column and retrying...');
-            delete currentPayload.linked_task_ids;
-            return executeUpsert(currentPayload);
+          if (isArrayFormatError) {
+            console.warn('Array format mismatch in Supabase, toggling array encoding for array fields and retrying...');
+            let toggled = false;
+            ['linked_task_ids', 'assigned_worker_ids', 'checklist'].forEach(col => {
+              if (col in currentPayload) {
+                if (Array.isArray(currentPayload[col])) {
+                  currentPayload[col] = JSON.stringify(currentPayload[col]);
+                  toggled = true;
+                } else if (typeof currentPayload[col] === 'string') {
+                  try {
+                    currentPayload[col] = JSON.parse(currentPayload[col]);
+                    toggled = true;
+                  } catch {
+                    // Ignore parse error
+                  }
+                }
+              }
+            });
+            if (toggled) {
+              return executeUpsert(currentPayload);
+            }
           }
 
-          if (isColumnError && 'is_department_achievement' in currentPayload) {
-            console.warn('Pruning missing "is_department_achievement" column and retrying...');
-            delete currentPayload.is_department_achievement;
-            return executeUpsert(currentPayload);
+          if (isColumnError) {
+            let pruned = false;
+            // Match specific column name in error message
+            const match = error.message?.match(/column ["']?([a_z0-9_]+)["']?/i) || error.message?.match(/find the ['"]([a_z0-9_]+)['"] column/i);
+            if (match && match[1] && match[1] in currentPayload) {
+              console.warn(`Pruning missing column "${match[1]}" and retrying...`);
+              delete currentPayload[match[1]];
+              pruned = true;
+            } else {
+              // Candidate list of non-essential columns
+              const candidateCols = [
+                'linked_task_ids', 'is_department_achievement', 'is_discarded', 'discarded_at',
+                'edited_duration', 'duration', 'is_gerencia_only', 'priority', 'checklist',
+                'assigned_worker_ids', 'is_finalized', 'finalized_at', 'is_documented', 'documented_at',
+                'is_edited', 'edited_at', 'is_ingested', 'ingested_at', 'is_other_request',
+                'created_by_worker_id', 'created_by_name'
+              ];
+              for (const col of candidateCols) {
+                if (col in currentPayload) {
+                  console.warn(`Pruning candidate column "${col}" and retrying...`);
+                  delete currentPayload[col];
+                  pruned = true;
+                  break;
+                }
+              }
+            }
+            if (pruned) {
+              return executeUpsert(currentPayload);
+            }
           }
 
           if (isFKError) {
@@ -1228,9 +1311,10 @@ export const db = {
               setSupabaseConnectionStatus('connected');
               return;
             }
-            // Fallback: clear board_id to null so save succeeds without breaking
+            // Fallback: clear board_id/division_id to null so save succeeds without breaking
             console.warn('Retry failed, clearing board_id constraint and re-upserting...');
             currentPayload.board_id = null;
+            currentPayload.division_id = null;
             const { error: fallbackError } = await supabase.from('task_cards').upsert([currentPayload]);
             if (!fallbackError) {
               setSupabaseConnectionStatus('connected');
@@ -1240,17 +1324,13 @@ export const db = {
 
           console.warn('Error upserting task_card to Supabase:', error.message);
           setSupabaseConnectionStatus('error', `Error al guardar tarea en Supabase: ${error.message}. Por favor ejecuta el Script SQL en Supabase.`);
+          throw new Error(`Error en Supabase: ${error.message}`);
         } else {
           setSupabaseConnectionStatus('connected');
         }
       };
 
-      try {
-        await executeUpsert(payload);
-      } catch (err: any) {
-        console.warn('Supabase upsertTaskCard error:', err);
-        setSupabaseConnectionStatus('error', err?.message || 'Error guardando tarea en Supabase');
-      }
+      await executeUpsert(payload);
     }
   },
 

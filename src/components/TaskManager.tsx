@@ -2,11 +2,11 @@ import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Kanban, Plus, Search, Filter, Calendar, CheckSquare, Users,
-  Clock, AlertCircle, CheckCircle2, ChevronRight, X, Edit3, Trash2,
+  Clock, AlertCircle, CheckCircle2, ChevronRight, ChevronDown, X, Edit3, Trash2,
   Bell, Check, Tag, Sparkles, FolderPlus, ShieldAlert, ArrowRight,
   UserCheck, AlertTriangle, Layers, FileText, Printer, Copy, Database,
   Code2, Download, ExternalLink, BarChart3, Eye, Lock, Crown, Scissors,
-  FileCheck, Archive, Award, CheckCheck, BellOff, Link2
+  FileCheck, Archive, Award, CheckCheck, BellOff, Link2, History
 } from 'lucide-react';
 import { TaskBoard, TaskCard, TaskNotification, TaskStatus, Worker, Division, UserRole } from '../types';
 
@@ -35,17 +35,70 @@ interface TaskManagerProps {
   onAddNotificationToast: (title: string, desc: string, type: 'success' | 'info') => void;
 }
 
+// Helper para obtener YYYY-MM-DD local en zona horaria Venezuela (America/Caracas, UTC-4)
+const getLocalYMD = (d: Date = new Date()): string => {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Caracas',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+    return formatter.format(d);
+  } catch {
+    const pad = (n: number) => (n < 10 ? '0' + n : n);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+};
+
+// Helper para normalizar cualquier string de fecha a YYYY-MM-DD respetando la hora local (00:00 a 23:59)
+const normalizeToYMD = (dateStr?: string): string => {
+  if (!dateStr) return '';
+  const trimmed = dateStr.trim();
+  if (!trimmed) return '';
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  try {
+    const d = new Date(trimmed);
+    if (!isNaN(d.getTime())) {
+      return getLocalYMD(d);
+    }
+  } catch {}
+
+  return trimmed.slice(0, 10);
+};
+
 // Helpers para cálculo y formateo de duración de material audiovisual
 const parseDurationToSeconds = (durStr?: string): number => {
   if (!durStr) return 0;
-  const clean = durStr.trim();
+  const clean = durStr.trim().toLowerCase();
+  if (!clean || clean === '0' || clean === '00:00:00') return 0;
+
+  // Handle formats like "1h 30m", "90m", "1.5h", "30s"
+  if (clean.includes('h') || clean.includes('m') || clean.includes('s')) {
+    let totalSec = 0;
+    const hMatch = clean.match(/([\d.]+)\s*h/);
+    const mMatch = clean.match(/([\d.]+)\s*m/);
+    const sMatch = clean.match(/([\d.]+)\s*s/);
+    if (hMatch) totalSec += parseFloat(hMatch[1]) * 3600;
+    if (mMatch) totalSec += parseFloat(mMatch[1]) * 60;
+    if (sMatch) totalSec += parseFloat(sMatch[1]);
+    return Math.round(totalSec);
+  }
+
+  // Split by colon
   const parts = clean.split(':').map(p => parseInt(p, 10) || 0);
   if (parts.length === 3) {
     return (parts[0] * 3600) + (parts[1] * 60) + parts[2];
   } else if (parts.length === 2) {
-    return (parts[0] * 60) + parts[1];
+    // HH:MM format (e.g. "01:30" = 1h 30m = 5400s)
+    return (parts[0] * 3600) + (parts[1] * 60);
   } else if (parts.length === 1) {
-    return parts[0];
+    const num = parseFloat(clean);
+    if (!isNaN(num)) return Math.round(num * 60); // minutes
   }
   return 0;
 };
@@ -56,6 +109,410 @@ const formatSecondsToHHMMSS = (totalSeconds: number): string => {
   const mins = Math.floor((totalSeconds % 3600) / 60);
   const secs = Math.floor(totalSeconds % 60);
   return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+};
+
+export interface CardTaskGroup {
+  groupId: string;
+  primaryCard: TaskCard;
+  linkedCards: TaskCard[];
+  isLinkedGroup: boolean;
+  totalDurationSeconds: number;
+  totalDurationHHMMSS: string;
+  totalEditedDurationSeconds: number;
+  totalEditedDurationHHMMSS: string;
+}
+
+// Helper to group linked tasks for report consolidation
+const buildCardTaskGroups = (listCards: TaskCard[], allCards: TaskCard[]): CardTaskGroup[] => {
+  const visitedIds = new Set<string>();
+  const groups: CardTaskGroup[] = [];
+
+  listCards.forEach(card => {
+    if (visitedIds.has(card.id)) return;
+
+    const clusterMap = new Map<string, TaskCard>();
+    const queue = [card];
+    clusterMap.set(card.id, card);
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      const linkedIds = current.linkedTaskIds || [];
+      const pointingCards = allCards.filter(c => c.linkedTaskIds && c.linkedTaskIds.includes(current.id));
+      const neighbors = [
+        ...linkedIds.map(id => allCards.find(c => c.id === id)).filter((c): c is TaskCard => Boolean(c)),
+        ...pointingCards
+      ];
+
+      neighbors.forEach(neighbor => {
+        if (!clusterMap.has(neighbor.id)) {
+          clusterMap.set(neighbor.id, neighbor);
+          queue.push(neighbor);
+        }
+      });
+    }
+
+    const clusterCards = Array.from(clusterMap.values());
+    clusterCards.forEach(c => {
+      if (listCards.some(lc => lc.id === c.id)) {
+        visitedIds.add(c.id);
+      }
+    });
+
+    const groupCardsInPeriod = clusterCards.filter(c => listCards.some(lc => lc.id === c.id));
+    if (groupCardsInPeriod.length === 0) return;
+
+    // Designate Root Task (Tarea Raíz):
+    // 1. Prefer card in group that explicitly links to other tasks
+    // 2. Otherwise select earliest created task
+    let primaryCard = groupCardsInPeriod.find(c => c.linkedTaskIds && c.linkedTaskIds.length > 0);
+    if (!primaryCard) {
+      groupCardsInPeriod.sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
+      primaryCard = groupCardsInPeriod[0];
+    }
+
+    const subTasks = groupCardsInPeriod.filter(c => c.id !== primaryCard.id);
+    const totalDurationSeconds = groupCardsInPeriod.reduce((sum, c) => sum + parseDurationToSeconds(c.duration), 0);
+    const totalEditedDurationSeconds = groupCardsInPeriod.reduce((sum, c) => {
+      const origSec = parseDurationToSeconds(c.duration);
+      const editSec = c.isEdited && c.editedDuration ? parseDurationToSeconds(c.editedDuration) : origSec;
+      return sum + editSec;
+    }, 0);
+
+    groups.push({
+      groupId: primaryCard.id,
+      primaryCard,
+      linkedCards: subTasks,
+      isLinkedGroup: groupCardsInPeriod.length > 1,
+      totalDurationSeconds,
+      totalDurationHHMMSS: formatSecondsToHHMMSS(totalDurationSeconds),
+      totalEditedDurationSeconds,
+      totalEditedDurationHHMMSS: formatSecondsToHHMMSS(totalEditedDurationSeconds)
+    });
+  });
+
+  return groups;
+};
+
+// Helper to filter card list so ONLY root tasks (Tarea Raíz) are returned in task views
+const filterRootCardsOnly = (cardList: TaskCard[], allCards: TaskCard[]): TaskCard[] => {
+  const visitedIds = new Set<string>();
+  const rootCardIds = new Set<string>();
+
+  const sortedAll = [...allCards].sort((a, b) => {
+    const aHasLinks = (a.linkedTaskIds && a.linkedTaskIds.length > 0) ? 1 : 0;
+    const bHasLinks = (b.linkedTaskIds && b.linkedTaskIds.length > 0) ? 1 : 0;
+    if (aHasLinks !== bHasLinks) return bHasLinks - aHasLinks;
+    return new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime();
+  });
+
+  sortedAll.forEach(card => {
+    if (visitedIds.has(card.id)) return;
+
+    const clusterMap = new Map<string, TaskCard>();
+    const queue = [card];
+    clusterMap.set(card.id, card);
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      const linkedIds = current.linkedTaskIds || [];
+      const pointingCards = allCards.filter(c => c.linkedTaskIds && c.linkedTaskIds.includes(current.id));
+      const neighbors = [
+        ...linkedIds.map(id => allCards.find(c => c.id === id)).filter((c): c is TaskCard => Boolean(c)),
+        ...pointingCards
+      ];
+
+      neighbors.forEach(neighbor => {
+        if (!clusterMap.has(neighbor.id)) {
+          clusterMap.set(neighbor.id, neighbor);
+          queue.push(neighbor);
+        }
+      });
+    }
+
+    const clusterCards = Array.from(clusterMap.values());
+    clusterCards.forEach(c => visitedIds.add(c.id));
+
+    if (clusterCards.length === 1) {
+      rootCardIds.add(clusterCards[0].id);
+    } else {
+      let root = clusterCards.find(c => c.linkedTaskIds && c.linkedTaskIds.length > 0);
+      if (!root) {
+        clusterCards.sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
+        root = clusterCards[0];
+      }
+      rootCardIds.add(root.id);
+    }
+  });
+
+  return cardList.filter(card => rootCardIds.has(card.id));
+};
+
+// Custom Mini Calendar DatePicker Popover
+interface CustomDatePickerProps {
+  value: string; // YYYY-MM-DD
+  onChange: (val: string) => void;
+  label?: string;
+  placeholder?: string;
+  accentColor?: 'cyan' | 'purple' | 'amber' | 'emerald';
+  clearable?: boolean;
+  className?: string;
+}
+
+const CustomDatePicker: React.FC<CustomDatePickerProps> = ({
+  value,
+  onChange,
+  label,
+  placeholder = 'Seleccionar fecha...',
+  accentColor = 'cyan',
+  clearable = false,
+  className = ''
+}) => {
+  const [isOpen, setIsOpen] = useState(false);
+
+  const initialYearMonth = useMemo(() => {
+    if (value && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      const [y, m] = value.split('-').map(Number);
+      return { year: y, month: m - 1 };
+    }
+    const today = new Date();
+    return { year: today.getFullYear(), month: today.getMonth() };
+  }, [value]);
+
+  const [viewYear, setViewYear] = useState(initialYearMonth.year);
+  const [viewMonth, setViewMonth] = useState(initialYearMonth.month);
+
+  React.useEffect(() => {
+    if (value && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      const [y, m] = value.split('-').map(Number);
+      setViewYear(y);
+      setViewMonth(m - 1);
+    }
+  }, [value]);
+
+  const monthNamesEs = [
+    'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+  ];
+
+  const handlePrevMonth = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (viewMonth === 0) {
+      setViewMonth(11);
+      setViewYear(prev => prev - 1);
+    } else {
+      setViewMonth(prev => prev - 1);
+    }
+  };
+
+  const handleNextMonth = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (viewMonth === 11) {
+      setViewMonth(0);
+      setViewYear(prev => prev + 1);
+    } else {
+      setViewMonth(prev => prev + 1);
+    }
+  };
+
+  const handleSelectDay = (dayNum: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const pad = (n: number) => n < 10 ? '0' + n : n;
+    const selectedYmd = `${viewYear}-${pad(viewMonth + 1)}-${pad(dayNum)}`;
+    onChange(selectedYmd);
+    setIsOpen(false);
+  };
+
+  const handleSelectToday = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const today = new Date();
+    const pad = (n: number) => n < 10 ? '0' + n : n;
+    const ymd = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+    onChange(ymd);
+    setViewYear(today.getFullYear());
+    setViewMonth(today.getMonth());
+    setIsOpen(false);
+  };
+
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+  const firstDayOfWeek = new Date(viewYear, viewMonth, 1).getDay();
+
+  const calendarCells = [];
+  for (let i = 0; i < firstDayOfWeek; i++) {
+    calendarCells.push(null);
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    calendarCells.push(d);
+  }
+
+  const formattedDisplay = useMemo(() => {
+    if (!value) return placeholder;
+    try {
+      const [y, m, d] = value.split('-').map(Number);
+      const dt = new Date(y, m - 1, d);
+      if (!isNaN(dt.getTime())) {
+        return dt.toLocaleDateString('es-VE', {
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric'
+        });
+      }
+    } catch {}
+    return value;
+  }, [value, placeholder]);
+
+  const colorStyles = {
+    cyan: {
+      border: 'border-cyan-500/40',
+      text: 'text-cyan-300',
+      hover: 'hover:border-cyan-500/50 hover:bg-cyan-500/10',
+      bgActive: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50',
+      icon: 'text-cyan-400'
+    },
+    purple: {
+      border: 'border-purple-500/40',
+      text: 'text-purple-300',
+      hover: 'hover:border-purple-500/50 hover:bg-purple-500/10',
+      bgActive: 'bg-purple-500/20 text-purple-300 border-purple-500/50',
+      icon: 'text-purple-400'
+    },
+    amber: {
+      border: 'border-amber-500/40',
+      text: 'text-amber-300',
+      hover: 'hover:border-amber-500/50 hover:bg-amber-500/10',
+      bgActive: 'bg-amber-500/20 text-amber-300 border-amber-500/50',
+      icon: 'text-amber-400'
+    },
+    emerald: {
+      border: 'border-emerald-500/40',
+      text: 'text-emerald-300',
+      hover: 'hover:border-emerald-500/50 hover:bg-emerald-500/10',
+      bgActive: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50',
+      icon: 'text-emerald-400'
+    }
+  }[accentColor];
+
+  return (
+    <div className={`relative inline-block ${className}`}>
+      {label && <label className="text-[10px] text-slate-400 font-bold uppercase block mb-1">{label}</label>}
+
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => setIsOpen(!isOpen)}
+          className={`w-full bg-slate-950 border ${isOpen ? colorStyles.border : 'border-white/10'} rounded-xl px-3 py-2 text-xs font-mono text-slate-200 flex items-center justify-between gap-2 cursor-pointer transition-all ${colorStyles.hover}`}
+        >
+          <div className="flex items-center gap-2 overflow-hidden">
+            <Calendar className={`w-3.5 h-3.5 ${colorStyles.icon} shrink-0`} />
+            <span className={value ? `${colorStyles.text} font-bold` : 'text-slate-500'}>
+              {formattedDisplay}
+            </span>
+          </div>
+          <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+        </button>
+
+        {clearable && value && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onChange('');
+            }}
+            className="p-2 text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 rounded-xl border border-rose-500/30 text-xs font-bold cursor-pointer shrink-0"
+            title="Limpiar fecha"
+          >
+            ✕
+          </button>
+        )}
+      </div>
+
+      {isOpen && (
+        <>
+          <div className="fixed inset-0 z-[9000]" onClick={() => setIsOpen(false)} />
+          <div className="absolute right-0 sm:right-auto sm:left-0 mt-2 z-[9999] w-64 bg-slate-900 border border-cyan-500/50 rounded-2xl p-3 shadow-[0_0_30px_rgba(0,0,0,0.8)] backdrop-blur-2xl space-y-2">
+            <div className="flex items-center justify-between pb-2 border-b border-white/10">
+              <button
+                type="button"
+                onClick={handlePrevMonth}
+                className="p-1 rounded-lg hover:bg-white/10 text-slate-300 hover:text-white transition-all cursor-pointer font-bold text-xs"
+              >
+                ◀
+              </button>
+              <span className="text-xs font-bold text-white font-sans">
+                {monthNamesEs[viewMonth]} {viewYear}
+              </span>
+              <button
+                type="button"
+                onClick={handleNextMonth}
+                className="p-1 rounded-lg hover:bg-white/10 text-slate-300 hover:text-white transition-all cursor-pointer font-bold text-xs"
+              >
+                ▶
+              </button>
+            </div>
+
+            <div className="grid grid-cols-7 text-center text-[10px] font-bold text-slate-400 uppercase font-mono">
+              <span>Do</span><span>Lu</span><span>Ma</span><span>Mi</span><span>Ju</span><span>Vi</span><span>Sá</span>
+            </div>
+
+            <div className="grid grid-cols-7 gap-1 text-center font-mono">
+              {calendarCells.map((cell, idx) => {
+                if (cell === null) {
+                  return <div key={`empty_${idx}`} className="h-7" />;
+                }
+
+                const pad = (n: number) => n < 10 ? '0' + n : n;
+                const cellYmd = `${viewYear}-${pad(viewMonth + 1)}-${pad(cell)}`;
+                const isSelected = value === cellYmd;
+                const isToday = (() => {
+                  const t = new Date();
+                  return t.getFullYear() === viewYear && t.getMonth() === viewMonth && t.getDate() === cell;
+                })();
+
+                return (
+                  <button
+                    key={`day_${cell}`}
+                    type="button"
+                    onClick={(e) => handleSelectDay(cell, e)}
+                    className={`h-7 w-7 mx-auto rounded-lg text-xs font-bold transition-all flex items-center justify-center cursor-pointer border ${
+                      isSelected
+                        ? colorStyles.bgActive
+                        : isToday
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                        : 'text-slate-300 border-transparent hover:bg-slate-800 hover:text-white'
+                    }`}
+                  >
+                    {cell}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="pt-2 border-t border-white/10 flex items-center justify-between text-[11px]">
+              <button
+                type="button"
+                onClick={handleSelectToday}
+                className="px-2.5 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/30 text-[10px] font-bold cursor-pointer transition-all"
+              >
+                Hoy
+              </button>
+              {clearable && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onChange('');
+                    setIsOpen(false);
+                  }}
+                  className="text-slate-400 hover:text-rose-400 text-[10px] underline cursor-pointer"
+                >
+                  Limpiar
+                </button>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
 };
 
 // Helper to format ISO or Date string for <input type="datetime-local" />
@@ -149,11 +606,11 @@ export default function TaskManager({
   const [taskTitle, setTaskTitle] = useState('');
   const [taskDesc, setTaskDesc] = useState('');
   const [taskPriority, setTaskPriority] = useState<'baja' | 'media' | 'alta' | 'urgente'>('media');
-  const [taskStartDate, setTaskStartDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [taskStartDate, setTaskStartDate] = useState(() => getLocalYMD());
   const [taskDueDate, setTaskDueDate] = useState(() => {
     const nextWeek = new Date();
     nextWeek.setDate(nextWeek.getDate() + 7);
-    return nextWeek.toISOString().split('T')[0];
+    return getLocalYMD(nextWeek);
   });
   const [taskAssignedWorkerIds, setTaskAssignedWorkerIds] = useState<string[]>([]);
   const [taskChecklist, setTaskChecklist] = useState<{ id: string; text: string; completed: boolean }[]>([]);
@@ -176,16 +633,115 @@ export default function TaskManager({
 
   // Report Generator Filters State
   const [reportType, setReportType] = useState<'diario' | 'mensual' | 'anual'>('diario');
-  const [reportDate, setReportDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
-  const [reportMonth, setReportMonth] = useState<string>(() => new Date().toISOString().slice(0, 7));
+  const [reportDate, setReportDate] = useState<string>(() => getLocalYMD());
+  const [reportMonth, setReportMonth] = useState<string>(() => getLocalYMD().slice(0, 7));
   const [reportYear, setReportYear] = useState<string>(() => new Date().getFullYear().toString());
   const [reportBoardFilter, setReportBoardFilter] = useState<string>('todos');
   const [reportDivisionFilter, setReportDivisionFilter] = useState<string>('todos');
   const [reportWorkerFilter, setReportWorkerFilter] = useState<string>('todos');
   const [copiedText, setCopiedText] = useState<boolean>(false);
+  const [expandedGroupIds, setExpandedGroupIds] = useState<Record<string, boolean>>({});
+
+  const toggleGroupExpanded = (groupId: string) => {
+    setExpandedGroupIds(prev => ({ ...prev, [groupId]: !prev[groupId] }));
+  };
 
   // Quick checklist input state for individual cards in "Otras Solicitudes"
   const [cardQuickCheckInput, setCardQuickCheckInput] = useState<{ [cardId: string]: string }>({});
+
+  // Expanded state for linked tasks accordion on root cards
+  const [expandedLinkedCardIds, setExpandedLinkedCardIds] = useState<Set<string>>(new Set());
+
+  const toggleLinkedExpanded = (cardId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setExpandedLinkedCardIds(prev => {
+      const next = new Set(prev);
+      if (next.has(cardId)) {
+        next.delete(cardId);
+      } else {
+        next.add(cardId);
+      }
+      return next;
+    });
+  };
+
+  const renderLinkedTasksAccordion = (card: TaskCard) => {
+    const linkedChildCards = cards.filter(c =>
+      c.id !== card.id &&
+      ((card.linkedTaskIds || []).includes(c.id) || (c.linkedTaskIds || []).includes(card.id))
+    );
+
+    if (linkedChildCards.length === 0) return null;
+
+    const isExpanded = expandedLinkedCardIds.has(card.id);
+
+    return (
+      <div className="pt-2 border-t border-cyan-500/20 space-y-2">
+        <button
+          type="button"
+          onClick={(e) => toggleLinkedExpanded(card.id, e)}
+          className="w-full py-1.5 px-3 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-xs font-bold text-cyan-300 flex items-center justify-between transition-all cursor-pointer shadow-sm group/linkbtn"
+        >
+          <div className="flex items-center gap-2">
+            <Link2 className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+            <span>Tareas Vinculadas ({linkedChildCards.length})</span>
+          </div>
+          <div className="flex items-center gap-1.5 text-cyan-400">
+            <span className="text-[10px] opacity-80">{isExpanded ? 'Ocultar' : 'Ver'}</span>
+            <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} />
+          </div>
+        </button>
+
+        {isExpanded && (
+          <div className="space-y-1.5 pl-2 border-l-2 border-cyan-500/40 py-1 font-sans">
+            {linkedChildCards.map(childCard => {
+              const childBoard = productionBoards.find(b => b.id === childCard.boardId) || boards.find(b => b.id === childCard.boardId);
+              return (
+                <div
+                  key={childCard.id}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleOpenEditTask(childCard);
+                  }}
+                  className="p-2.5 rounded-xl bg-slate-950/80 hover:bg-slate-900 border border-white/10 hover:border-cyan-500/40 transition-all text-xs cursor-pointer space-y-1 group/child"
+                >
+                  <div className="flex items-center justify-between gap-1 flex-wrap">
+                    <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                      {childBoard?.name || 'Vinculada'}
+                    </span>
+                    {childCard.duration && childCard.duration !== '00:00:00' && (
+                      <span className="text-[10px] font-mono text-cyan-400 font-bold">
+                        Duración: {childCard.duration}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="font-bold text-slate-200 group-hover/child:text-cyan-300 transition-colors line-clamp-1">
+                    {childCard.title}
+                  </div>
+
+                  <div className="flex items-center gap-3 text-[10px] text-slate-400 pt-0.5 font-mono flex-wrap">
+                    <span className={childCard.isIngested ? 'text-cyan-400 font-bold' : 'text-slate-600'}>
+                      Ingested {childCard.isIngested ? '✓' : '✗'}
+                    </span>
+                    <span className={childCard.isEdited ? 'text-blue-400 font-bold' : 'text-slate-600'}>
+                      Editado {childCard.isEdited ? '✓' : '✗'}
+                    </span>
+                    <span className={childCard.isDocumented ? 'text-amber-400 font-bold' : 'text-slate-600'}>
+                      Archivar {childCard.isDocumented ? '✓' : '✗'}
+                    </span>
+                    <span className={childCard.isFinalized ? 'text-emerald-400 font-bold' : 'text-slate-600'}>
+                      Finalizado {childCard.isFinalized ? '✓' : '✗'}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   // Resolved list of production boards (Excludes "Otras Solicitudes" & "Administración")
   const productionBoards = useMemo(() => {
@@ -259,23 +815,12 @@ export default function TaskManager({
       card.finalizedAt
     ].filter(Boolean) as string[];
 
-    return dates.some(d => {
-      if (d.startsWith(filterDate)) return true;
-      try {
-        const dt = new Date(d);
-        if (!isNaN(dt.getTime())) {
-          const pad = (n: number) => n < 10 ? '0' + n : n;
-          const ymd = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-          return ymd === filterDate;
-        }
-      } catch {}
-      return false;
-    });
+    return dates.some(d => normalizeToYMD(d) === filterDate);
   };
 
   // Filtered cards for active Production Tab (Ingesta, Prensa, Programación)
   const productionCards = useMemo(() => {
-    return sortedCardsDescending.filter(card => {
+    const list = sortedCardsDescending.filter(card => {
       // 0. Hide discarded tasks
       if (card.isDiscarded) return false;
 
@@ -311,11 +856,12 @@ export default function TaskManager({
 
       return true;
     });
-  }, [sortedCardsDescending, selectedBoardId, onlyMyTasks, searchQuery, dateFilter, currentWorkerId, isGerenciaUser, workers]);
+    return filterRootCardsOnly(list, cards);
+  }, [sortedCardsDescending, selectedBoardId, onlyMyTasks, searchQuery, dateFilter, currentWorkerId, isGerenciaUser, workers, cards]);
 
   // Filtered cards for "Otras Solicitudes" Tab (Includes Administración and general requests)
   const otherRequestsCards = useMemo(() => {
-    return sortedCardsDescending.filter(card => {
+    const list = sortedCardsDescending.filter(card => {
       // 0. Hide discarded tasks
       if (card.isDiscarded) return false;
 
@@ -344,11 +890,12 @@ export default function TaskManager({
 
       return true;
     });
-  }, [sortedCardsDescending, onlyMyTasks, searchQuery, dateFilter, currentWorkerId, isGerenciaUser]);
+    return filterRootCardsOnly(list, cards);
+  }, [sortedCardsDescending, onlyMyTasks, searchQuery, dateFilter, currentWorkerId, isGerenciaUser, cards]);
 
   // Filtered cards for "Tareas Finalizadas" Tab (Hidden section / Apartado)
   const finalizedCards = useMemo(() => {
-    return sortedCardsDescending.filter(card => {
+    const list = sortedCardsDescending.filter(card => {
       // Hide discarded tasks
       if (card.isDiscarded) return false;
 
@@ -369,11 +916,12 @@ export default function TaskManager({
 
       return true;
     });
-  }, [sortedCardsDescending, searchQuery, dateFilter, isGerenciaUser]);
+    return filterRootCardsOnly(list, cards);
+  }, [sortedCardsDescending, searchQuery, dateFilter, isGerenciaUser, cards]);
 
   // Filtered cards for "Material Descartado" Tab
   const discardedCards = useMemo(() => {
-    return sortedCardsDescending.filter(card => {
+    const list = sortedCardsDescending.filter(card => {
       // Must be discarded
       if (!card.isDiscarded) return false;
 
@@ -391,7 +939,64 @@ export default function TaskManager({
 
       return true;
     });
-  }, [sortedCardsDescending, searchQuery, dateFilter, isGerenciaUser]);
+    return filterRootCardsOnly(list, cards);
+  }, [sortedCardsDescending, searchQuery, dateFilter, isGerenciaUser, cards]);
+
+  // Helper to resolve documentation technician details for documented tasks
+  const getDocumentedInfo = (card: TaskCard) => {
+    if (!card.isDocumented) {
+      return { workerName: 'No documentado', formattedDateTime: '-' };
+    }
+
+    const assigned = (card.assignedWorkerIds || [])
+      .map(wId => workers.find(w => w.id === wId))
+      .filter((w): w is Worker => Boolean(w));
+
+    const archiveDivisions = divisions.filter(d => {
+      const dName = d.name.toLowerCase();
+      return d.id === 'div_archivo_prensa' || d.id === 'div_archivo_programacion' ||
+             dName.includes('prensa') || dName.includes('programacion') || dName.includes('programación') || dName.includes('archivo');
+    });
+
+    const archiveDivIds = new Set(archiveDivisions.map(d => d.id));
+
+    // Filter assigned workers belonging to Archivo de Prensa or Archivo de Programación with cargo/role of 'Técnico' or 'worker'
+    const techWorkers = assigned.filter(w => {
+      const isArchiveDiv = archiveDivIds.has(w.divisionId);
+      const cargoLower = (w.cargo || '').toLowerCase();
+      const isTech = cargoLower.includes('tecnico') || cargoLower.includes('técnico') || w.role === 'worker';
+      return isArchiveDiv && isTech;
+    });
+
+    let workerName = '';
+    if (techWorkers.length > 0) {
+      workerName = techWorkers.map(w => {
+        const divObj = divisions.find(d => d.id === w.divisionId);
+        return `${w.name} (${divObj?.name || 'Archivo'} - ${w.cargo || 'Técnico'})`;
+      }).join(', ');
+    } else {
+      const archiveWorkers = assigned.filter(w => archiveDivIds.has(w.divisionId));
+      if (archiveWorkers.length > 0) {
+        workerName = archiveWorkers.map(w => {
+          const divObj = divisions.find(d => d.id === w.divisionId);
+          return `${w.name} (${divObj?.name || 'Archivo'})`;
+        }).join(', ');
+      } else if (assigned.length > 0) {
+        workerName = assigned.map(w => w.name).join(', ');
+      } else {
+        workerName = card.createdByName || 'Personal de Archivo';
+      }
+    }
+
+    const formattedDateTime = card.documentedAt
+      ? new Date(card.documentedAt).toLocaleString('es-VE', {
+          day: '2-digit', month: '2-digit', year: 'numeric',
+          hour: '2-digit', minute: '2-digit', second: '2-digit'
+        })
+      : 'Fecha no registrada';
+
+    return { workerName, formattedDateTime };
+  };
 
   // Metrics for Report Generator based on dates, stage timestamps & duration math
   const reportMetrics = useMemo(() => {
@@ -421,73 +1026,90 @@ export default function TaskManager({
 
     const matchesPeriod = (dateStr?: string) => {
       if (!dateStr) return false;
-      let ymd = dateStr.slice(0, 10);
-      try {
-        const d = new Date(dateStr);
-        if (!isNaN(d.getTime())) {
-          const pad = (n: number) => n < 10 ? '0' + n : n;
-          ymd = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-        }
-      } catch {}
+      const trimmed = dateStr.trim();
+      if (!trimmed) return false;
 
-      if (reportType === 'diario') return ymd === reportDate;
-      if (reportType === 'mensual') return ymd.slice(0, 7) === reportMonth;
-      if (reportType === 'anual') return ymd.slice(0, 4) === reportYear;
+      const ymdLocal = normalizeToYMD(trimmed);
+
+      if (reportType === 'diario') {
+        return ymdLocal === reportDate;
+      }
+      if (reportType === 'mensual') {
+        return ymdLocal.slice(0, 7) === reportMonth;
+      }
+      if (reportType === 'anual') {
+        return ymdLocal.slice(0, 4) === reportYear;
+      }
       return true;
     };
 
     const getCardIngestedYMD = (c: TaskCard) => {
-      const raw = c.ingestedAt || c.startDate || c.createdAt;
-      if (!raw) return '';
-      try {
-        const d = new Date(raw);
-        if (!isNaN(d.getTime())) {
-          const pad = (n: number) => n < 10 ? '0' + n : n;
-          return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-        }
-      } catch {}
-      return raw.slice(0, 10);
+      return normalizeToYMD(c.ingestedAt || c.startDate || c.createdAt);
     };
 
-    // 1. Ingestados en el período (basado en la fecha/hora que tiene la tarea marcada en ingesta)
-    const ingestadosEnPeriodo = baseCards.filter(c => c.isIngested && matchesPeriod(getCardIngestedYMD(c)));
+    // 1. LISTA 1: Material Ingestado y Editado en el período
+    const ingestadosEnPeriodo = baseCards.filter(c => {
+      const isIng = c.isIngested || c.boardId === 'board_ingesta' || (c.status as string) === 'Ingested' || parseDurationToSeconds(c.duration) > 0;
+      const ingStr = c.ingestedAt || c.startDate || c.createdAt;
+      return isIng && matchesPeriod(ingStr);
+    });
     
-    // Horas de Ingesta: se suman inmediatamente tan pronto como se marca la tarea como ingestado (si no es otra solicitud)
-    const ingestadosValidos = baseCards.filter(c => c.isIngested && !c.isOtherRequest && matchesPeriod(getCardIngestedYMD(c)));
-    const totalIngestaSeconds = ingestadosValidos.reduce((sum, c) => sum + parseDurationToSeconds(c.duration), 0);
+    // Horas de Ingesta: se suman TODAS las tareas marcadas como ingestadas en el período
+    const totalIngestaSeconds = ingestadosEnPeriodo.reduce((sum, c) => sum + parseDurationToSeconds(c.duration), 0);
 
-    // 2. Editados en el período
-    const editadosEnPeriodo = baseCards.filter(c => c.isEdited && matchesPeriod(c.editedAt || c.createdAt));
+    // Editados en el período
+    const editadosEnPeriodo = baseCards.filter(c => c.isEdited && matchesPeriod(c.editedAt || c.startDate || c.createdAt));
+    
     // Tiempo Ahorrado por Filtro de Ingesta: resta de (tiempo material original - tiempo material editado)
     const tiempoAhorradoSeconds = editadosEnPeriodo.reduce((sum, c) => {
       if (c.isOtherRequest) return sum;
       const origSec = parseDurationToSeconds(c.duration);
-      const editSec = parseDurationToSeconds(c.editedDuration);
+      const editSec = c.isEdited && c.editedDuration ? parseDurationToSeconds(c.editedDuration) : origSec;
       const diff = Math.max(0, origSec - editSec);
       return sum + diff;
     }, 0);
 
-    // 3. Documentados ("Por Archivar") en el período (excluye material descartado)
-    const documentadosEnPeriodo = baseCards.filter(c => c.isDocumented && !c.isDiscarded && matchesPeriod(c.documentedAt || c.createdAt));
+    // Combinar para Lista 1: Material Ingestado y Editado
+    const ingestedAndEditedMap = new Map<string, TaskCard>();
+    ingestadosEnPeriodo.forEach(c => ingestedAndEditedMap.set(c.id, c));
+    editadosEnPeriodo.forEach(c => ingestedAndEditedMap.set(c.id, c));
+    const ingestedAndEditedList = Array.from(ingestedAndEditedMap.values());
+    // Conteo para Lista 1: TODAS las tareas individuales
+    const ingestadosYEditadosCount = ingestedAndEditedList.length;
+    const ingestedAndEditedGroups = buildCardTaskGroups(ingestedAndEditedList, cards);
+
+    // 2. LISTA 2: Material Archivado ("Para Archivar" / Documentados / Finalizados) y Logros de Otras Solicitudes
+    const documentadosEnPeriodo = baseCards.filter(c => {
+      const isArch = Boolean(c.isDocumented || c.isFinalized || c.status === 'Finalizado');
+      if (!isArch || c.isDiscarded) return false;
+      const archDateStr = c.documentedAt || c.finalizedAt || c.startDate || c.createdAt;
+      return matchesPeriod(archDateStr);
+    });
 
     // Materiales Descartados en el período
-    const descartadosEnPeriodo = baseCards.filter(c => c.isDiscarded && matchesPeriod(c.discardedAt || c.createdAt));
+    const descartadosEnPeriodo = baseCards.filter(c => c.isDiscarded && matchesPeriod(c.discardedAt || c.startDate || c.createdAt));
 
-    // 4. Finalizados en el período
-    const finalizadosEnPeriodo = baseCards.filter(c => c.isFinalized && matchesPeriod(c.finalizedAt || c.createdAt));
+    // Finalizados en el período
+    const finalizadosEnPeriodo = baseCards.filter(c => c.isFinalized && matchesPeriod(c.finalizedAt || c.startDate || c.createdAt));
 
-    // 5. Logros de solicitudes (no administrativas ni gerenciales)
+    // Logros de solicitudes (no administrativas ni gerenciales)
     const departmentAchievements = baseCards.filter(c => {
-      // Excluir tareas administrativas y gerenciales
       if (c.boardId === 'board_administracion') return false;
       if (c.isGerenciaOnly) return false;
-
-      // Debe pertenecer al período seleccionado
-      if (!matchesPeriod(c.finalizedAt || c.createdAt || c.startDate)) return false;
-
-      // Debe contar como logro (booleano explícito o solicitud especial finalizada)
+      if (!matchesPeriod(c.finalizedAt || c.startDate || c.createdAt)) return false;
       return Boolean(c.isDepartmentAchievement || (c.isOtherRequest && c.isFinalized));
     });
+
+    // Combinar para Lista 2: Material Archivado + Logros
+    const archivadosAndLogrosMap = new Map<string, TaskCard>();
+    documentadosEnPeriodo.forEach(c => archivadosAndLogrosMap.set(c.id, c));
+    departmentAchievements.forEach(c => archivadosAndLogrosMap.set(c.id, c));
+    const archivadosAndLogrosList = Array.from(archivadosAndLogrosMap.values());
+    const archivadosAndLogrosGroups = buildCardTaskGroups(archivadosAndLogrosList, cards);
+
+    // Conteo para Lista 2: SOLO 1 POR FAMILIA/CLUSTER DE TAREAS VINCULADAS
+    const materialArchivadoCount = buildCardTaskGroups(documentadosEnPeriodo, cards).length;
+    const materialArchivadoYLogrosCount = archivadosAndLogrosGroups.length;
 
     // 6. Cálculo de días del Calendario Mensual (para informe mensual)
     const [mY, mM] = reportMonth.split('-').map(Number);
@@ -508,8 +1130,11 @@ export default function TaskManager({
 
       // Buscar tareas ingestadas en esta fecha basada en su fecha/hora de ingesta
       const dayTasks = baseCards.filter(c => {
-        if (!c.isIngested || c.isOtherRequest) return false;
-        return getCardIngestedYMD(c) === dateStr;
+        const isIng = c.isIngested || c.boardId === 'board_ingesta' || (c.status as string) === 'Ingested' || parseDurationToSeconds(c.duration) > 0;
+        if (!isIng) return false;
+        const ingStr = (c.ingestedAt || c.startDate || c.createdAt || '').trim();
+        if (!ingStr) return false;
+        return normalizeToYMD(ingStr) === dateStr || ingStr.slice(0, 10) === dateStr;
       });
 
       const dayIngestedSeconds = dayTasks.reduce((sum, c) => sum + parseDurationToSeconds(c.duration), 0);
@@ -547,6 +1172,166 @@ export default function TaskManager({
     // 8. Cantidad de material entregado / finalizado y duración total editada
     const deliveredTotalEditedSeconds = finalizadosEnPeriodo.reduce((sum, c) => sum + parseDurationToSeconds(c.editedDuration || c.duration), 0);
 
+    // 9. Agrupación de tareas vinculadas para reportes (Consolidación)
+    const documentadosGroups = buildCardTaskGroups(documentadosEnPeriodo, cards);
+    const ingestadosGroups = buildCardTaskGroups(ingestadosEnPeriodo, cards);
+
+    // 10. Registro Desglosado de Actualizaciones y Actividades del Día
+    const dailyActivityEvents: Array<{
+      id: string;
+      cardId: string;
+      title: string;
+      type: 'Ingesta' | 'Edición' | 'Por Archivar' | 'Finalizado' | 'Descartado';
+      typeLabel: string;
+      badgeColor: string;
+      boardName: string;
+      timestamp: string;
+      formattedDateTime: string;
+      workerName: string;
+      duration: string;
+      card: TaskCard;
+    }> = [];
+
+    const formatEventDate = (isoStr?: string) => {
+      if (!isoStr) return 'Sin Fecha/Hora';
+      try {
+        const d = new Date(isoStr);
+        if (isNaN(d.getTime())) return isoStr;
+        const pad = (n: number) => n < 10 ? '0' + n : n;
+        let hours = d.getHours();
+        const ampm = hours >= 12 ? 'PM' : 'AM';
+        hours = hours % 12 || 12;
+        return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(hours)}:${pad(d.getMinutes())} ${ampm}`;
+      } catch {
+        return isoStr;
+      }
+    };
+
+    const getWorkerNames = (card: TaskCard, fieldName: 'ingested' | 'edited' | 'documented' | 'finalized' | 'discarded') => {
+      if (fieldName === 'ingested' && card.ingestedByWorkerName) return card.ingestedByWorkerName;
+      if (fieldName === 'edited' && card.editedByWorkerName) return card.editedByWorkerName;
+      if (fieldName === 'documented' && card.documentedByWorkerName) return card.documentedByWorkerName;
+      if (fieldName === 'finalized' && card.finalizedByWorkerName) return card.finalizedByWorkerName;
+      if (fieldName === 'discarded' && card.discardedByWorkerName) return card.discardedByWorkerName;
+
+      if (fieldName === 'documented') {
+        const docInfo = getDocumentedInfo(card);
+        if (docInfo.workerName && docInfo.workerName !== 'No documentado') return docInfo.workerName;
+      }
+
+      if (card.assignedWorkerIds && card.assignedWorkerIds.length > 0) {
+        const names = card.assignedWorkerIds
+          .map(id => workers.find(w => w.id === id)?.name)
+          .filter(Boolean);
+        if (names.length > 0) return names.join(', ');
+      }
+      if (card.createdByName) return card.createdByName;
+      return 'Personal VTV';
+    };
+
+    baseCards.forEach(c => {
+      const boardObj = productionBoards.find(b => b.id === c.boardId) || boards.find(b => b.id === c.boardId);
+      const bName = boardObj?.name || (c.isOtherRequest ? 'Otras Solicitudes' : 'VTV');
+
+      // 1. Ingestado
+      if (c.isIngested && matchesPeriod(c.ingestedAt || c.startDate || c.createdAt)) {
+        const ts = c.ingestedAt || c.startDate || c.createdAt;
+        dailyActivityEvents.push({
+          id: `ing_${c.id}_${ts}`,
+          cardId: c.id,
+          title: c.title,
+          type: 'Ingesta',
+          typeLabel: 'Ingesta de Material',
+          badgeColor: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40',
+          boardName: bName,
+          timestamp: ts,
+          formattedDateTime: formatEventDate(ts),
+          workerName: getWorkerNames(c, 'ingested'),
+          duration: c.duration || '00:00:00',
+          card: c
+        });
+      }
+
+      // 2. Editado
+      if (c.isEdited && matchesPeriod(c.editedAt || c.startDate || c.createdAt)) {
+        const ts = c.editedAt || c.startDate || c.createdAt;
+        dailyActivityEvents.push({
+          id: `edit_${c.id}_${ts}`,
+          cardId: c.id,
+          title: c.title,
+          type: 'Edición',
+          typeLabel: 'Edición de Material',
+          badgeColor: 'bg-blue-500/20 text-blue-300 border-blue-500/40',
+          boardName: bName,
+          timestamp: ts,
+          formattedDateTime: formatEventDate(ts),
+          workerName: getWorkerNames(c, 'edited'),
+          duration: c.editedDuration || c.duration || '00:00:00',
+          card: c
+        });
+      }
+
+      // 3. Documentado / Por Archivar
+      if (c.isDocumented && !c.isDiscarded && matchesPeriod(c.documentedAt || c.startDate || c.createdAt)) {
+        const ts = c.documentedAt || c.startDate || c.createdAt;
+        dailyActivityEvents.push({
+          id: `doc_${c.id}_${ts}`,
+          cardId: c.id,
+          title: c.title,
+          type: 'Por Archivar',
+          typeLabel: 'Por Archivar (Documentado)',
+          badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
+          boardName: bName,
+          timestamp: ts,
+          formattedDateTime: formatEventDate(ts),
+          workerName: getWorkerNames(c, 'documented'),
+          duration: c.duration || '00:00:00',
+          card: c
+        });
+      }
+
+      // 4. Finalizado
+      if (c.isFinalized && matchesPeriod(c.finalizedAt || c.startDate || c.createdAt)) {
+        const ts = c.finalizedAt || c.startDate || c.createdAt;
+        dailyActivityEvents.push({
+          id: `fin_${c.id}_${ts}`,
+          cardId: c.id,
+          title: c.title,
+          type: 'Finalizado',
+          typeLabel: 'Autorizado y Finalizado',
+          badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
+          boardName: bName,
+          timestamp: ts,
+          formattedDateTime: formatEventDate(ts),
+          workerName: getWorkerNames(c, 'finalized'),
+          duration: c.editedDuration || c.duration || '00:00:00',
+          card: c
+        });
+      }
+
+      // 5. Descartado
+      if (c.isDiscarded && matchesPeriod(c.discardedAt || c.startDate || c.createdAt)) {
+        const ts = c.discardedAt || c.startDate || c.createdAt;
+        dailyActivityEvents.push({
+          id: `disc_${c.id}_${ts}`,
+          cardId: c.id,
+          title: c.title,
+          type: 'Descartado',
+          typeLabel: 'Material Descartado',
+          badgeColor: 'bg-rose-500/20 text-rose-300 border-rose-500/40',
+          boardName: bName,
+          timestamp: ts,
+          formattedDateTime: formatEventDate(ts),
+          workerName: getWorkerNames(c, 'discarded'),
+          duration: c.duration || '00:00:00',
+          card: c
+        });
+      }
+    });
+
+    // Sort daily activity events descending by timestamp
+    dailyActivityEvents.sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
+
     return {
       totalBaseCards: baseCards.length,
       ingestadosCount: ingestadosEnPeriodo.length,
@@ -556,15 +1341,25 @@ export default function TaskManager({
       documentadosCount: documentadosEnPeriodo.length,
       descartadosCount: descartadosEnPeriodo.length,
       finalizadosCount: finalizadosEnPeriodo.length,
+      materialArchivadoCount,
+      materialArchivadoYLogrosCount,
       logrosOtrasSolicitudesCount: departmentAchievements.length,
       ingestadosEnPeriodo,
+      ingestadosGroups,
+      ingestedAndEditedList,
+      ingestedAndEditedGroups,
+      ingestadosYEditadosCount,
       editadosEnPeriodo,
       documentadosEnPeriodo,
+      documentadosGroups,
+      archivadosAndLogrosList,
+      archivadosAndLogrosGroups,
       descartadosEnPeriodo,
       finalizadosEnPeriodo,
       departmentAchievements,
       monthlyCalendarDays,
       savingsByFilter,
+      dailyActivityEvents,
       deliveredCount: finalizadosEnPeriodo.length,
       deliveredTotalEditedHHMMSS: formatSecondsToHHMMSS(deliveredTotalEditedSeconds)
     };
@@ -576,6 +1371,8 @@ export default function TaskManager({
 
     const nowIso = new Date().toISOString();
     const updatedCard: TaskCard = { ...card };
+    const currentWorkerObj = workers.find(w => w.id === currentWorkerId);
+    const activeWorkerName = currentWorkerObj?.name || currentSession?.name || 'Personal VTV';
 
     if (stage === 'finalized') {
       if (!canManageTasks) {
@@ -589,6 +1386,8 @@ export default function TaskManager({
       const nextVal = !card.isFinalized;
       updatedCard.isFinalized = nextVal;
       updatedCard.finalizedAt = nextVal ? (card.finalizedAt || nowIso) : undefined;
+      updatedCard.finalizedByWorkerId = nextVal ? (card.finalizedByWorkerId || currentWorkerId) : undefined;
+      updatedCard.finalizedByWorkerName = nextVal ? (card.finalizedByWorkerName || activeWorkerName) : undefined;
       if (nextVal) {
         updatedCard.status = 'Finalizado';
       }
@@ -604,6 +1403,8 @@ export default function TaskManager({
       }
       updatedCard.isIngested = nextVal;
       updatedCard.ingestedAt = nextVal ? (card.ingestedAt || nowIso) : undefined;
+      updatedCard.ingestedByWorkerId = nextVal ? (card.ingestedByWorkerId || currentWorkerId) : undefined;
+      updatedCard.ingestedByWorkerName = nextVal ? (card.ingestedByWorkerName || activeWorkerName) : undefined;
       if (nextVal) {
         updatedCard.status = 'Ingested' as any;
       }
@@ -619,6 +1420,8 @@ export default function TaskManager({
       }
       updatedCard.isEdited = nextVal;
       updatedCard.editedAt = nextVal ? (card.editedAt || nowIso) : undefined;
+      updatedCard.editedByWorkerId = nextVal ? (card.editedByWorkerId || currentWorkerId) : undefined;
+      updatedCard.editedByWorkerName = nextVal ? (card.editedByWorkerName || activeWorkerName) : undefined;
       if (nextVal) {
         updatedCard.status = 'Editado' as any;
       }
@@ -634,6 +1437,8 @@ export default function TaskManager({
       }
       updatedCard.isDocumented = nextVal;
       updatedCard.documentedAt = nextVal ? (card.documentedAt || nowIso) : undefined;
+      updatedCard.documentedByWorkerId = nextVal ? (card.documentedByWorkerId || currentWorkerId) : undefined;
+      updatedCard.documentedByWorkerName = nextVal ? (card.documentedByWorkerName || activeWorkerName) : undefined;
       if (nextVal) {
         updatedCard.status = 'Archivando' as any;
       }
@@ -649,6 +1454,8 @@ export default function TaskManager({
       const nextVal = !card.isDiscarded;
       updatedCard.isDiscarded = nextVal;
       updatedCard.discardedAt = nextVal ? (card.discardedAt || nowIso) : undefined;
+      updatedCard.discardedByWorkerId = nextVal ? (card.discardedByWorkerId || currentWorkerId) : undefined;
+      updatedCard.discardedByWorkerName = nextVal ? (card.discardedByWorkerName || activeWorkerName) : undefined;
     }
 
     // Auto self-assign on modification
@@ -661,29 +1468,55 @@ export default function TaskManager({
 
     onSaveCard(updatedCard);
 
-    // Propagate stage changes to linked tasks if stage is documented or finalized
-    if ((stage === 'documented' || stage === 'finalized') && card.linkedTaskIds && card.linkedTaskIds.length > 0) {
-      card.linkedTaskIds.forEach(linkedId => {
-        const linkedCard = cards.find(c => c.id === linkedId);
-        if (linkedCard) {
-          const syncCard = { ...linkedCard };
-          if (currentWorkerId) {
-            const arr = syncCard.assignedWorkerIds || [];
-            if (!arr.includes(currentWorkerId)) syncCard.assignedWorkerIds = [...arr, currentWorkerId];
-          }
-          if (stage === 'documented') {
-            syncCard.isDocumented = updatedCard.isDocumented;
-            syncCard.documentedAt = updatedCard.documentedAt;
-            if (updatedCard.isDocumented) syncCard.status = 'Archivando' as any;
-          } else if (stage === 'finalized') {
-            syncCard.isFinalized = updatedCard.isFinalized;
-            syncCard.finalizedAt = updatedCard.finalizedAt;
-            if (updatedCard.isFinalized) syncCard.status = 'Finalizado' as any;
-          }
-          onSaveCard(syncCard);
-        }
-      });
-    }
+    // Propagate stage changes to all linked tasks in the cluster
+    const clusterCards = cards.filter(c => {
+      if (c.id === card.id) return false;
+      const isDirectlyLinked = (card.linkedTaskIds || []).includes(c.id);
+      const isPointingToCard = (c.linkedTaskIds || []).includes(card.id);
+      const sharesLink = (card.linkedTaskIds || []).some(id => (c.linkedTaskIds || []).includes(id));
+      return isDirectlyLinked || isPointingToCard || sharesLink;
+    });
+
+    clusterCards.forEach(linkedCard => {
+      const syncCard = { ...linkedCard };
+      if (currentWorkerId) {
+        const arr = syncCard.assignedWorkerIds || [];
+        if (!arr.includes(currentWorkerId)) syncCard.assignedWorkerIds = [...arr, currentWorkerId];
+      }
+
+      if (stage === 'ingested') {
+        syncCard.isIngested = updatedCard.isIngested;
+        syncCard.ingestedAt = updatedCard.ingestedAt;
+        syncCard.ingestedByWorkerId = updatedCard.ingestedByWorkerId;
+        syncCard.ingestedByWorkerName = updatedCard.ingestedByWorkerName;
+        if (updatedCard.isIngested) syncCard.status = 'Ingested' as any;
+      } else if (stage === 'edited') {
+        syncCard.isEdited = updatedCard.isEdited;
+        syncCard.editedAt = updatedCard.editedAt;
+        syncCard.editedByWorkerId = updatedCard.editedByWorkerId;
+        syncCard.editedByWorkerName = updatedCard.editedByWorkerName;
+        if (updatedCard.isEdited) syncCard.status = 'Editado' as any;
+      } else if (stage === 'documented') {
+        syncCard.isDocumented = updatedCard.isDocumented;
+        syncCard.documentedAt = updatedCard.documentedAt;
+        syncCard.documentedByWorkerId = updatedCard.documentedByWorkerId;
+        syncCard.documentedByWorkerName = updatedCard.documentedByWorkerName;
+        if (updatedCard.isDocumented) syncCard.status = 'Archivando' as any;
+      } else if (stage === 'finalized') {
+        syncCard.isFinalized = updatedCard.isFinalized;
+        syncCard.finalizedAt = updatedCard.finalizedAt;
+        syncCard.finalizedByWorkerId = updatedCard.finalizedByWorkerId;
+        syncCard.finalizedByWorkerName = updatedCard.finalizedByWorkerName;
+        if (updatedCard.isFinalized) syncCard.status = 'Finalizado' as any;
+      } else if (stage === 'discarded') {
+        syncCard.isDiscarded = updatedCard.isDiscarded;
+        syncCard.discardedAt = updatedCard.discardedAt;
+        syncCard.discardedByWorkerId = updatedCard.discardedByWorkerId;
+        syncCard.discardedByWorkerName = updatedCard.discardedByWorkerName;
+      }
+
+      onSaveCard(syncCard);
+    });
     onAddNotificationToast(
       'Etapa Actualizada',
       `Se actualizó el estado de la etapa en "${card.title}".`,
@@ -843,6 +1676,9 @@ export default function TaskManager({
       finalAssigned.push(currentWorkerId);
     }
 
+    const activeWorkerObj = workers.find(w => w.id === currentWorkerId);
+    const activeWorkerName = activeWorkerObj?.name || currentSession?.name || 'Personal VTV';
+
     const cardData: TaskCard = {
       id: cardId,
       boardId: taskBoardId,
@@ -858,14 +1694,29 @@ export default function TaskManager({
       editedDuration: isOther ? '00:00:00' : (taskEditedDuration.trim() || '00:00:00'),
       isIngested: isOther ? false : taskIsIngested,
       ingestedAt: isOther ? undefined : (taskIsIngested ? (taskIngestedAt || nowIso) : undefined),
+      ingestedByWorkerId: isOther ? undefined : (taskIsIngested ? (editingCard?.ingestedByWorkerId || currentWorkerId) : undefined),
+      ingestedByWorkerName: isOther ? undefined : (taskIsIngested ? (editingCard?.ingestedByWorkerName || activeWorkerName) : undefined),
+
       isEdited: isOther ? false : taskIsEdited,
       editedAt: isOther ? undefined : (taskIsEdited ? (taskEditedAt || nowIso) : undefined),
+      editedByWorkerId: isOther ? undefined : (taskIsEdited ? (editingCard?.editedByWorkerId || currentWorkerId) : undefined),
+      editedByWorkerName: isOther ? undefined : (taskIsEdited ? (editingCard?.editedByWorkerName || activeWorkerName) : undefined),
+
       isDocumented: isOther ? false : taskIsDocumented,
       documentedAt: isOther ? undefined : (taskIsDocumented ? (taskDocumentedAt || nowIso) : undefined),
+      documentedByWorkerId: isOther ? undefined : (taskIsDocumented ? (editingCard?.documentedByWorkerId || currentWorkerId) : undefined),
+      documentedByWorkerName: isOther ? undefined : (taskIsDocumented ? (editingCard?.documentedByWorkerName || activeWorkerName) : undefined),
+
       isDiscarded: taskIsDiscarded,
       discardedAt: taskIsDiscarded ? (taskDiscardedAt || nowIso) : undefined,
+      discardedByWorkerId: taskIsDiscarded ? (editingCard?.discardedByWorkerId || currentWorkerId) : undefined,
+      discardedByWorkerName: taskIsDiscarded ? (editingCard?.discardedByWorkerName || activeWorkerName) : undefined,
+
       isFinalized: taskIsFinalized,
       finalizedAt: taskIsFinalized ? (taskFinalizedAt || nowIso) : undefined,
+      finalizedByWorkerId: taskIsFinalized ? (editingCard?.finalizedByWorkerId || currentWorkerId) : undefined,
+      finalizedByWorkerName: taskIsFinalized ? (editingCard?.finalizedByWorkerName || activeWorkerName) : undefined,
+
       startDate: taskStartDate,
       dueDate: taskDueDate,
       assignedWorkerIds: finalAssigned,
@@ -960,9 +1811,26 @@ export default function TaskManager({
       boardId: targetBoardId
     };
     onSaveCard(updatedCard);
+
+    // Sync board change to linked cards
+    const clusterCards = cards.filter(c => {
+      if (c.id === card.id) return false;
+      const isDirectlyLinked = (card.linkedTaskIds || []).includes(c.id);
+      const isPointingToCard = (c.linkedTaskIds || []).includes(card.id);
+      const sharesLink = (card.linkedTaskIds || []).some(id => (c.linkedTaskIds || []).includes(id));
+      return isDirectlyLinked || isPointingToCard || sharesLink;
+    });
+
+    clusterCards.forEach(linkedCard => {
+      onSaveCard({
+        ...linkedCard,
+        boardId: targetBoardId
+      });
+    });
+
     onAddNotificationToast(
-      'Reasignado a Archivo',
-      `La tarea "${card.title}" fue asignada a "${bObj?.name || targetBoardId}".`,
+      'Lista Actualizada',
+      `La tarea "${card.title}" ${clusterCards.length > 0 ? 'y sus vinculadas fueron asignadas' : 'fue asignada'} a "${bObj?.name || targetBoardId}".`,
       'info'
     );
   };
@@ -1055,7 +1923,6 @@ export default function TaskManager({
 
       const daysInMonth = new Date(yearNum, mM, 0).getDate();
       const firstDayObj = new Date(yearNum, mM - 1, 1);
-      // Day of week index where 0=Monday, 6=Sunday
       let firstDayOfWeek = (firstDayObj.getDay() + 6) % 7;
 
       let currentDay = 1;
@@ -1124,6 +1991,58 @@ export default function TaskManager({
         </table>
       </div>
       `;
+
+      // Build Documented materials HTML
+      let documentedHtml = `
+        <div class="section">
+          <h3>MATERIALES MARCADOS POR ARCHIVAR / DOCUMENTADOS (REGISTRO TÉCNICO DE ARCHIVO)</h3>
+          <p style="font-size: 11px; margin-bottom: 8px;">Total de materiales documentados: <strong>${reportMetrics.documentadosEnPeriodo.length}</strong> (Organizados en <strong>${reportMetrics.documentadosGroups.length}</strong> registros)</p>
+      `;
+      if (reportMetrics.documentadosGroups.length === 0) {
+        documentedHtml += `<p class="italic-text">(Sin materiales archivados/documentados en este período)</p>`;
+      } else {
+        documentedHtml += `<table class="data-table"><thead><tr><th>Título del Material</th><th>Área / Tablero</th><th>Documentado por (Personal Técnico)</th><th>Fecha y Hora</th><th>Duración</th></tr></thead><tbody>`;
+        reportMetrics.documentadosGroups.forEach(group => {
+          const docCard = group.primaryCard;
+          const bObj = productionBoards.find(b => b.id === docCard.boardId);
+          const docInfo = getDocumentedInfo(docCard);
+
+          if (group.isLinkedGroup) {
+            documentedHtml += `
+              <tr style="background-color: #fffbeb;">
+                <td><strong>${docCard.title}</strong><br/><small style="color: #0284c7; font-weight: bold;">[${group.linkedCards.length} tareas vinculadas - Duración Sumada]</small></td>
+                <td>${bObj?.name || 'VTV'}</td>
+                <td>${docInfo.workerName}</td>
+                <td>${docInfo.formattedDateTime}</td>
+                <td><strong>${group.totalDurationHHMMSS}</strong></td>
+              </tr>
+            `;
+            group.linkedCards.forEach((subCard, idx) => {
+              const subBoard = productionBoards.find(b => b.id === subCard.boardId);
+              documentedHtml += `
+                <tr style="background-color: #f8fafc; font-size: 11px;">
+                  <td style="padding-left: 20px; color: #334155;">↳ [${idx + 1}] ${subCard.title}</td>
+                  <td style="color: #64748b;">${subBoard?.name || 'VTV'}</td>
+                  <td colspan="2" style="color: #94a3b8; font-style: italic;">(Desglose - Duración individual real)</td>
+                  <td><em>${subCard.duration || '00:00:00'}</em></td>
+                </tr>
+              `;
+            });
+          } else {
+            documentedHtml += `
+              <tr>
+                <td><strong>${docCard.title}</strong></td>
+                <td>${bObj?.name || 'VTV'}</td>
+                <td>${docInfo.workerName}</td>
+                <td>${docInfo.formattedDateTime}</td>
+                <td>${docCard.duration || '00:00:00'}</td>
+              </tr>
+            `;
+          }
+        });
+        documentedHtml += `</tbody></table>`;
+      }
+      documentedHtml += `</div>`;
 
       // Build Delivered materials HTML
       let deliveredHtml = `
@@ -1213,6 +2132,7 @@ export default function TaskManager({
 
             ${calendarHtml}
             ${savingsHtml}
+            ${documentedHtml}
             ${deliveredHtml}
             ${achievementsHtml}
 
@@ -1252,19 +2172,53 @@ export default function TaskManager({
     reportText += `• Total Horas Ingesta: ${reportMetrics.totalIngestaHHMMSS}\n`;
     reportText += `• Ahorro por Filtro de Ingesta: ${reportMetrics.tiempoAhorradoHHMMSS}\n`;
     reportText += `• Materiales Editados: ${reportMetrics.editadosCount} items\n`;
+    reportText += `• Logros Otras Solicitudes: ${reportMetrics.logrosOtrasSolicitudesCount} completados\n`;
+    reportText += `• Material Archivado (Finalizados): ${reportMetrics.materialArchivadoCount} items (consolidados)\n`;
     reportText += `• Materiales Ingestados: ${reportMetrics.ingestadosCount} items\n`;
-    reportText += `• Materiales Archivados: ${reportMetrics.documentadosCount} items\n`;
+    reportText += `• Materiales Archivados/Documentados: ${reportMetrics.documentadosCount} items\n`;
     reportText += `• Tareas Finalizadas: ${reportMetrics.finalizadosCount} items\n`;
     reportText += `• Logros Otras Solicitudes: ${reportMetrics.logrosOtrasSolicitudesCount} completados\n\n`;
 
-    reportText += `--- DETALLE DE MATERIALES Y TAREAS (${reportMetrics.ingestadosEnPeriodo.length}) ---\n`;
-    if (reportMetrics.ingestadosEnPeriodo.length === 0) {
+    reportText += `--- TAREAS MARCADAS POR ARCHIVAR / DOCUMENTADAS (${reportMetrics.documentadosEnPeriodo.length} materiales) ---\n`;
+    if (reportMetrics.documentadosGroups.length === 0) {
+      reportText += `(Sin tareas marcadas por archivar en este período)\n\n`;
+    } else {
+      reportMetrics.documentadosGroups.forEach((group, idx) => {
+        const c = group.primaryCard;
+        const bObj = productionBoards.find(b => b.id === c.boardId);
+        const docInfo = getDocumentedInfo(c);
+
+        if (group.isLinkedGroup) {
+          reportText += `${idx + 1}. ${c.title} [GRUPO DE ${group.linkedCards.length} TAREAS VINCULADAS]\n`;
+          reportText += `   - Área/Lista: ${bObj?.name || 'VTV'}\n`;
+          reportText += `   - Documentado por: ${docInfo.workerName}\n`;
+          reportText += `   - Fecha y Hora de Documentación: ${docInfo.formattedDateTime}\n`;
+          reportText += `   - Duración Total Sumada: ${group.totalDurationHHMMSS}\n`;
+          reportText += `   - Desglose de Tareas Vinculadas:\n`;
+          group.linkedCards.forEach((sub, sIdx) => {
+            const subBoard = productionBoards.find(b => b.id === sub.boardId);
+            reportText += `     * [${sIdx + 1}] ${sub.title} (${subBoard?.name || 'VTV'}) - Duración Real: ${sub.duration || '00:00:00'}\n`;
+          });
+          reportText += `\n`;
+        } else {
+          reportText += `${idx + 1}. ${c.title}\n`;
+          reportText += `   - Área/Lista: ${bObj?.name || 'VTV'}\n`;
+          reportText += `   - Documentado por: ${docInfo.workerName}\n`;
+          reportText += `   - Fecha y Hora de Documentación: ${docInfo.formattedDateTime}\n`;
+          reportText += `   - Duración: ${c.duration || '00:00:00'}\n\n`;
+        }
+      });
+    }
+
+    reportText += `--- DETALLE DE MATERIALES Y TAREAS (${reportMetrics.ingestadosEnPeriodo.length} materiales) ---\n`;
+    if (reportMetrics.ingestadosGroups.length === 0) {
       reportText += `(Sin registros para la fecha o filtros seleccionados)\n`;
     } else {
-      reportMetrics.ingestadosEnPeriodo.forEach((c, idx) => {
+      reportMetrics.ingestadosGroups.forEach((group, idx) => {
+        const c = group.primaryCard;
         const bObj = productionBoards.find(b => b.id === c.boardId);
-        const orig = parseDurationToSeconds(c.duration);
-        const edit = parseDurationToSeconds(c.editedDuration);
+        const orig = group.totalDurationSeconds;
+        const edit = group.totalEditedDurationSeconds;
         const diff = Math.max(0, orig - edit);
 
         const assignedNames = (c.assignedWorkerIds || [])
@@ -1280,19 +2234,37 @@ export default function TaskManager({
         const stageTimes = [];
         if (c.isIngested) stageTimes.push(`Ingestado (${fmtDate(c.ingestedAt)})`);
         if (c.isEdited) stageTimes.push(`Editado (${fmtDate(c.editedAt)})`);
-        if (c.isDocumented) stageTimes.push(`Archivado (${fmtDate(c.documentedAt)})`);
+        if (c.isDocumented) {
+          const docInfo = getDocumentedInfo(c);
+          stageTimes.push(`Documentado por ${docInfo.workerName} [${docInfo.formattedDateTime}]`);
+        }
         if (c.isFinalized) stageTimes.push(`Finalizado (${fmtDate(c.finalizedAt)})`);
 
-        reportText += `${idx + 1}. ${c.title}\n`;
-        reportText += `   - Área/Lista: ${bObj?.name || 'VTV'}\n`;
-        reportText += `   - Personal Asignado: ${assignedNames || 'Sin asignar'}\n`;
-        reportText += `   - Etapas y Tiempos: ${stageTimes.length > 0 ? stageTimes.join(' | ') : 'Pendiente'}\n`;
-        reportText += `   - Duración Original: ${c.duration || '00:00:00'} | Duración Editada: ${c.editedDuration || '00:00:00'}\n`;
-        reportText += `   - Tiempo Ahorrado: ${formatSecondsToHHMMSS(diff)}\n`;
-        if (c.description) {
-          reportText += `   - Nota: ${c.description}\n`;
+        if (group.isLinkedGroup) {
+          reportText += `${idx + 1}. ${c.title} [GRUPO DE ${group.linkedCards.length} TAREAS VINCULADAS]\n`;
+          reportText += `   - Área/Lista: ${bObj?.name || 'VTV'}\n`;
+          reportText += `   - Personal Asignado: ${assignedNames || 'Sin asignar'}\n`;
+          reportText += `   - Etapas y Tiempos: ${stageTimes.length > 0 ? stageTimes.join(' | ') : 'Pendiente'}\n`;
+          reportText += `   - Duración Original Sumada: ${group.totalDurationHHMMSS} | Duración Editada Sumada: ${group.totalEditedDurationHHMMSS}\n`;
+          reportText += `   - Tiempo Ahorrado Acumulado: ${formatSecondsToHHMMSS(diff)}\n`;
+          reportText += `   - Desglose de Tareas Vinculadas:\n`;
+          group.linkedCards.forEach((sub, sIdx) => {
+            const subBoard = productionBoards.find(b => b.id === sub.boardId);
+            reportText += `     * [${sIdx + 1}] ${sub.title} (${subBoard?.name || 'VTV'}) - Duración Orig. Real: ${sub.duration || '00:00:00'} | Editada Real: ${sub.editedDuration || '00:00:00'}\n`;
+          });
+          reportText += `\n`;
+        } else {
+          reportText += `${idx + 1}. ${c.title}\n`;
+          reportText += `   - Área/Lista: ${bObj?.name || 'VTV'}\n`;
+          reportText += `   - Personal Asignado: ${assignedNames || 'Sin asignar'}\n`;
+          reportText += `   - Etapas y Tiempos: ${stageTimes.length > 0 ? stageTimes.join(' | ') : 'Pendiente'}\n`;
+          reportText += `   - Duración Original: ${c.duration || '00:00:00'} | Duración Editada: ${c.editedDuration || '00:00:00'}\n`;
+          reportText += `   - Tiempo Ahorrado: ${formatSecondsToHHMMSS(diff)}\n`;
+          if (c.description) {
+            reportText += `   - Nota: ${c.description}\n`;
+          }
+          reportText += `\n`;
         }
-        reportText += `\n`;
       });
     }
 
@@ -1439,7 +2411,7 @@ export default function TaskManager({
       {activeMainTab === 'produccion' && (
         <div className="space-y-4">
           {/* Sub-bar filter by Board within Producción */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 glass-card p-3.5 rounded-xl border border-white/10 bg-slate-900/60">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 glass-card p-3.5 rounded-xl border border-white/10 bg-slate-900/60 relative z-20">
             <div className="flex items-center gap-2 overflow-x-auto pb-1 sm:pb-0 scrollbar-thin">
               <button
                 onClick={() => setSelectedBoardId('todos')}
@@ -1522,26 +2494,13 @@ export default function TaskManager({
               </div>
 
               {/* Date Search Filter */}
-              <div className="relative flex items-center gap-1">
-                <Calendar className="w-3.5 h-3.5 text-cyan-400 absolute left-2.5 pointer-events-none" />
-                <input
-                  type="date"
-                  value={dateFilter}
-                  onChange={e => setDateFilter(e.target.value)}
-                  title="Filtrar tareas por fecha"
-                  className="bg-slate-950 border border-white/10 rounded-lg pl-8 pr-2 py-1.5 text-xs text-cyan-200 focus:outline-none focus:border-cyan-500 cursor-pointer font-mono"
-                />
-                {dateFilter && (
-                  <button
-                    type="button"
-                    onClick={() => setDateFilter('')}
-                    className="px-1.5 py-1 text-[10px] font-bold text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 rounded border border-rose-500/30 cursor-pointer"
-                    title="Limpiar filtro de fecha"
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
+              <CustomDatePicker
+                value={dateFilter}
+                onChange={setDateFilter}
+                placeholder="Filtrar fecha..."
+                accentColor="cyan"
+                clearable
+              />
 
               {currentWorkerId && (
                 <button
@@ -1648,6 +2607,9 @@ export default function TaskManager({
                         <span className="font-mono font-black">{formatSecondsToHHMMSS(savedSec)}</span>
                       </div>
                     )}
+
+                    {/* Desplegable de Tareas Vinculadas */}
+                    {renderLinkedTasksAccordion(card)}
 
                     {/* WORKFLOW STAGE TOGGLE BUTTONS (BOOLEANS) */}
                     <div className="pt-2 border-t border-white/5 space-y-1.5">
@@ -1846,26 +2808,13 @@ export default function TaskManager({
                 />
               </div>
 
-              <div className="relative flex items-center gap-1">
-                <Calendar className="w-3.5 h-3.5 text-amber-400 absolute left-2.5 pointer-events-none" />
-                <input
-                  type="date"
-                  value={dateFilter}
-                  onChange={e => setDateFilter(e.target.value)}
-                  title="Filtrar por fecha"
-                  className="bg-slate-950 border border-white/10 rounded-lg pl-8 pr-2 py-1.5 text-xs text-amber-200 focus:outline-none focus:border-amber-500 cursor-pointer font-mono"
-                />
-                {dateFilter && (
-                  <button
-                    type="button"
-                    onClick={() => setDateFilter('')}
-                    className="px-1.5 py-1 text-[10px] font-bold text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 rounded border border-rose-500/30 cursor-pointer"
-                    title="Limpiar filtro de fecha"
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
+              <CustomDatePicker
+                value={dateFilter}
+                onChange={setDateFilter}
+                placeholder="Filtrar fecha..."
+                accentColor="amber"
+                clearable
+              />
 
               {currentWorkerId && (
                 <button
@@ -1952,6 +2901,9 @@ export default function TaskManager({
                         </p>
                       )}
                     </div>
+
+                    {/* Desplegable de Tareas Vinculadas */}
+                    {renderLinkedTasksAccordion(card)}
 
                     {/* CUSTOM CHECKLIST LIST (No Ingestada/Editada/Archivada buttons) */}
                     <div className="pt-2 border-t border-white/5 space-y-2">
@@ -2075,26 +3027,13 @@ export default function TaskManager({
                 />
               </div>
 
-              <div className="relative flex items-center gap-1">
-                <Calendar className="w-3.5 h-3.5 text-emerald-400 absolute left-2.5 pointer-events-none" />
-                <input
-                  type="date"
-                  value={dateFilter}
-                  onChange={e => setDateFilter(e.target.value)}
-                  title="Filtrar por fecha"
-                  className="bg-slate-950 border border-white/10 rounded-lg pl-8 pr-2 py-1.5 text-xs text-emerald-200 focus:outline-none focus:border-emerald-500 cursor-pointer font-mono"
-                />
-                {dateFilter && (
-                  <button
-                    type="button"
-                    onClick={() => setDateFilter('')}
-                    className="px-1.5 py-1 text-[10px] font-bold text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 rounded border border-rose-500/30 cursor-pointer"
-                    title="Limpiar filtro de fecha"
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
+              <CustomDatePicker
+                value={dateFilter}
+                onChange={setDateFilter}
+                placeholder="Filtrar fecha..."
+                accentColor="emerald"
+                clearable
+              />
             </div>
           </div>
 
@@ -2353,15 +3292,13 @@ export default function TaskManager({
 
               {/* Date Input */}
               {reportType === 'diario' && (
-                <div>
-                  <label className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Fecha Específica:</label>
-                  <input
-                    type="date"
-                    value={reportDate}
-                    onChange={(e) => setReportDate(e.target.value)}
-                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
-                  />
-                </div>
+                <CustomDatePicker
+                  label="Fecha Específica:"
+                  value={reportDate}
+                  onChange={setReportDate}
+                  accentColor="purple"
+                  className="w-full"
+                />
               )}
 
               {reportType === 'mensual' && (
@@ -2420,15 +3357,15 @@ export default function TaskManager({
             </div>
 
             {/* METRICS SUMMARY CARDS */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 pt-2">
               {/* Horas de Ingesta */}
               <div className="p-4 rounded-2xl bg-cyan-950/30 border border-cyan-500/30 space-y-1">
                 <span className="text-[10px] font-bold uppercase text-cyan-400 flex items-center gap-1">
                   <Clock className="w-3.5 h-3.5" />
-                  Total Horas Ingesta (Archivadas)
+                  Total Horas Ingestadas
                 </span>
                 <div className="text-2xl font-black text-white font-mono">{reportMetrics.totalIngestaHHMMSS}</div>
-                <p className="text-[10px] text-slate-400">Sumado sólo si fue ingestado y archivado/finalizado.</p>
+                <p className="text-[10px] text-slate-400">Suma total de horas de tareas marcadas como ingestadas en el período.</p>
               </div>
 
               {/* Tiempo Ahorrado por Filtro de Ingesta */}
@@ -2460,16 +3397,26 @@ export default function TaskManager({
                 <div className="text-2xl font-black text-amber-300 font-mono">{reportMetrics.logrosOtrasSolicitudesCount} completados</div>
                 <p className="text-[10px] text-slate-400">Solicitudes especiales finalizadas con éxito.</p>
               </div>
+
+              {/* Material Archivado (Finalizados Consolidados) */}
+              <div className="p-4 rounded-2xl bg-purple-950/30 border border-purple-500/30 space-y-1">
+                <span className="text-[10px] font-bold uppercase text-purple-400 flex items-center gap-1">
+                  <Archive className="w-3.5 h-3.5" />
+                  Material Archivado
+                </span>
+                <div className="text-2xl font-black text-purple-300 font-mono">{reportMetrics.materialArchivadoCount} items</div>
+                <p className="text-[10px] text-slate-400">Tareas finalizadas (tareas vinculadas cuentan como 1 solo item).</p>
+              </div>
             </div>
 
-            {/* MONTHLY CALENDAR GRID (When reportType === 'mensual') */}
+            {/* MONTHLY CALENDAR GRID (When reportType === 'mensual') - Posicionado justo debajo de los resumenes de métricas */}
             {reportType === 'mensual' && (
               <div className="space-y-4 pt-4 border-t border-white/10">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-slate-950/80 p-4 rounded-2xl border border-white/10">
                   <div>
                     <h3 className="text-sm font-black text-white uppercase tracking-wider flex items-center gap-2">
                       <Calendar className="w-4 h-4 text-cyan-400" />
-                      <span>Calendario Mensual de Ingesta</span>
+                      <span>Calendario Mensual de Horas Ingestadas por Día</span>
                     </h3>
                     <p className="text-[11px] text-slate-400">
                       Mes y Año: <strong className="text-cyan-300 font-mono">{reportMonth}</strong> • Total Días: {reportMetrics.monthlyCalendarDays.length}
@@ -2588,100 +3535,298 @@ export default function TaskManager({
                         <span className="font-bold text-blue-300 font-mono text-sm">{reportMetrics.deliveredTotalEditedHHMMSS}</span>
                       </div>
                     </div>
-
-                    {/* Section Logros de Solicitudes (no administrativas ni gerenciales) */}
-                    <div className="space-y-2 pt-2 border-t border-white/10">
-                      <div className="flex justify-between items-center">
-                        <span className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
-                          <Award className="w-3.5 h-3.5 text-amber-400" />
-                          Logros de Solicitudes ({reportMetrics.departmentAchievements.length})
-                        </span>
-                        <span className="text-[10px] text-slate-400">No admin / gerenciales</span>
-                      </div>
-                      <p className="text-[10px] text-slate-400">
-                        Solicitudes especiales que cuentan como logro del departamento para la gerencia.
-                      </p>
-                    </div>
                   </div>
                 </div>
               </div>
             )}
 
-            {/* DAILY / MONTHLY BREAKDOWN TABLE */}
+            {/* LISTA 1: MATERIAL INGESTADO Y EDITADO */}
             <div className="space-y-3 pt-4 border-t border-white/10">
-              <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <FileCheck className="w-4 h-4 text-cyan-400" />
-                Detalle de Materiales y Tareas Registradas
-              </h3>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-cyan-950/30 p-4 rounded-2xl border border-cyan-500/30">
+                <div>
+                  <h3 className="text-sm font-black text-cyan-300 uppercase tracking-wider flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-cyan-400" />
+                    <span>Lista 1: Material Ingestado y Editado ({reportMetrics.ingestadosYEditadosCount} tareas)</span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Tareas marcadas como Ingestadas (suman al total de horas ingestadas) y/o Editadas (su resta de original - editado suma al tiempo ahorrado). Se muestran por Tarea Raíz y se desglosan al hacer clic.
+                  </p>
+                </div>
+                <span className="px-3 py-1 rounded-full text-xs font-mono font-bold bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 w-fit">
+                  {reportMetrics.ingestadosYEditadosCount} Tareas en Total
+                </span>
+              </div>
 
-              <div className="overflow-x-auto rounded-xl border border-white/10 bg-slate-950/60">
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-slate-900 border-b border-white/10 text-slate-400 uppercase text-[10px] font-bold">
-                    <tr>
-                      <th className="p-3">Título / Tarea</th>
-                      <th className="p-3">Área / Tablero</th>
-                      <th className="p-3">Personal Asignado</th>
-                      <th className="p-3">Etapas y Tiempos</th>
-                      <th className="p-3">Duración Orig.</th>
-                      <th className="p-3">Duración Edit.</th>
-                      <th className="p-3">Tiempo Ahorrado</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-white/5 text-slate-300">
-                    {reportMetrics.ingestadosEnPeriodo.length === 0 ? (
+              {reportMetrics.ingestedAndEditedGroups.length > 0 ? (
+                <div className="overflow-x-auto rounded-xl border border-cyan-500/20 bg-slate-950/80">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-cyan-950/50 border-b border-cyan-500/20 text-cyan-300 uppercase text-[10px] font-bold">
                       <tr>
-                        <td colSpan={7} className="p-6 text-center text-slate-500 italic">
-                          No hay registros para la fecha o filtros seleccionados.
-                        </td>
+                        <th className="p-3">Material / Tarea Raíz</th>
+                        <th className="p-3">Área / Tablero</th>
+                        <th className="p-3">Personal Asignado</th>
+                        <th className="p-3">Estado del Día</th>
+                        <th className="p-3">Duración Orig.</th>
+                        <th className="p-3">Duración Edit.</th>
+                        <th className="p-3">Tiempo Ahorrado</th>
                       </tr>
-                    ) : (
-                      reportMetrics.ingestadosEnPeriodo.map(c => {
+                    </thead>
+                    <tbody className="divide-y divide-white/5 text-slate-300">
+                      {reportMetrics.ingestedAndEditedGroups.map(group => {
+                        const c = group.primaryCard;
                         const bObj = productionBoards.find(b => b.id === c.boardId);
-                        const orig = parseDurationToSeconds(c.duration);
-                        const edit = parseDurationToSeconds(c.editedDuration);
-                        const diff = Math.max(0, orig - edit);
+                        const isExpanded = Boolean(expandedGroupIds[`ing1_${group.groupId}`]);
+
+                        const origSec = group.totalDurationSeconds;
+                        const editSec = group.totalEditedDurationSeconds;
+                        const diffSec = Math.max(0, origSec - editSec);
 
                         const assignedNames = (c.assignedWorkerIds || [])
                           .map(wId => workers.find(w => w.id === wId)?.name)
                           .filter(Boolean);
 
-                        const fmtTime = (isoStr?: string) => isoStr ? new Date(isoStr).toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit' }) : '';
+                        return (
+                          <React.Fragment key={`ing1_grp_${group.groupId}`}>
+                            <tr
+                              onClick={() => group.isLinkedGroup && toggleGroupExpanded(`ing1_${group.groupId}`)}
+                              className={`transition-colors ${
+                                group.isLinkedGroup
+                                  ? 'hover:bg-cyan-950/40 cursor-pointer bg-cyan-950/20'
+                                  : 'hover:bg-slate-900/40'
+                              }`}
+                            >
+                              <td className="p-3 font-bold text-white max-w-[240px]">
+                                <div className="flex items-center gap-2">
+                                  {group.isLinkedGroup && (
+                                    <span className="p-1 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 shrink-0">
+                                      {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                                    </span>
+                                  )}
+                                  <span className="truncate" title={c.title}>{c.title}</span>
+                                </div>
+                                {group.isLinkedGroup && (
+                                  <div className="text-[10px] text-cyan-300 font-medium mt-1 flex items-center gap-1">
+                                    <Link2 className="w-3 h-3 text-cyan-400 shrink-0" />
+                                    <span>
+                                      {group.linkedCards.length} subtareas vinculadas ({1 + group.linkedCards.length} en total) • {isExpanded ? 'Clic para ocultar' : 'Clic para abrir desglose'}
+                                    </span>
+                                  </div>
+                                )}
+                              </td>
+                              <td className="p-3 text-cyan-300 whitespace-nowrap">
+                                {bObj?.name || 'VTV'}
+                              </td>
+                              <td className="p-3">
+                                {assignedNames.length > 0 ? (
+                                  <div className="flex flex-wrap gap-1">
+                                    {assignedNames.map((n, i) => (
+                                      <span key={i} className="px-1.5 py-0.5 rounded text-[9px] bg-slate-800 text-cyan-200 border border-white/5">
+                                        {n}
+                                      </span>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <span className="text-slate-500 italic text-[10px]">Sin asignar</span>
+                                )}
+                              </td>
+                              <td className="p-3">
+                                <div className="flex flex-wrap gap-1 text-[10px] font-mono">
+                                  {c.isIngested && <span className="px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">Ingestado</span>}
+                                  {c.isEdited && <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30">Editado</span>}
+                                </div>
+                              </td>
+                              <td className="p-3 font-mono text-cyan-300 font-bold whitespace-nowrap">
+                                {group.totalDurationHHMMSS}
+                              </td>
+                              <td className="p-3 font-mono text-blue-300 font-bold whitespace-nowrap">
+                                {group.totalEditedDurationHHMMSS}
+                              </td>
+                              <td className="p-3 font-mono text-emerald-300 font-bold whitespace-nowrap">
+                                {diffSec > 0 ? formatSecondsToHHMMSS(diffSec) : '-'}
+                              </td>
+                            </tr>
+
+                            {/* Desglose de Subtareas Vinculadas de Lista 1 */}
+                            {group.isLinkedGroup && isExpanded && (
+                              group.linkedCards.map((subCard, subIdx) => {
+                                const subBoard = productionBoards.find(b => b.id === subCard.boardId);
+                                const subOrigSec = parseDurationToSeconds(subCard.duration);
+                                const subEditSec = subCard.isEdited && subCard.editedDuration ? parseDurationToSeconds(subCard.editedDuration) : subOrigSec;
+                                const subDiffSec = subCard.isEdited ? Math.max(0, subOrigSec - subEditSec) : 0;
+                                const subEditedDurationStr = subCard.isEdited && subCard.editedDuration ? subCard.editedDuration : (subCard.duration || '00:00:00');
+
+                                return (
+                                  <tr key={`sub_ing1_${subCard.id}_${subIdx}`} className="bg-slate-900/90 text-slate-300 border-l-4 border-cyan-500">
+                                    <td className="p-2.5 pl-8 text-xs font-medium text-slate-200">
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="text-cyan-400 font-mono text-[10px] font-bold">↳ [{subIdx + 1}]</span>
+                                        <span>{subCard.title}</span>
+                                      </div>
+                                    </td>
+                                    <td className="p-2.5 text-[11px] text-cyan-300">
+                                      {subBoard?.name || 'VTV'}
+                                    </td>
+                                    <td className="p-2.5 text-[10px] text-slate-400 italic" colSpan={2}>
+                                      Tarea vinculada individual
+                                    </td>
+                                    <td className="p-2.5 font-mono text-cyan-300 text-xs font-bold whitespace-nowrap">
+                                      {subCard.duration || '00:00:00'}
+                                    </td>
+                                    <td className="p-2.5 font-mono text-blue-300 text-xs font-bold whitespace-nowrap">
+                                      {subEditedDurationStr}
+                                    </td>
+                                    <td className="p-2.5 font-mono text-emerald-300 text-xs font-bold whitespace-nowrap">
+                                      {subDiffSec > 0 ? formatSecondsToHHMMSS(subDiffSec) : '-'}
+                                    </td>
+                                  </tr>
+                                );
+                              })
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="p-4 rounded-xl border border-cyan-500/20 bg-slate-950/40 text-center text-xs text-slate-500 italic">
+                  No hay material ingestado o editado en el día seleccionado.
+                </div>
+              )}
+            </div>
+
+            {/* LISTA 2: MATERIAL ARCHIVADO Y LOGROS DE OTRAS SOLICITUDES */}
+            <div className="space-y-3 pt-4 border-t border-white/10">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-amber-950/30 p-4 rounded-2xl border border-amber-500/30">
+                <div>
+                  <h3 className="text-sm font-black text-amber-300 uppercase tracking-wider flex items-center gap-2">
+                    <Archive className="w-4 h-4 text-amber-400" />
+                    <span>Lista 2: Material Archivado y Logros ({reportMetrics.materialArchivadoYLogrosCount} items consolidados)</span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Material marcado como "Para Archivar" / Documentado (se cuenta 1 solo item por familia de tareas) y Otras Solicitudes marcadas como Logros ese día. Clic para ver desglose.
+                  </p>
+                </div>
+                <span className="px-3 py-1 rounded-full text-xs font-mono font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30 w-fit">
+                  {reportMetrics.materialArchivadoYLogrosCount} Familias / Items
+                </span>
+              </div>
+
+              {reportMetrics.archivadosAndLogrosGroups.length > 0 ? (
+                <div className="overflow-x-auto rounded-xl border border-amber-500/20 bg-slate-950/80">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-amber-950/50 border-b border-amber-500/20 text-amber-300 uppercase text-[10px] font-bold">
+                      <tr>
+                        <th className="p-3">Material / Tarea Raíz</th>
+                        <th className="p-3">Área / Tablero</th>
+                        <th className="p-3">Personal Responsable</th>
+                        <th className="p-3">Fecha y Hora Registro</th>
+                        <th className="p-3">Duración</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5 text-slate-300">
+                      {reportMetrics.archivadosAndLogrosGroups.map(group => {
+                        const docCard = group.primaryCard;
+                        const bObj = productionBoards.find(b => b.id === docCard.boardId);
+                        const docInfo = getDocumentedInfo(docCard);
+                        const isExpanded = Boolean(expandedGroupIds[`arch2_${group.groupId}`]);
 
                         return (
-                          <tr key={c.id} className="hover:bg-slate-900/40">
-                            <td className="p-3 font-bold text-white max-w-[200px] truncate" title={c.title}>{c.title}</td>
-                            <td className="p-3 text-cyan-300 whitespace-nowrap">{bObj?.name || 'VTV'}</td>
-                            <td className="p-3">
-                              {assignedNames.length > 0 ? (
-                                <div className="flex flex-wrap gap-1">
-                                  {assignedNames.map((n, i) => (
-                                    <span key={i} className="px-1.5 py-0.5 rounded text-[9px] bg-slate-800 text-cyan-200 border border-white/5">
-                                      {n}
+                          <React.Fragment key={`arch2_grp_${group.groupId}`}>
+                            <tr
+                              onClick={() => group.isLinkedGroup && toggleGroupExpanded(`arch2_${group.groupId}`)}
+                              className={`transition-colors ${
+                                group.isLinkedGroup
+                                  ? 'hover:bg-amber-900/30 cursor-pointer bg-amber-950/20'
+                                  : 'hover:bg-amber-950/10'
+                              }`}
+                            >
+                              <td className="p-3 font-bold text-white max-w-[260px]">
+                                <div className="flex items-center gap-2">
+                                  {group.isLinkedGroup && (
+                                    <span className="p-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0">
+                                      {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                                     </span>
-                                  ))}
+                                  )}
+                                  <span className="truncate" title={docCard.title}>{docCard.title}</span>
                                 </div>
-                              ) : (
-                                <span className="text-slate-500 italic text-[10px]">Sin asignar</span>
-                              )}
-                            </td>
-                            <td className="p-3">
-                              <div className="flex flex-col gap-0.5 text-[10px] font-mono">
-                                {c.isIngested && <span className="text-cyan-300">Ingestado: {fmtTime(c.ingestedAt)}</span>}
-                                {c.isEdited && <span className="text-blue-300">Editado: {fmtTime(c.editedAt)}</span>}
-                                {c.isDocumented && <span className="text-amber-300">Archivado: {fmtTime(c.documentedAt)}</span>}
-                                {c.isFinalized && <span className="text-emerald-300">Finalizado: {fmtTime(c.finalizedAt)}</span>}
-                              </div>
-                            </td>
-                            <td className="p-3 font-mono text-cyan-300 whitespace-nowrap">{c.duration || '00:00:00'}</td>
-                            <td className="p-3 font-mono text-blue-300 whitespace-nowrap">{c.editedDuration || '00:00:00'}</td>
-                            <td className="p-3 font-mono text-emerald-300 font-bold whitespace-nowrap">{formatSecondsToHHMMSS(diff)}</td>
-                          </tr>
+                                {group.isLinkedGroup ? (
+                                  <div className="text-[10px] text-amber-300 font-medium mt-1 flex items-center gap-1">
+                                    <Link2 className="w-3 h-3 text-amber-400 shrink-0" />
+                                    <span>
+                                      Familia de {1 + group.linkedCards.length} tareas (Cuenta como 1 item) • {isExpanded ? 'Clic para ocultar' : 'Clic para abrir desglose'}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  docCard.isDepartmentAchievement && (
+                                    <span className="inline-block mt-0.5 text-[9px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-mono">
+                                      Logro Solicitud Especial
+                                    </span>
+                                  )
+                                )}
+                              </td>
+                              <td className="p-3 text-cyan-300 whitespace-nowrap">
+                                {bObj?.name || 'VTV'}
+                              </td>
+                              <td className="p-3 font-medium text-amber-200 whitespace-nowrap">
+                                <div className="flex items-center gap-1.5">
+                                  <UserCheck className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                  <span>{docInfo.workerName}</span>
+                                </div>
+                              </td>
+                              <td className="p-3 font-mono text-cyan-300 text-[11px] whitespace-nowrap">
+                                <div className="flex items-center gap-1.5">
+                                  <Clock className="w-3 h-3 text-cyan-400 shrink-0" />
+                                  <span>{docInfo.formattedDateTime}</span>
+                                </div>
+                              </td>
+                              <td className="p-3 font-mono font-bold whitespace-nowrap">
+                                {group.isLinkedGroup ? (
+                                  <span className="text-amber-300 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30">
+                                    {group.totalDurationHHMMSS}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-200">{docCard.duration || '00:00:00'}</span>
+                                )}
+                              </td>
+                            </tr>
+
+                            {/* Desglose de Subtareas Vinculadas de Lista 2 */}
+                            {group.isLinkedGroup && isExpanded && (
+                              group.linkedCards.map((subCard, subIdx) => {
+                                const subBoard = productionBoards.find(b => b.id === subCard.boardId);
+                                return (
+                                  <tr key={`sub_arch2_${subCard.id}_${subIdx}`} className="bg-slate-900/90 text-slate-300 border-l-4 border-amber-500">
+                                    <td className="p-2.5 pl-8 text-xs font-medium text-slate-200" colSpan={1}>
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="text-amber-400 font-mono text-[10px] font-bold">↳ [{subIdx + 1}]</span>
+                                        <span>{subCard.title}</span>
+                                      </div>
+                                    </td>
+                                    <td className="p-2.5 text-[11px] text-cyan-300">
+                                      {subBoard?.name || 'VTV'}
+                                    </td>
+                                    <td className="p-2.5 text-[10px] text-slate-400 italic" colSpan={2}>
+                                      Tarea vinculada de la familia
+                                    </td>
+                                    <td className="p-2.5 font-mono text-cyan-300 text-xs font-bold whitespace-nowrap">
+                                      {subCard.duration || '00:00:00'}
+                                    </td>
+                                  </tr>
+                                );
+                              })
+                            )}
+                          </React.Fragment>
                         );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="p-4 rounded-xl border border-amber-500/20 bg-slate-950/40 text-center text-xs text-slate-500 italic">
+                  No hay material archivado o logros en el día seleccionado.
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -3525,11 +4670,11 @@ export default function TaskManager({
                     </p>
                   </div>
                 ) : (
-                  filteredNotifications.map((n) => {
+                  filteredNotifications.map((n, idx) => {
                     const taskObj = cards.find(c => c.id === n.taskId);
                     return (
                       <div
-                        key={n.id}
+                        key={n.id ? `${n.id}_${idx}` : `notif_item_${idx}`}
                         className={`p-4 rounded-xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
                           !n.read
                             ? 'bg-slate-900 border-cyan-500/40 shadow-[0_0_15px_rgba(6,182,212,0.1)]'

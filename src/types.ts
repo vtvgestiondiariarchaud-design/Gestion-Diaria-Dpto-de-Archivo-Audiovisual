@@ -118,21 +118,34 @@ export interface TaskCard {
   duration?: string; // Duración original del material en formato HH:MM:SS
   editedDuration?: string; // Duración del material editado en formato HH:MM:SS
   
-  // Etapas del flujo de trabajo (Booleans & Timestamps)
+  // Etapas del flujo de trabajo (Booleans, Timestamps & Personal Responsable)
   isIngested?: boolean;
   ingestedAt?: string;
+  ingestedByWorkerId?: string;
+  ingestedByWorkerName?: string;
+
   isEdited?: boolean;
   editedAt?: string;
+  editedByWorkerId?: string;
+  editedByWorkerName?: string;
+
   isDocumented?: boolean;
   documentedAt?: string;
+  documentedByWorkerId?: string;
+  documentedByWorkerName?: string;
+
   isFinalized?: boolean;
   finalizedAt?: string;
+  finalizedByWorkerId?: string;
+  finalizedByWorkerName?: string;
 
   // Clasificación para Otras Solicitudes, Logros y Material Descartado
   isOtherRequest?: boolean;
   isDepartmentAchievement?: boolean; // Determina si la tarea cuenta como logro del departamento (excluye gerencia y administración)
   isDiscarded?: boolean; // Determina si el material fue descartado (sigue contando horas ingestadas pero no en archivados)
   discardedAt?: string;
+  discardedByWorkerId?: string;
+  discardedByWorkerName?: string;
 
   history?: TaskHistoryItem[];
   linkedTaskIds?: string[];
