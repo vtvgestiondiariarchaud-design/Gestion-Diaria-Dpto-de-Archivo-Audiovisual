@@ -803,16 +803,13 @@ export default function TaskManager({
   }, [cards]);
 
   // Helper to match card dates against dateFilter (YYYY-MM-DD)
+  // Solo las tareas creadas o ingestadas en la fecha seleccionada
   const cardMatchesDateFilter = (card: TaskCard, filterDate: string) => {
     if (!filterDate) return true;
     const dates = [
       card.createdAt,
       card.startDate,
-      card.dueDate,
-      card.ingestedAt,
-      card.editedAt,
-      card.documentedAt,
-      card.finalizedAt
+      card.ingestedAt
     ].filter(Boolean) as string[];
 
     return dates.some(d => normalizeToYMD(d) === filterDate);

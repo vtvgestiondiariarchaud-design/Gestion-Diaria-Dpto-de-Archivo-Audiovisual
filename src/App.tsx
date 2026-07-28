@@ -680,21 +680,38 @@ export default function App() {
       setDbError(err.message || 'Error guardando tarea en Supabase');
     }
 
+    const currentUserId = currentSession?.userId;
+
+    // Si el mismo usuario modifica una tarea que le estaba generando una notificación, esta se marca como leída
+    if (currentUserId) {
+      const pendingNotifs = taskNotifications.filter(
+        n => (n.taskId === card.id || n.taskTitle === card.title) && n.workerId === currentUserId && !n.read
+      );
+      if (pendingNotifs.length > 0) {
+        pendingNotifs.forEach(n => {
+          handleMarkNotificationRead(n.id);
+        });
+      }
+    }
+
     // Notifications for newly assigned workers
     if (newlyAssigned.length > 0) {
       const boardObj = taskBoards.find(b => b.id === card.boardId);
       const boardName = boardObj ? boardObj.name : 'Tablero de Tareas';
 
       for (const workerId of newlyAssigned) {
+        // Cuando el usuario crea o se agrega a sí mismo a una tarea, le genera notificación pero automáticamente se marca como leída
+        const isSelf = !!(currentUserId && workerId === currentUserId);
+
         const notif: TaskNotification = {
-          id: `notif_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+          id: `notif_${Date.now()}_${Math.random().toString(36).substr(2, 4)}_${Math.floor(Math.random() * 1000)}`,
           workerId,
           taskId: card.id,
           taskTitle: card.title,
           boardName,
           message: `Se te ha asignado la tarea "${card.title}" en el tablero "${boardName}".`,
           createdAt: new Date().toISOString(),
-          read: false
+          read: isSelf
         };
         setTaskNotifications(prev => [notif, ...prev]);
         try {

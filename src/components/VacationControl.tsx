@@ -5,7 +5,7 @@ import {
   Plus, Trash2, CheckCircle2, AlertTriangle, HelpCircle, 
   CalendarDays, ChevronLeft, ChevronRight, RefreshCw, Sparkles, User, Info, Check,
   ChevronDown, ChevronUp, Send, X, UserCheck, CheckCircle, XCircle, Hourglass, ShieldAlert,
-  BarChart3, Layers
+  BarChart3, Layers, Minus, RotateCcw, Lock
 } from 'lucide-react';
 import { Division, Worker, ShiftAssignment, FreeDayRequest, UserRole } from '../types';
 import { db } from '../supabaseClient';
@@ -169,12 +169,13 @@ export default function VacationControl({
   onUpdateAssignments,
   onAddNotification
 }: VacationControlProps) {
-  const [activeSubTab, setActiveSubTab] = useState<'vacations' | 'freedays'>('vacations');
+  const [activeSubTab, setActiveSubTab] = useState<'calendar' | 'vacations' | 'freedays'>('calendar');
   const [searchTerm, setSearchTerm] = useState('');
   
   // State for manual free days adjustment and date scheduling per worker
   const [tempAdjustment, setTempAdjustment] = useState<Record<string, number>>({});
   const [scheduleDate, setScheduleDate] = useState<Record<string, string>>({});
+  const [selectedCalendarDayModal, setSelectedCalendarDayModal] = useState<string | null>(null);
   
   // Year/Month state for the vacation calendar
   const [currentYear, setCurrentYear] = useState(2026);
@@ -194,6 +195,8 @@ export default function VacationControl({
 
   // Role helpers
   const isCoordinatorOrAbove = userRole === 'superadmin' || userRole === 'deputy' || userRole === 'coordinator';
+  const isGerenciaOrDeputy = userRole === 'superadmin' || userRole === 'deputy';
+  const isCoordinator = userRole === 'coordinator';
   const isBasicWorker = userRole === 'worker';
 
   // Constants
@@ -336,6 +339,18 @@ export default function VacationControl({
   };
 
   const handleSaveAdjustment = (workerId: string, value: number) => {
+    // Check self-modification restriction for coordinators
+    if (isCoordinator && currentSession?.userId === workerId) {
+      if (onAddNotification) {
+        onAddNotification(
+          'Acción no permitida',
+          'Los coordinadores no pueden modificar su propio saldo de días libres.',
+          'error'
+        );
+      }
+      return;
+    }
+
     const updatedWorkers = workers.map(w => {
       if (w.id === workerId) {
         return {
@@ -346,7 +361,6 @@ export default function VacationControl({
       return w;
     });
     onUpdateWorkers(updatedWorkers);
-    setExpandedWorkerId(null);
     if (onAddNotification) {
       onAddNotification(
         'Ajuste de Días Libres', 
@@ -354,6 +368,37 @@ export default function VacationControl({
         'success'
       );
     }
+  };
+
+  const handleAddFreeDays = (worker: Worker, delta: number) => {
+    if (isCoordinator && currentSession?.userId === worker.id) {
+      if (onAddNotification) {
+        onAddNotification(
+          'Acción no permitida',
+          'Los coordinadores no pueden modificar su propio saldo de días libres.',
+          'error'
+        );
+      }
+      return;
+    }
+    const currentManual = worker.manualFreeDaysAdjustment || 0;
+    handleSaveAdjustment(worker.id, currentManual + delta);
+  };
+
+  const handleClearFreeDays = (worker: Worker) => {
+    if (isCoordinator && currentSession?.userId === worker.id) {
+      if (onAddNotification) {
+        onAddNotification(
+          'Acción no permitida',
+          'Los coordinadores no pueden modificar su propio saldo de días libres.',
+          'error'
+        );
+      }
+      return;
+    }
+    const balance = computeWorkerFreeDays(worker, assignments);
+    const baseActive = balance.events.filter(e => e.status === 'active').length;
+    handleSaveAdjustment(worker.id, -baseActive);
   };
 
   const handleScheduleLibre = (workerId: string, dateStr: string) => {
@@ -601,21 +646,32 @@ export default function VacationControl({
         </div>
 
         {/* Sub-Tabs Switcher */}
-        <div className="flex bg-slate-950/60 p-1 border border-white/5 rounded-xl self-start md:self-auto">
+        <div className="flex bg-slate-950/60 p-1 border border-white/5 rounded-xl self-start md:self-auto gap-1">
+          <button
+            onClick={() => setActiveSubTab('calendar')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              activeSubTab === 'calendar'
+                ? 'bg-gradient-to-r from-cyan-500/20 to-indigo-500/20 border border-cyan-500/30 text-cyan-300 shadow-sm'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Calendar size={13} />
+            <span>Calendario General</span>
+          </button>
           <button
             onClick={() => setActiveSubTab('vacations')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
               activeSubTab === 'vacations'
                 ? 'bg-gradient-to-r from-cyan-500/20 to-indigo-500/20 border border-cyan-500/30 text-cyan-300 shadow-sm'
                 : 'text-slate-400 hover:text-white'
             }`}
           >
-            <CalendarDays size={13} />
+            <Umbrella size={13} />
             <span>Vacaciones</span>
           </button>
           <button
             onClick={() => setActiveSubTab('freedays')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer relative ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer relative ${
               activeSubTab === 'freedays'
                 ? 'bg-gradient-to-r from-cyan-500/20 to-indigo-500/20 border border-cyan-500/30 text-cyan-300 shadow-sm'
                 : 'text-slate-400 hover:text-white'
@@ -631,6 +687,273 @@ export default function VacationControl({
           </button>
         </div>
       </div>
+
+      {/* RENDER SUB-TAB 0: GENERAL CALENDAR (FIRST VIEW VISIBLE) */}
+      {activeSubTab === 'calendar' && (
+        <div className="space-y-6">
+          {/* Controls & Legend Bar */}
+          <div className="p-5 glass rounded-2xl border border-white/10 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xl">
+            <div className="space-y-1">
+              <h4 className="text-base font-bold text-white flex items-center gap-2">
+                <CalendarDays className="text-cyan-400" size={20} />
+                Calendario de Asistencia: Días Libres y Vacaciones
+              </h4>
+              <p className="text-xs text-slate-300">
+                Visualiza de forma clara quién se encuentra de vacaciones o disfrutando de su día libre en cada fecha. Haz clic en cualquier día para ver el detalle.
+              </p>
+            </div>
+
+            {/* Month Navigator */}
+            <div className="flex items-center gap-3 bg-slate-950/80 p-1.5 border border-white/10 rounded-xl self-start md:self-auto shadow-inner">
+              <button
+                type="button"
+                onClick={handlePrevMonth}
+                className="p-1.5 bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white rounded-lg transition-all cursor-pointer"
+              >
+                <ChevronLeft size={16} />
+              </button>
+              <span className="text-xs font-black text-white min-w-[130px] text-center font-mono">
+                {months[currentMonth]} {currentYear}
+              </span>
+              <button
+                type="button"
+                onClick={handleNextMonth}
+                className="p-1.5 bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white rounded-lg transition-all cursor-pointer"
+              >
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          </div>
+
+          {/* Quick Legend Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 bg-slate-900/60 border border-white/5 rounded-xl text-xs">
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="flex items-center gap-2">
+                <span className="w-3.5 h-3.5 rounded bg-purple-500/30 border border-purple-500/50 flex items-center justify-center text-[9px]">
+                  ☂️
+                </span>
+                <span className="text-slate-300 font-medium">De Vacaciones</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-3.5 h-3.5 rounded bg-emerald-500/30 border border-emerald-500/50 flex items-center justify-center text-[9px]">
+                  🟢
+                </span>
+                <span className="text-slate-300 font-medium">Día Libre</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-3.5 h-3.5 rounded bg-amber-500/20 border border-amber-500/30"></span>
+                <span className="text-slate-400">Fin de Semana</span>
+              </div>
+            </div>
+
+            <div className="text-[11px] text-slate-400 font-mono">
+              Total personal registrado: <strong className="text-white">{filteredWorkers.length}</strong>
+            </div>
+          </div>
+
+          {/* Monthly Calendar Grid */}
+          <div className="p-4 bg-slate-900/90 border border-white/10 rounded-2xl shadow-xl space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3">
+              {calendarDates.map((item) => {
+                // Workers on vacation on this date
+                const vacationWorkers = filteredWorkers.filter(w => 
+                  w.vacationStart && w.vacationEnd && 
+                  item.dateStr >= w.vacationStart && item.dateStr <= w.vacationEnd
+                );
+
+                // Workers on free day (libre) on this date
+                const libreWorkerIds = assignments
+                  .filter(a => a.date === item.dateStr && a.shiftType === 'libre')
+                  .map(a => a.workerId);
+                
+                const libreWorkers = filteredWorkers.filter(w => libreWorkerIds.includes(w.id));
+
+                const totalAbsent = vacationWorkers.length + libreWorkers.length;
+
+                return (
+                  <div
+                    key={item.dateStr}
+                    onClick={() => setSelectedCalendarDayModal(item.dateStr)}
+                    className={`p-3 rounded-xl border text-left transition-all relative flex flex-col justify-between min-h-[120px] cursor-pointer group hover:scale-[1.01] ${
+                      item.isWeekend || item.isHoliday
+                        ? 'bg-slate-900/90 border-amber-500/20 hover:border-amber-400/50'
+                        : 'bg-slate-950/60 border-white/5 hover:border-white/20'
+                    }`}
+                  >
+                    {/* Date Header */}
+                    <div className="flex items-center justify-between w-full pb-1.5 border-b border-white/5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono text-sm font-black text-white">{item.dayNum}</span>
+                        <span className="text-[10px] uppercase font-bold text-slate-400">{item.dayOfWeekStr}</span>
+                      </div>
+                      {totalAbsent > 0 && (
+                        <span className="px-1.5 py-0.5 bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 rounded text-[9px] font-black font-mono">
+                          {totalAbsent} ausente{totalAbsent > 1 ? 's' : ''}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Content List */}
+                    <div className="space-y-1 my-1.5 flex-1 max-h-[140px] overflow-y-auto pr-0.5">
+                      {/* Vacations */}
+                      {vacationWorkers.map(w => (
+                        <div 
+                          key={`vac_${w.id}`}
+                          className="px-2 py-1 bg-purple-950/70 border border-purple-500/30 rounded-lg text-[10px] text-purple-200 font-medium flex items-center justify-between gap-1 truncate"
+                          title={`${w.name} - Vacaciones`}
+                        >
+                          <span className="truncate flex items-center gap-1">
+                            <Umbrella size={10} className="text-purple-400 shrink-0" />
+                            <span className="truncate">{w.name}</span>
+                          </span>
+                          <span className="text-[8px] bg-purple-500/30 px-1 rounded text-purple-300 font-mono shrink-0">VAC</span>
+                        </div>
+                      ))}
+
+                      {/* Free Days */}
+                      {libreWorkers.map(w => (
+                        <div 
+                          key={`lib_${w.id}`}
+                          className="px-2 py-1 bg-emerald-950/70 border border-emerald-500/30 rounded-lg text-[10px] text-emerald-200 font-medium flex items-center justify-between gap-1 truncate"
+                          title={`${w.name} - Día Libre`}
+                        >
+                          <span className="truncate flex items-center gap-1">
+                            <CheckCircle size={10} className="text-emerald-400 shrink-0" />
+                            <span className="truncate">{w.name}</span>
+                          </span>
+                          <span className="text-[8px] bg-emerald-500/30 px-1 rounded text-emerald-300 font-mono shrink-0">LIBRE</span>
+                        </div>
+                      ))}
+
+                      {totalAbsent === 0 && (
+                        <div className="text-[9px] text-slate-600 italic py-2 text-center">
+                          Todo el personal activo
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Bottom Hint */}
+                    <div className="text-[8px] text-slate-500 group-hover:text-cyan-400 transition-colors pt-1 border-t border-white/5 flex items-center justify-between">
+                      <span>Ver detalles</span>
+                      <span>→</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Day Details Modal */}
+      {selectedCalendarDayModal && (() => {
+        const dateStr = selectedCalendarDayModal;
+        const dateObj = new Date(dateStr + 'T12:00:00');
+        const formattedDate = dateObj.toLocaleDateString('es-ES', { 
+          weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+        });
+
+        const vacWorkers = workers.filter(w => 
+          w.vacationStart && w.vacationEnd && 
+          dateStr >= w.vacationStart && dateStr <= w.vacationEnd
+        );
+
+        const libAsgs = assignments.filter(a => a.date === dateStr && a.shiftType === 'libre');
+        const libWorkers = libAsgs.map(a => workers.find(w => w.id === a.workerId)).filter(Boolean) as Worker[];
+
+        return (
+          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+            <div className="bg-slate-900 border border-white/10 rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl animate-fade-in relative">
+              <button 
+                onClick={() => setSelectedCalendarDayModal(null)}
+                className="absolute top-4 right-4 p-1.5 bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white rounded-lg transition-all cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-white capitalize flex items-center gap-2">
+                  <Calendar className="text-cyan-400" size={18} />
+                  {formattedDate}
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Resumen de personal en vacaciones y días libres para esta fecha.
+                </p>
+              </div>
+
+              {/* Vacaciones Section */}
+              <div className="space-y-2">
+                <h4 className="text-xs font-bold text-purple-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <Umbrella size={14} />
+                  Personal de Vacaciones ({vacWorkers.length})
+                </h4>
+                {vacWorkers.length === 0 ? (
+                  <div className="text-slate-500 text-xs italic p-3 bg-slate-950/50 rounded-xl border border-white/5">
+                    Ningún trabajador se encuentra de vacaciones en esta fecha.
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
+                    {vacWorkers.map(w => {
+                      const divName = divisions.find(d => d.id === w.divisionId)?.name || 'Sin división';
+                      return (
+                        <div key={w.id} className="p-3 bg-purple-950/30 border border-purple-500/20 rounded-xl flex items-center justify-between text-xs">
+                          <div>
+                            <div className="font-bold text-white">{w.name}</div>
+                            <div className="text-[10px] text-purple-300">{w.cargo} • {divName}</div>
+                          </div>
+                          <span className="text-[9px] bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded border border-purple-500/30 font-mono">
+                            {w.vacationStart} al {w.vacationEnd}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Días Libres Section */}
+              <div className="space-y-2 pt-2 border-t border-white/5">
+                <h4 className="text-xs font-bold text-emerald-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <CheckCircle size={14} />
+                  Personal con Día Libre ({libWorkers.length})
+                </h4>
+                {libWorkers.length === 0 ? (
+                  <div className="text-slate-500 text-xs italic p-3 bg-slate-950/50 rounded-xl border border-white/5">
+                    No hay trabajadores con día libre programado para esta fecha.
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
+                    {libWorkers.map(w => {
+                      const divName = divisions.find(d => d.id === w.divisionId)?.name || 'Sin división';
+                      return (
+                        <div key={w.id} className="p-3 bg-emerald-950/30 border border-emerald-500/20 rounded-xl flex items-center justify-between text-xs">
+                          <div>
+                            <div className="font-bold text-white">{w.name}</div>
+                            <div className="text-[10px] text-emerald-300">{w.cargo} • {divName}</div>
+                          </div>
+                          <span className="text-[9px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/30 font-mono">
+                            LIBRE
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="pt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setSelectedCalendarDayModal(null)}
+                  className="px-4 py-2 bg-white/10 hover:bg-white/15 text-white font-bold text-xs rounded-xl transition-all cursor-pointer"
+                >
+                  Cerrar
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* RENDER SUB-TAB 1: VACATIONS CALENDAR */}
       {activeSubTab === 'vacations' && (
@@ -1395,53 +1718,56 @@ export default function VacationControl({
                                                 Acciones Directas de Coordinación
                                               </h6>
 
-                                              {/* Action 1: Manual adjustment */}
-                                              <div className="space-y-1.5">
-                                                <label className="text-[9px] font-bold text-slate-300 flex items-center justify-between">
-                                                  <span>Ajuste Manual de Balance</span>
-                                                  <span className="text-[8px] text-slate-500">Actual: {w.manualFreeDaysAdjustment || 0}</span>
-                                                </label>
-                                                <div className="flex items-center gap-1.5">
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                      const currentVal = tempAdjustment[w.id] !== undefined ? tempAdjustment[w.id] : (w.manualFreeDaysAdjustment || 0);
-                                                      setTempAdjustment({ ...tempAdjustment, [w.id]: currentVal - 1 });
-                                                    }}
-                                                    className="w-7 h-7 flex items-center justify-center bg-white/5 hover:bg-white/10 text-slate-200 rounded-lg font-bold border border-white/5 transition-all cursor-pointer text-xs"
-                                                  >
-                                                    -
-                                                  </button>
-                                                  <input
-                                                    type="number"
-                                                    value={tempAdjustment[w.id] !== undefined ? tempAdjustment[w.id] : (w.manualFreeDaysAdjustment || 0)}
-                                                    onChange={(e) => setTempAdjustment({ ...tempAdjustment, [w.id]: parseInt(e.target.value) || 0 })}
-                                                    className="w-12 h-7 bg-slate-950 border border-white/10 rounded-lg text-center text-xs font-bold font-mono text-white focus:outline-none focus:border-cyan-500"
-                                                  />
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                      const currentVal = tempAdjustment[w.id] !== undefined ? tempAdjustment[w.id] : (w.manualFreeDaysAdjustment || 0);
-                                                      setTempAdjustment({ ...tempAdjustment, [w.id]: currentVal + 1 });
-                                                    }}
-                                                    className="w-7 h-7 flex items-center justify-center bg-white/5 hover:bg-white/10 text-slate-200 rounded-lg font-bold border border-white/5 transition-all cursor-pointer text-xs"
-                                                  >
-                                                    +
-                                                  </button>
-
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                      const val = tempAdjustment[w.id] !== undefined ? tempAdjustment[w.id] : (w.manualFreeDaysAdjustment || 0);
-                                                      handleSaveAdjustment(w.id, val);
-                                                    }}
-                                                    className="ml-auto h-7 px-2.5 bg-gradient-to-r from-cyan-600 to-violet-600 hover:from-cyan-500 hover:to-violet-500 text-white rounded-lg font-bold text-[9px] transition-all cursor-pointer flex items-center gap-1"
-                                                  >
-                                                    <Check size={10} />
-                                                    <span>Guardar</span>
-                                                  </button>
+                                              {/* Action 1: Manual adjustment with +1, -1, +6, Limpiar and Coordinator Self-Protection */}
+                                              {isCoordinator && w.id === currentSession?.userId ? (
+                                                <div className="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-lg text-[10px] text-amber-300 font-medium flex items-center gap-1.5">
+                                                  <AlertTriangle size={14} className="shrink-0 text-amber-400" />
+                                                  <span>Los coordinadores no pueden modificar su propio saldo de días libres. Solicítalo a Gerencia/Adjunta.</span>
                                                 </div>
-                                              </div>
+                                              ) : (
+                                                <div className="space-y-1.5">
+                                                  <label className="text-[9px] font-bold text-slate-300 flex items-center justify-between">
+                                                    <span>Gestión de Balance de Días Libres</span>
+                                                    <span className="text-[8px] text-slate-500">Ajuste actual: {w.manualFreeDaysAdjustment || 0}</span>
+                                                  </label>
+                                                  <div className="flex flex-wrap items-center gap-1.5">
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => handleAddFreeDays(w, -1)}
+                                                      className="px-2 h-7 bg-red-500/10 hover:bg-red-500/20 text-red-300 rounded-lg font-bold border border-red-500/20 transition-all cursor-pointer text-[10px] flex items-center gap-0.5"
+                                                      title="Restar 1 día libre"
+                                                    >
+                                                      <Minus size={10} /> 1
+                                                    </button>
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => handleAddFreeDays(w, 1)}
+                                                      className="px-2 h-7 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 rounded-lg font-bold border border-emerald-500/20 transition-all cursor-pointer text-[10px] flex items-center gap-0.5"
+                                                      title="Agregar 1 día libre"
+                                                    >
+                                                      <Plus size={10} /> 1
+                                                    </button>
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => handleAddFreeDays(w, 6)}
+                                                      className="px-2.5 h-7 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 rounded-lg font-bold border border-cyan-500/20 transition-all cursor-pointer text-[10px] flex items-center gap-0.5"
+                                                      title="Agregar 6 días libres (+6)"
+                                                    >
+                                                      <Plus size={10} /> 6
+                                                    </button>
+
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => handleClearFreeDays(w)}
+                                                      className="ml-auto h-7 px-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 rounded-lg font-bold text-[9px] transition-all cursor-pointer border border-amber-500/20 flex items-center gap-1"
+                                                      title="Limpiar la cantidad de días libres disponibles acumulados"
+                                                    >
+                                                      <RotateCcw size={10} />
+                                                      <span>Limpiar</span>
+                                                    </button>
+                                                  </div>
+                                                </div>
+                                              )}
 
                                               {/* Action 2: Schedule a free day */}
                                               <div className="space-y-1.5 pt-2 border-t border-white/5">
