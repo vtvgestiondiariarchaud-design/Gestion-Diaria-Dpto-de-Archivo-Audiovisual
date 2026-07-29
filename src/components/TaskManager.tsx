@@ -1332,10 +1332,11 @@ export default function TaskManager({
     };
 
     // 1. LISTA 1: Material Ingestado y Editado en el período
+    // Regla estricta: Todo material que NO esté marcado como ingestado NO puede ser contado para el total de horas ingestadas
     const ingestadosEnPeriodo = baseCards.filter(c => {
-      const isIng = c.isIngested || c.boardId === 'board_ingesta' || (c.status as string) === 'Ingested' || parseDurationToSeconds(c.duration) > 0;
+      if (!c.isIngested) return false;
       const ingStr = c.ingestedAt || c.startDate || c.createdAt;
-      return isIng && matchesPeriod(ingStr);
+      return matchesPeriod(ingStr);
     });
     
     // Horas de Ingesta: se suman TODAS las tareas marcadas como ingestadas en el período
@@ -1413,9 +1414,9 @@ export default function TaskManager({
       const dayOfWeekIndex = dt.getDay();
 
       // Buscar tareas ingestadas en esta fecha basada en su fecha/hora de ingesta
+      // Regla estricta: Solo contar tareas con c.isIngested marcado como true
       const dayTasks = baseCards.filter(c => {
-        const isIng = c.isIngested || c.boardId === 'board_ingesta' || (c.status as string) === 'Ingested' || parseDurationToSeconds(c.duration) > 0;
-        if (!isIng) return false;
+        if (!c.isIngested) return false;
         const ingStr = (c.ingestedAt || c.startDate || c.createdAt || '').trim();
         if (!ingStr) return false;
         return normalizeToYMD(ingStr) === dateStr || ingStr.slice(0, 10) === dateStr;
@@ -1854,6 +1855,30 @@ export default function TaskManager({
     const updatedCard = { ...card, checklist: [...currentList, newItem] };
     onSaveCard(updatedCard);
     setCardQuickCheckInput(prev => ({ ...prev, [card.id]: '' }));
+  };
+
+  // Handle Board Creation Submit
+  const handleCreateBoardSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newBoardName.trim()) {
+      onAddNotificationToast('Nombre Requerido', 'Por favor ingresa un nombre para la nueva lista.', 'info');
+      return;
+    }
+
+    const newBoard: TaskBoard = {
+      id: `board_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      name: newBoardName.trim(),
+      description: newBoardDesc.trim(),
+      color: newBoardColor || 'cyan',
+      createdAt: new Date().toISOString()
+    };
+
+    onAddBoard(newBoard);
+    setNewBoardName('');
+    setNewBoardDesc('');
+    setNewBoardColor('cyan');
+    setShowBoardModal(false);
+    onAddNotificationToast('Lista Creada', `Se creó la lista "${newBoard.name}" con éxito.`, 'success');
   };
 
   // Open Create Task Modal
@@ -3279,6 +3304,58 @@ export default function TaskManager({
                           Añadir
                         </button>
                       </form>
+                    </div>
+
+                    {/* Collaborators / Assigned Personal on Card */}
+                    <div className="pt-2 border-t border-white/5 space-y-1.5">
+                      <div className="flex items-center justify-between text-[10px] text-amber-300 font-bold uppercase tracking-wider">
+                        <span className="flex items-center gap-1">
+                          <Users className="w-3 h-3 text-amber-400" />
+                          <span>Colaboradores Asignados:</span>
+                        </span>
+                        {card.createdByName && (
+                          <span className="text-[9px] text-slate-500 font-normal normal-case">
+                            Por: {card.createdByName}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-1 flex-wrap min-h-[26px]">
+                          {card.assignedWorkerIds && card.assignedWorkerIds.length > 0 ? (
+                            card.assignedWorkerIds.map(wId => {
+                              const w = workers.find(work => work.id === wId);
+                              if (!w) return null;
+                              return (
+                                <span
+                                  key={wId}
+                                  className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30 flex items-center gap-1"
+                                >
+                                  <UserCheck className="w-2.5 h-2.5 text-amber-400" />
+                                  {w.name}
+                                </span>
+                              );
+                            })
+                          ) : (
+                            <span className="text-[10px] text-slate-500 italic">
+                              Sin colaboradores asignados
+                            </span>
+                          )}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={(e) => handleToggleSelfAssignment(card, e)}
+                          className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 cursor-pointer shrink-0 ${
+                            isSelfAssigned
+                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                              : 'bg-slate-800 text-slate-300 border border-white/10 hover:text-white'
+                          }`}
+                        >
+                          <UserCheck className="w-3 h-3" />
+                          <span>{isSelfAssigned ? 'Asignado/a' : '+ Unirme'}</span>
+                        </button>
+                      </div>
                     </div>
 
                     {/* Stage / Finalize Button */}
@@ -5093,6 +5170,91 @@ export default function TaskManager({
                   Cerrar
                 </button>
               </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* NEW BOARD MODAL */}
+      <AnimatePresence>
+        {showBoardModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md overflow-y-auto">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="bg-slate-900 border border-white/15 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl my-8 p-6 space-y-4"
+            >
+              <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                <div className="flex items-center gap-2">
+                  <FolderPlus className="w-5 h-5 text-cyan-400" />
+                  <h3 className="text-base font-bold text-white">Crear Nueva Lista / Tablero</h3>
+                </div>
+                <button
+                  onClick={() => setShowBoardModal(false)}
+                  className="p-1 text-slate-400 hover:text-white rounded-lg transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleCreateBoardSubmit} className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-300 block">Nombre de la Lista *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="ej: Archivo de Transmisiones Especiales"
+                    value={newBoardName}
+                    onChange={(e) => setNewBoardName(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-300 block">Descripción (Opcional)</label>
+                  <textarea
+                    rows={2}
+                    placeholder="Propósito o tipo de material a gestionar en esta lista..."
+                    value={newBoardDesc}
+                    onChange={(e) => setNewBoardDesc(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-300 block">Color Distintivo</label>
+                  <select
+                    value={newBoardColor}
+                    onChange={(e) => setNewBoardColor(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
+                  >
+                    <option value="cyan">Cian / Celeste</option>
+                    <option value="blue">Azul</option>
+                    <option value="indigo">Índigo</option>
+                    <option value="purple">Púrpura</option>
+                    <option value="amber">Ámbar</option>
+                    <option value="emerald">Esmeralda / Verde</option>
+                    <option value="rose">Rosa / Rojo</option>
+                  </select>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-3 border-t border-white/10">
+                  <button
+                    type="button"
+                    onClick={() => setShowBoardModal(false)}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition-all cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-black transition-all cursor-pointer shadow-[0_0_12px_rgba(6,182,212,0.4)]"
+                  >
+                    Guardar Lista
+                  </button>
+                </div>
+              </form>
             </motion.div>
           </div>
         )}

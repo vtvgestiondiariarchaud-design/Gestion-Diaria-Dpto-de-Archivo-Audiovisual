@@ -271,10 +271,10 @@ export default function VacationControl({
     );
   }, [workers, divisions, searchTerm, isBasicWorker, currentWorkerObj]);
 
-  // Pending free day requests for coordinators
+  // Pending free day requests for coordinators and jefes
   const pendingRequests = useMemo(() => {
     let reqs = freeDayRequests.filter(r => r.status === 'pending');
-    if (userRole === 'coordinator' && userDivisionId) {
+    if ((userRole === 'coordinator' || userRole === 'deputy') && userDivisionId) {
       reqs = reqs.filter(r => r.divisionId === userDivisionId);
     }
     return reqs;

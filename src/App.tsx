@@ -280,6 +280,26 @@ export default function App() {
   const [forceNewPassword, setForceNewPassword] = useState('');
   const [forceConfirmPassword, setForceConfirmPassword] = useState('');
 
+  // Count of pending free day requests visible only to jefes/coordinadores of the same division
+  const visiblePendingFreeDayRequestsCount = useMemo(() => {
+    if (!currentSession) return 0;
+    const { role, divisionId } = currentSession;
+    
+    // Notification visible ONLY for jefes ('deputy'), coordinadores ('coordinator'), or superadmin ('superadmin')
+    const isLeader = role === 'coordinator' || role === 'deputy' || role === 'superadmin';
+    if (!isLeader) return 0;
+
+    return freeDayRequests.filter(r => {
+      if (r.status !== 'pending') return false;
+      // Superadmin sees all pending requests
+      if (role === 'superadmin') return true;
+      // Boss (deputy) or coordinator: must belong to the exact same division as the applicant
+      const applicantWorker = workers.find(w => w.id === r.workerId);
+      const reqDivId = r.divisionId || applicantWorker?.divisionId;
+      return divisionId && reqDivId === divisionId;
+    }).length;
+  }, [freeDayRequests, currentSession, workers]);
+
   // Individual food preference states derived dynamically from workers' profiles
   const mealsPreferences = useMemo(() => {
     const prefs: Record<string, { desayuno: boolean; almuerzo: boolean; cena: boolean }> = {};
@@ -1815,23 +1835,8 @@ export default function App() {
               </button>
 
               <button
-                onClick={() => setActiveTab('solicitudes')}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
-                  activeTab === 'solicitudes' 
-                    ? 'bg-gradient-to-r from-cyan-500/20 to-violet-500/20 text-white border border-cyan-500/30 font-extrabold' 
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
-                }`}
-              >
-                <Calendar size={14} className={activeTab === 'solicitudes' ? 'text-indigo-400' : 'text-slate-400'} />
-                <span>Permisos e Intercambios</span>
-                {requests.filter(r => r.status === 'pending').length > 0 && (
-                  <span className="w-2 h-2 rounded-full bg-cyan-500 inline-block animate-pulse" />
-                )}
-              </button>
-
-              <button
                 onClick={() => setActiveTab('vacaciones')}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer relative ${
                   activeTab === 'vacaciones' 
                     ? 'bg-gradient-to-r from-cyan-500/20 to-violet-500/20 text-white border border-cyan-500/30 font-extrabold' 
                     : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
@@ -1839,6 +1844,11 @@ export default function App() {
               >
                 <Umbrella size={14} className={activeTab === 'vacaciones' ? 'text-cyan-400' : 'text-slate-400'} />
                 <span>Vacaciones y Días Libres</span>
+                {visiblePendingFreeDayRequestsCount > 0 && (
+                  <span className="px-1.5 py-0.5 text-[10px] font-black text-slate-950 bg-amber-400 rounded-full flex items-center justify-center animate-pulse ml-0.5 shadow-[0_0_8px_rgba(251,191,36,0.8)]">
+                    {visiblePendingFreeDayRequestsCount}
+                  </span>
+                )}
               </button>
 
               {/* SuperAdmin Exclusivity Tab */}
@@ -1962,21 +1972,6 @@ export default function App() {
                         setSelectedDateStr={setSelectedDateStr}
                         operationalDates={operationalDates}
                         onAddOperationalDate={handleAddOperationalDate}
-                      />
-                    )}
-
-                    {activeTab === 'solicitudes' && (
-                      <ShiftChanges
-                        workers={sortedWorkers}
-                        divisions={divisions}
-                        assignments={assignments}
-                        requests={requests}
-                        userRole={currentSession.role}
-                        userDivisionId={currentSession.divisionId}
-                        currentUserId={currentSession.userId}
-                        onUpdateRequests={handleUpdateRequests}
-                        onUpdateAssignments={handleUpdateAssignments}
-                        onAddNotification={addNotification}
                       />
                     )}
 
