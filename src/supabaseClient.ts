@@ -1641,37 +1641,26 @@ export const db = {
     }
   },
 
-  // Physical Archive Database Methods
+  // Physical Archive Database Methods (Strictly Cloud Database Persisted)
   async fetchPhysicalFormats(defaultFormats: PhysicalFormat[]): Promise<PhysicalFormat[]> {
     if (supabase) {
       try {
         const { data, error } = await supabase.from('physical_formats').select('*').order('name', { ascending: true });
         if (!error && data && data.length > 0) {
-          const mapped = data.map(f => ({ id: f.id, name: f.name }));
-          localStorage.setItem('vtv_physical_formats', JSON.stringify(mapped));
-          return mapped;
+          return data.map(f => ({ id: f.id, name: f.name }));
         } else if (!error && data && data.length === 0) {
           const seedPayload = defaultFormats.map(f => ({ id: f.id, name: f.name }));
           await supabase.from('physical_formats').insert(seedPayload);
-          localStorage.setItem('vtv_physical_formats', JSON.stringify(defaultFormats));
           return defaultFormats;
         }
       } catch (err) {
         console.warn('Error fetching physical_formats from Supabase:', err);
       }
     }
-    const saved = localStorage.getItem('vtv_physical_formats');
-    return saved ? JSON.parse(saved) : defaultFormats;
+    return defaultFormats;
   },
 
   async savePhysicalFormat(format: PhysicalFormat): Promise<void> {
-    const saved = localStorage.getItem('vtv_physical_formats');
-    let items: PhysicalFormat[] = saved ? JSON.parse(saved) : [];
-    const idx = items.findIndex(f => f.id === format.id);
-    if (idx >= 0) items[idx] = format;
-    else items.push(format);
-    localStorage.setItem('vtv_physical_formats', JSON.stringify(items));
-
     if (supabase) {
       try {
         await supabase.from('physical_formats').upsert([{ id: format.id, name: format.name }]);
@@ -1682,11 +1671,6 @@ export const db = {
   },
 
   async deletePhysicalFormat(id: string): Promise<void> {
-    const saved = localStorage.getItem('vtv_physical_formats');
-    if (saved) {
-      let items: PhysicalFormat[] = JSON.parse(saved);
-      localStorage.setItem('vtv_physical_formats', JSON.stringify(items.filter(f => f.id !== id)));
-    }
     if (supabase) {
       try {
         await supabase.from('physical_formats').delete().eq('id', id);
@@ -1701,31 +1685,20 @@ export const db = {
       try {
         const { data, error } = await supabase.from('physical_locations').select('*').order('name', { ascending: true });
         if (!error && data && data.length > 0) {
-          const mapped = data.map(l => ({ id: l.id, name: l.name }));
-          localStorage.setItem('vtv_physical_locations', JSON.stringify(mapped));
-          return mapped;
+          return data.map(l => ({ id: l.id, name: l.name }));
         } else if (!error && data && data.length === 0) {
           const seedPayload = defaultLocations.map(l => ({ id: l.id, name: l.name }));
           await supabase.from('physical_locations').insert(seedPayload);
-          localStorage.setItem('vtv_physical_locations', JSON.stringify(defaultLocations));
           return defaultLocations;
         }
       } catch (err) {
         console.warn('Error fetching physical_locations from Supabase:', err);
       }
     }
-    const saved = localStorage.getItem('vtv_physical_locations');
-    return saved ? JSON.parse(saved) : defaultLocations;
+    return defaultLocations;
   },
 
   async savePhysicalLocation(location: PhysicalLocation): Promise<void> {
-    const saved = localStorage.getItem('vtv_physical_locations');
-    let items: PhysicalLocation[] = saved ? JSON.parse(saved) : [];
-    const idx = items.findIndex(l => l.id === location.id);
-    if (idx >= 0) items[idx] = location;
-    else items.push(location);
-    localStorage.setItem('vtv_physical_locations', JSON.stringify(items));
-
     if (supabase) {
       try {
         await supabase.from('physical_locations').upsert([{ id: location.id, name: location.name }]);
@@ -1736,11 +1709,6 @@ export const db = {
   },
 
   async deletePhysicalLocation(id: string): Promise<void> {
-    const saved = localStorage.getItem('vtv_physical_locations');
-    if (saved) {
-      let items: PhysicalLocation[] = JSON.parse(saved);
-      localStorage.setItem('vtv_physical_locations', JSON.stringify(items.filter(l => l.id !== id)));
-    }
     if (supabase) {
       try {
         await supabase.from('physical_locations').delete().eq('id', id);
@@ -1755,31 +1723,20 @@ export const db = {
       try {
         const { data, error } = await supabase.from('physical_programs').select('*').order('name', { ascending: true });
         if (!error && data && data.length > 0) {
-          const mapped = data.map(p => ({ id: p.id, name: p.name, releaseDate: p.release_date || undefined }));
-          localStorage.setItem('vtv_physical_programs', JSON.stringify(mapped));
-          return mapped;
+          return data.map(p => ({ id: p.id, name: p.name, releaseDate: p.release_date || undefined }));
         } else if (!error && data && data.length === 0) {
           const seedPayload = defaultPrograms.map(p => ({ id: p.id, name: p.name, release_date: p.releaseDate || null }));
           await supabase.from('physical_programs').insert(seedPayload);
-          localStorage.setItem('vtv_physical_programs', JSON.stringify(defaultPrograms));
           return defaultPrograms;
         }
       } catch (err) {
         console.warn('Error fetching physical_programs from Supabase:', err);
       }
     }
-    const saved = localStorage.getItem('vtv_physical_programs');
-    return saved ? JSON.parse(saved) : defaultPrograms;
+    return defaultPrograms;
   },
 
   async savePhysicalProgram(program: PhysicalProgram): Promise<void> {
-    const saved = localStorage.getItem('vtv_physical_programs');
-    let items: PhysicalProgram[] = saved ? JSON.parse(saved) : [];
-    const idx = items.findIndex(p => p.id === program.id);
-    if (idx >= 0) items[idx] = program;
-    else items.push(program);
-    localStorage.setItem('vtv_physical_programs', JSON.stringify(items));
-
     if (supabase) {
       try {
         await supabase.from('physical_programs').upsert([{ id: program.id, name: program.name, release_date: program.releaseDate || null }]);
@@ -1790,11 +1747,6 @@ export const db = {
   },
 
   async deletePhysicalProgram(id: string): Promise<void> {
-    const saved = localStorage.getItem('vtv_physical_programs');
-    if (saved) {
-      let items: PhysicalProgram[] = JSON.parse(saved);
-      localStorage.setItem('vtv_physical_programs', JSON.stringify(items.filter(p => p.id !== id)));
-    }
     if (supabase) {
       try {
         await supabase.from('physical_programs').delete().eq('id', id);
@@ -1809,7 +1761,7 @@ export const db = {
       try {
         const { data, error } = await supabase.from('physical_materials').select('*').order('code', { ascending: true });
         if (!error && data && data.length > 0) {
-          const mapped = data.map(m => ({
+          return data.map(m => ({
             id: m.id,
             code: Number(m.code),
             formatId: m.format_id,
@@ -1825,8 +1777,6 @@ export const db = {
             createdAt: m.created_at || new Date().toISOString(),
             createdByWorkerId: m.created_by_worker_id || undefined
           }));
-          localStorage.setItem('vtv_physical_materials', JSON.stringify(mapped));
-          return mapped;
         } else if (!error && data && data.length === 0) {
           const seedPayload = defaultMaterials.map(m => ({
             id: m.id,
@@ -1845,25 +1795,16 @@ export const db = {
             created_by_worker_id: m.createdByWorkerId || null
           }));
           await supabase.from('physical_materials').insert(seedPayload);
-          localStorage.setItem('vtv_physical_materials', JSON.stringify(defaultMaterials));
           return defaultMaterials;
         }
       } catch (err) {
         console.warn('Error fetching physical_materials from Supabase:', err);
       }
     }
-    const saved = localStorage.getItem('vtv_physical_materials');
-    return saved ? JSON.parse(saved) : defaultMaterials;
+    return defaultMaterials;
   },
 
   async savePhysicalMaterial(material: PhysicalAudiovisualMaterial): Promise<void> {
-    const saved = localStorage.getItem('vtv_physical_materials');
-    let items: PhysicalAudiovisualMaterial[] = saved ? JSON.parse(saved) : [];
-    const idx = items.findIndex(m => m.id === material.id);
-    if (idx >= 0) items[idx] = material;
-    else items.unshift(material);
-    localStorage.setItem('vtv_physical_materials', JSON.stringify(items));
-
     if (supabase) {
       try {
         await supabase.from('physical_materials').upsert([{
@@ -1889,16 +1830,6 @@ export const db = {
   },
 
   async bulkSavePhysicalMaterials(newMaterials: PhysicalAudiovisualMaterial[]): Promise<void> {
-    const saved = localStorage.getItem('vtv_physical_materials');
-    let items: PhysicalAudiovisualMaterial[] = saved ? JSON.parse(saved) : [];
-    
-    newMaterials.forEach(m => {
-      const idx = items.findIndex(existing => existing.id === m.id || existing.code === m.code);
-      if (idx >= 0) items[idx] = m;
-      else items.unshift(m);
-    });
-    localStorage.setItem('vtv_physical_materials', JSON.stringify(items));
-
     if (supabase) {
       try {
         const payload = newMaterials.map(m => ({
@@ -1925,11 +1856,6 @@ export const db = {
   },
 
   async deletePhysicalMaterial(id: string): Promise<void> {
-    const saved = localStorage.getItem('vtv_physical_materials');
-    if (saved) {
-      let items: PhysicalAudiovisualMaterial[] = JSON.parse(saved);
-      localStorage.setItem('vtv_physical_materials', JSON.stringify(items.filter(m => m.id !== id)));
-    }
     if (supabase) {
       try {
         await supabase.from('physical_materials').delete().eq('id', id);
