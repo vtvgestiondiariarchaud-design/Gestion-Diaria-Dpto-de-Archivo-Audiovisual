@@ -186,3 +186,37 @@ export interface FreeDayRequest {
   reviewedAt?: string;
 }
 
+// Physical Archive (Archivo Físico) Types
+export interface PhysicalFormat {
+  id: string;
+  name: string;
+}
+
+export interface PhysicalProgram {
+  id: string;
+  name: string;
+  releaseDate?: string; // YYYY-MM-DD
+}
+
+export interface PhysicalLocation {
+  id: string;
+  name: string;
+}
+
+export interface PhysicalAudiovisualMaterial {
+  id: string;
+  code: number; // Código entero progresivo para ubicación física
+  formatId: string;
+  programId?: string;
+  title: string;
+  recordingDate?: string; // YYYY-MM-DD
+  airDate?: string;       // YYYY-MM-DD
+  segmentNumber?: number;
+  totalTime?: string;     // HH:MM:SS
+  locationId: string;
+  synopsis?: string;
+  observations?: string;
+  createdAt: string;
+  createdByWorkerId?: string;
+}
+

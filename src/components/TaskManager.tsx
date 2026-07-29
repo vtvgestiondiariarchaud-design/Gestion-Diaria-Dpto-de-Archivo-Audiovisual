@@ -112,6 +112,82 @@ const formatSecondsToHHMMSS = (totalSeconds: number): string => {
   return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 };
 
+// Helper para determinar el estilo y etiqueta de resaltado según el rol/cargo del colaborador:
+// - Jefe/Coordinadores: Resaltado Amarillo (amber)
+// - La Adjunta: Resaltado Morado (purple)
+// - El Gerente / Director / Superadmin: Resaltado Blanco (white)
+export const getWorkerHighlightInfo = (w: Worker) => {
+  const cargoLower = (w.cargo || '').toLowerCase();
+  const nameLower = (w.name || '').toLowerCase();
+
+  // 1. Gerente / Director / Superadmin -> Blanco
+  if (
+    w.role === 'superadmin' ||
+    cargoLower.includes('gerente') ||
+    cargoLower.includes('director') ||
+    cargoLower.includes('directora') ||
+    cargoLower.includes('gerencia')
+  ) {
+    return {
+      type: 'gerente' as const,
+      label: 'Gerencia',
+      listClass: 'bg-white/10 text-white border-white/40 hover:bg-white/20 font-bold shadow-[0_0_8px_rgba(255,255,255,0.2)]',
+      assignedClass: 'bg-white text-slate-950 border-white font-black shadow-[0_0_12px_rgba(255,255,255,0.5)]',
+      chipClass: 'bg-white/15 text-white border border-white/50 shadow-[0_0_8px_rgba(255,255,255,0.25)]',
+      badgeClass: 'bg-white/25 text-white border border-white/60 text-[9px] px-1.5 py-0.5 rounded-full font-black uppercase tracking-wider',
+      dotClass: 'bg-white shadow-[0_0_6px_rgba(255,255,255,0.9)]'
+    };
+  }
+
+  // 2. La Adjunta / Subdirectora -> Morado
+  if (
+    cargoLower.includes('adjunt') ||
+    cargoLower.includes('subdirector') ||
+    cargoLower.includes('subdirectora') ||
+    nameLower.includes('adjunt')
+  ) {
+    return {
+      type: 'adjunta' as const,
+      label: 'Adjunta',
+      listClass: 'bg-purple-500/20 text-purple-200 border-purple-500/40 hover:bg-purple-500/30 font-bold shadow-[0_0_8px_rgba(168,85,247,0.2)]',
+      assignedClass: 'bg-purple-500 text-white border-purple-400 font-black shadow-[0_0_12px_rgba(168,85,247,0.5)]',
+      chipClass: 'bg-purple-500/20 text-purple-200 border border-purple-500/40 shadow-[0_0_8px_rgba(168,85,247,0.25)]',
+      badgeClass: 'bg-purple-500/30 text-purple-200 border border-purple-500/50 text-[9px] px-1.5 py-0.5 rounded-full font-black uppercase tracking-wider',
+      dotClass: 'bg-purple-400 shadow-[0_0_6px_rgba(168,85,247,0.9)]'
+    };
+  }
+
+  // 3. Jefe / Coordinadores -> Amarillo
+  if (
+    w.role === 'coordinator' ||
+    w.role === 'deputy' ||
+    cargoLower.includes('jef') ||
+    cargoLower.includes('coordinador') ||
+    cargoLower.includes('coordinadora')
+  ) {
+    return {
+      type: 'jefe_coordinador' as const,
+      label: w.role === 'coordinator' ? 'Coordinación' : 'Jefatura',
+      listClass: 'bg-amber-500/20 text-amber-200 border-amber-500/40 hover:bg-amber-500/30 font-bold shadow-[0_0_8px_rgba(245,158,11,0.2)]',
+      assignedClass: 'bg-amber-500 text-slate-950 border-amber-400 font-black shadow-[0_0_12px_rgba(245,158,11,0.5)]',
+      chipClass: 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-[0_0_8px_rgba(245,158,11,0.25)]',
+      badgeClass: 'bg-amber-500/30 text-amber-300 border border-amber-500/50 text-[9px] px-1.5 py-0.5 rounded-full font-black uppercase tracking-wider',
+      dotClass: 'bg-amber-400 shadow-[0_0_6px_rgba(245,158,11,0.9)]'
+    };
+  }
+
+  // 4. Regular
+  return {
+    type: 'regular' as const,
+    label: '',
+    listClass: 'bg-slate-900 text-slate-400 border-white/5 hover:border-white/20',
+    assignedClass: 'bg-cyan-500/20 text-cyan-200 border-cyan-500/40 font-bold',
+    chipClass: 'bg-cyan-500/10 text-cyan-300 border border-cyan-500/30',
+    badgeClass: '',
+    dotClass: 'bg-slate-600'
+  };
+};
+
 // Componente interactivo de ruleta / temporizador para horas, minutos y segundos con candado de seguridad
 interface DurationPickerWheelProps {
   label: string;
@@ -902,6 +978,19 @@ export default function TaskManager({
   const [taskChecklist, setTaskChecklist] = useState<{ id: string; text: string; completed: boolean }[]>([]);
   const [newChecklistItemText, setNewChecklistItemText] = useState('');
   const [workerSearchTerm, setWorkerSearchTerm] = useState('');
+
+  const filteredWorkersForAssignment = useMemo(() => {
+    if (!workerSearchTerm.trim()) return workers;
+    const q = workerSearchTerm.toLowerCase().trim();
+    return workers.filter(w => {
+      const divName = (divisions.find(d => d.id === w.divisionId)?.name || '').toLowerCase();
+      return (
+        w.name.toLowerCase().includes(q) ||
+        (w.cargo || '').toLowerCase().includes(q) ||
+        divName.includes(q)
+      );
+    });
+  }, [workers, workerSearchTerm, divisions]);
 
   // Form Stage Booleans
   const [taskIsIngested, setTaskIsIngested] = useState(false);
@@ -1924,6 +2013,7 @@ export default function TaskManager({
     setTaskChecklist([]);
     setNewChecklistItemText('');
     setLinkSearchQuery('');
+    setWorkerSearchTerm('');
     setShowTaskModal(true);
   };
 
@@ -3066,8 +3156,9 @@ export default function TaskManager({
                         {card.assignedWorkerIds.map(wId => {
                           const w = workers.find(work => work.id === wId);
                           if (!w) return null;
+                          const hl = getWorkerHighlightInfo(w);
                           return (
-                            <span key={wId} className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-cyan-300 border border-cyan-500/20">
+                            <span key={wId} className={`px-1.5 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 ${hl.chipClass}`}>
                               {w.name}
                             </span>
                           );
@@ -3326,12 +3417,13 @@ export default function TaskManager({
                             card.assignedWorkerIds.map(wId => {
                               const w = workers.find(work => work.id === wId);
                               if (!w) return null;
+                              const hl = getWorkerHighlightInfo(w);
                               return (
                                 <span
                                   key={wId}
-                                  className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30 flex items-center gap-1"
+                                  className={`px-2 py-0.5 rounded-md text-[10px] font-bold flex items-center gap-1 ${hl.chipClass}`}
                                 >
-                                  <UserCheck className="w-2.5 h-2.5 text-amber-400" />
+                                  <UserCheck className="w-2.5 h-2.5 opacity-80" />
                                   {w.name}
                                 </span>
                               );
@@ -4797,7 +4889,7 @@ export default function TaskManager({
                 </div>
 
                 {/* Personal Asignado */}
-                <div className="space-y-2 p-3.5 rounded-xl bg-slate-950 border border-white/10">
+                <div className="space-y-2.5 p-3.5 rounded-xl bg-slate-950 border border-white/10">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-bold text-slate-300 uppercase flex items-center gap-1.5">
                       <UserCheck className="w-3.5 h-3.5 text-cyan-400" />
@@ -4820,13 +4912,38 @@ export default function TaskManager({
                     )}
                   </div>
 
-                  <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
-                    {workers.length === 0 ? (
-                      <p className="text-xs text-slate-500 italic">No hay colaboradores registrados en el sistema.</p>
+                  {/* Buscador de Colaboradores en Tareas */}
+                  <div className="relative w-full">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+                    <input
+                      type="text"
+                      placeholder="Buscar colaborador por nombre, cargo o división..."
+                      value={workerSearchTerm}
+                      onChange={(e) => setWorkerSearchTerm(e.target.value)}
+                      className="w-full bg-slate-900 border border-white/10 rounded-xl pl-8 pr-8 py-1.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-500"
+                    />
+                    {workerSearchTerm && (
+                      <button
+                        type="button"
+                        onClick={() => setWorkerSearchTerm('')}
+                        className="absolute right-2.5 top-2 text-slate-400 hover:text-white text-xs font-bold"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="max-h-44 overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
+                    {filteredWorkersForAssignment.length === 0 ? (
+                      <p className="text-xs text-slate-500 italic py-2 text-center">
+                        {workerSearchTerm ? 'No se encontraron colaboradores con esa búsqueda.' : 'No hay colaboradores registrados en el sistema.'}
+                      </p>
                     ) : (
-                      workers.map(w => {
+                      filteredWorkersForAssignment.map(w => {
                         const isAssigned = taskAssignedWorkerIds.includes(w.id);
                         const divName = divisions.find(d => d.id === w.divisionId)?.name || 'Sin división';
+                        const hl = getWorkerHighlightInfo(w);
+
                         return (
                           <button
                             key={w.id}
@@ -4850,16 +4967,23 @@ export default function TaskManager({
                             }}
                             className={`w-full text-left p-2 rounded-lg text-xs font-medium transition-all flex items-center justify-between cursor-pointer border ${
                               isAssigned
-                                ? 'bg-cyan-500/20 text-cyan-200 border-cyan-500/40 font-bold'
-                                : 'bg-slate-900 text-slate-400 border-white/5 hover:border-white/20'
+                                ? (hl.type !== 'regular' ? hl.assignedClass : 'bg-cyan-500/20 text-cyan-200 border-cyan-500/40 font-bold')
+                                : hl.listClass
                             }`}
                           >
-                            <div className="flex items-center gap-2">
-                              <span className={`w-2 h-2 rounded-full ${isAssigned ? 'bg-cyan-400' : 'bg-slate-600'}`} />
-                              <span>{w.name}</span>
-                              <span className="text-[10px] text-slate-500">({w.cargo} - {divName})</span>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className={`w-2 h-2 rounded-full ${isAssigned ? (hl.type === 'gerente' ? 'bg-slate-950' : 'bg-slate-900') : hl.dotClass}`} />
+                              <span className="font-bold">{w.name}</span>
+                              <span className={`text-[10px] ${isAssigned && (hl.type === 'gerente' || hl.type === 'jefe_coordinador') ? 'text-slate-950 font-semibold' : 'text-slate-400'}`}>
+                                ({w.cargo} - {divName})
+                              </span>
+                              {hl.label && (
+                                <span className={hl.badgeClass}>
+                                  {hl.label}
+                                </span>
+                              )}
                             </div>
-                            {isAssigned && <Check className="w-3.5 h-3.5 text-cyan-400" />}
+                            {isAssigned && <Check className={`w-3.5 h-3.5 ${hl.type === 'gerente' || hl.type === 'jefe_coordinador' ? 'text-slate-950 font-black' : 'text-cyan-400'}`} />}
                           </button>
                         );
                       })

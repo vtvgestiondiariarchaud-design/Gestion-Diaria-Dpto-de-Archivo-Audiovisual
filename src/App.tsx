@@ -4,7 +4,7 @@ import {
   Tv, Layers, Utensils, FileText, Calendar, 
   Database, Shield, AlertTriangle, Sparkles, 
   Bell, CheckCircle2, Info, ChevronDown, UserCircle, LogOut, Loader2, KeyRound, UserPlus, Edit2, Check, X, ChevronLeft, ChevronRight, Plus,
-  Umbrella, Kanban, CheckSquare, Zap
+  Umbrella, Kanban, CheckSquare, Zap, FolderArchive
 } from 'lucide-react';
 
 import { Division, Worker, ShiftAssignment, ShiftChangeRequest, UserRole, TaskBoard, TaskCard, TaskNotification, FreeDayRequest } from './types';
@@ -18,6 +18,7 @@ import DatabaseSchema from './components/DatabaseSchema';
 import AdminPanel from './components/AdminPanel';
 import ShiftChanges from './components/ShiftChanges';
 import VacationControl from './components/VacationControl';
+import PhysicalArchive from './components/PhysicalArchive';
 
 interface NotificationToast {
   id: string;
@@ -236,7 +237,7 @@ export default function App() {
   });
 
   // Active Navigation Tab ('tareas' as primary default)
-  const [activeTab, setActiveTab] = useState<'tareas' | 'tablero' | 'comedor' | 'reportes' | 'solicitudes' | 'admin' | 'vacaciones'>('tareas');
+  const [activeTab, setActiveTab] = useState<'tareas' | 'tablero' | 'comedor' | 'reportes' | 'solicitudes' | 'admin' | 'vacaciones' | 'archivo_fisico'>('tareas');
   const [showBlueprintModal, setShowBlueprintModal] = useState(false);
 
   // Currently Selected Division in Trello Board view
@@ -1835,6 +1836,18 @@ export default function App() {
               </button>
 
               <button
+                onClick={() => setActiveTab('archivo_fisico')}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                  activeTab === 'archivo_fisico' 
+                    ? 'bg-gradient-to-r from-amber-500/20 to-amber-600/20 text-amber-200 border border-amber-500/40 font-extrabold shadow-[0_0_12px_rgba(245,158,11,0.2)]' 
+                    : 'text-slate-400 hover:text-amber-200 hover:bg-white/5'
+                }`}
+              >
+                <FolderArchive size={14} className={activeTab === 'archivo_fisico' ? 'text-amber-400' : 'text-slate-400'} />
+                <span>Archivo Físico</span>
+              </button>
+
+              <button
                 onClick={() => setActiveTab('vacaciones')}
                 className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer relative ${
                   activeTab === 'vacaciones' 
@@ -1972,6 +1985,15 @@ export default function App() {
                         setSelectedDateStr={setSelectedDateStr}
                         operationalDates={operationalDates}
                         onAddOperationalDate={handleAddOperationalDate}
+                      />
+                    )}
+
+                    {activeTab === 'archivo_fisico' && (
+                      <PhysicalArchive
+                        userRole={currentSession.role}
+                        userDivisionId={currentSession.divisionId}
+                        currentUserId={currentSession.userId}
+                        onAddNotification={(msg, type) => addNotification('Archivo Físico', msg, type || 'info')}
                       />
                     )}
 
