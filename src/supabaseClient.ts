@@ -91,7 +91,8 @@ create table if not exists workers (
   fixed_shift text default 'pool',
   vacation_start text,
   vacation_end text,
-  manual_free_days_adjustment integer default 0
+  manual_free_days_adjustment integer default 0,
+  is_lite_mode boolean default false
 );
 
 alter table workers add column if not exists role text not null default 'worker';
@@ -104,6 +105,7 @@ alter table workers add column if not exists fixed_shift text default 'pool';
 alter table workers add column if not exists vacation_start text;
 alter table workers add column if not exists vacation_end text;
 alter table workers add column if not exists manual_free_days_adjustment integer default 0;
+alter table workers add column if not exists is_lite_mode boolean default false;
 
 -- 3. Crear tabla de asignaciones de turnos (shift_assignments)
 create table if not exists shift_assignments (
@@ -576,6 +578,7 @@ export const db = {
           vacationStart: w.vacation_start || undefined,
           vacationEnd: w.vacation_end || undefined,
           manualFreeDaysAdjustment: Number(w.manual_free_days_adjustment) || 0,
+          isLiteMode: w.is_lite_mode === true || w.is_lite_mode === 'true',
           mealsPreference: mealsPreferenceObj
         };
       });
@@ -628,7 +631,8 @@ export const db = {
       fixed_shift: worker.fixedShift || 'pool',
       vacation_start: worker.vacationStart || null,
       vacation_end: worker.vacationEnd || null,
-      manual_free_days_adjustment: worker.manualFreeDaysAdjustment || 0
+      manual_free_days_adjustment: worker.manualFreeDaysAdjustment || 0,
+      is_lite_mode: worker.isLiteMode ?? false
     };
 
     const executeInsert = async (currentPayload: any): Promise<void> => {
@@ -745,7 +749,8 @@ export const db = {
       fixed_shift: worker.fixedShift || 'pool',
       vacation_start: worker.vacationStart || null,
       vacation_end: worker.vacationEnd || null,
-      manual_free_days_adjustment: worker.manualFreeDaysAdjustment !== undefined ? worker.manualFreeDaysAdjustment : 0
+      manual_free_days_adjustment: worker.manualFreeDaysAdjustment !== undefined ? worker.manualFreeDaysAdjustment : 0,
+      is_lite_mode: worker.isLiteMode ?? false
     };
 
     const executeUpdate = async (currentPayload: any): Promise<void> => {

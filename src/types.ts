@@ -22,6 +22,7 @@ export interface Worker {
   vacationStart?: string; // YYYY-MM-DD
   vacationEnd?: string; // YYYY-MM-DD
   manualFreeDaysAdjustment?: number;
+  isLiteMode?: boolean;
   mealsPreference?: {
     desayuno: boolean;
     almuerzo: boolean;

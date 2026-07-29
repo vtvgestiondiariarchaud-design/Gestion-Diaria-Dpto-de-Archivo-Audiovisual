@@ -200,15 +200,15 @@ const DurationPickerWheel: React.FC<DurationPickerWheelProps> = ({
   };
 
   return (
-    <div className={`p-3.5 rounded-2xl border ${colorStyles.border} ${colorStyles.bg} space-y-3 transition-all relative`}>
+    <div className={`p-2.5 rounded-xl border ${colorStyles.border} ${colorStyles.bg} space-y-2 transition-all relative`}>
       {/* Header with Title & Safety Lock / Sync Controls */}
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div className="flex items-center gap-1.5">
-          <Clock className={`w-4 h-4 ${colorStyles.text}`} />
-          <span className={`text-xs font-extrabold uppercase ${colorStyles.text}`}>{label}</span>
+      <div className="flex items-center justify-between flex-wrap gap-1.5">
+        <div className="flex items-center gap-1">
+          <Clock className={`w-3.5 h-3.5 ${colorStyles.text}`} />
+          <span className={`text-[11px] font-extrabold uppercase tracking-tight ${colorStyles.text}`}>{label}</span>
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1">
           {syncFromValue !== undefined && (
             <button
               type="button"
@@ -217,11 +217,11 @@ const DurationPickerWheel: React.FC<DurationPickerWheelProps> = ({
                 if (!isLocked) onChange(syncFromValue || '00:00:00');
               }}
               title={syncLabel}
-              className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 cursor-pointer ${
+              className={`px-1.5 py-0.5 rounded-md text-[9px] font-bold border transition-all flex items-center gap-1 cursor-pointer ${
                 isLocked ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500 border-white/5' : colorStyles.btn
               }`}
             >
-              <RotateCcw className="w-3 h-3" />
+              <RotateCcw className="w-2.5 h-2.5" />
               <span>{syncLabel}</span>
             </button>
           )}
@@ -230,21 +230,21 @@ const DurationPickerWheel: React.FC<DurationPickerWheelProps> = ({
           <button
             type="button"
             onClick={() => setIsLocked(!isLocked)}
-            className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 cursor-pointer ${
+            className={`px-1.5 py-0.5 rounded-md text-[9px] font-bold border transition-all flex items-center gap-1 cursor-pointer ${
               isLocked
-                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-[0_0_10px_rgba(245,158,11,0.2)]'
+                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
                 : 'bg-slate-800/80 text-slate-400 border-white/10 hover:text-white'
             }`}
-            title={isLocked ? 'Desbloquear edición de tiempo' : 'Bloquear con candado de seguridad para evitar cambios accidentales'}
+            title={isLocked ? 'Desbloquear edición de tiempo' : 'Bloquear con candado de seguridad'}
           >
             {isLocked ? (
               <>
-                <Lock className="w-3 h-3 text-amber-400" />
+                <Lock className="w-2.5 h-2.5 text-amber-400" />
                 <span>Bloqueado</span>
               </>
             ) : (
               <>
-                <Unlock className="w-3 h-3 text-slate-400" />
+                <Unlock className="w-2.5 h-2.5 text-slate-400" />
                 <span>Candado</span>
               </>
             )}
@@ -253,18 +253,18 @@ const DurationPickerWheel: React.FC<DurationPickerWheelProps> = ({
       </div>
 
       {/* Timer Wheel / Spinner Wheels for HH : MM : SS */}
-      <div className={`p-3 rounded-xl ${colorStyles.wheelBg} border flex items-center justify-center gap-2 sm:gap-4`}>
+      <div className={`p-1.5 sm:p-2 rounded-lg ${colorStyles.wheelBg} border flex items-center justify-center gap-1.5 sm:gap-3`}>
         {/* HORAS COLUMN */}
         <div className="flex flex-col items-center">
-          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Horas</span>
+          <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">Horas</span>
           <button
             type="button"
             disabled={isLocked}
             onClick={() => adjustUnit('h', 1)}
-            className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            className="p-0.5 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
             title="Aumentar Hora (+1h)"
           >
-            <ChevronUp className="w-4 h-4" />
+            <ChevronUp className="w-3.5 h-3.5" />
           </button>
           <input
             type="number"
@@ -273,32 +273,32 @@ const DurationPickerWheel: React.FC<DurationPickerWheelProps> = ({
             disabled={isLocked}
             value={h.toString().padStart(2, '0')}
             onChange={(e) => updateParts(parseInt(e.target.value, 10) || 0, m, s)}
-            className={`w-14 sm:w-16 h-11 text-center bg-slate-950 border border-white/10 rounded-xl text-lg font-mono font-extrabold text-white focus:outline-none ${colorStyles.focus} ${isLocked ? 'opacity-60 cursor-not-allowed bg-slate-900' : ''}`}
+            className={`w-11 sm:w-12 h-7 sm:h-8 text-center bg-slate-950 border border-white/10 rounded-lg text-sm font-mono font-extrabold text-white focus:outline-none ${colorStyles.focus} ${isLocked ? 'opacity-60 cursor-not-allowed bg-slate-900' : ''}`}
           />
           <button
             type="button"
             disabled={isLocked}
             onClick={() => adjustUnit('h', -1)}
-            className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            className="p-0.5 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
             title="Disminuir Hora (-1h)"
           >
-            <ChevronDown className="w-4 h-4" />
+            <ChevronDown className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        <span className="text-xl font-mono font-bold text-slate-500 self-center pt-3">:</span>
+        <span className="text-base font-mono font-bold text-slate-500 self-center pt-2">:</span>
 
         {/* MINUTOS COLUMN */}
         <div className="flex flex-col items-center">
-          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Minutos</span>
+          <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">Minutos</span>
           <button
             type="button"
             disabled={isLocked}
             onClick={() => adjustUnit('m', 1)}
-            className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            className="p-0.5 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
             title="Aumentar Minuto (+1m)"
           >
-            <ChevronUp className="w-4 h-4" />
+            <ChevronUp className="w-3.5 h-3.5" />
           </button>
           <input
             type="number"
@@ -307,32 +307,32 @@ const DurationPickerWheel: React.FC<DurationPickerWheelProps> = ({
             disabled={isLocked}
             value={m.toString().padStart(2, '0')}
             onChange={(e) => updateParts(h, parseInt(e.target.value, 10) || 0, s)}
-            className={`w-14 sm:w-16 h-11 text-center bg-slate-950 border border-white/10 rounded-xl text-lg font-mono font-extrabold text-white focus:outline-none ${colorStyles.focus} ${isLocked ? 'opacity-60 cursor-not-allowed bg-slate-900' : ''}`}
+            className={`w-11 sm:w-12 h-7 sm:h-8 text-center bg-slate-950 border border-white/10 rounded-lg text-sm font-mono font-extrabold text-white focus:outline-none ${colorStyles.focus} ${isLocked ? 'opacity-60 cursor-not-allowed bg-slate-900' : ''}`}
           />
           <button
             type="button"
             disabled={isLocked}
             onClick={() => adjustUnit('m', -1)}
-            className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            className="p-0.5 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
             title="Disminuir Minuto (-1m)"
           >
-            <ChevronDown className="w-4 h-4" />
+            <ChevronDown className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        <span className="text-xl font-mono font-bold text-slate-500 self-center pt-3">:</span>
+        <span className="text-base font-mono font-bold text-slate-500 self-center pt-2">:</span>
 
         {/* SEGUNDOS COLUMN */}
         <div className="flex flex-col items-center">
-          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Segundos</span>
+          <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">Segundos</span>
           <button
             type="button"
             disabled={isLocked}
             onClick={() => adjustUnit('s', 1)}
-            className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            className="p-0.5 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
             title="Aumentar Segundo (+1s)"
           >
-            <ChevronUp className="w-4 h-4" />
+            <ChevronUp className="w-3.5 h-3.5" />
           </button>
           <input
             type="number"
@@ -341,29 +341,29 @@ const DurationPickerWheel: React.FC<DurationPickerWheelProps> = ({
             disabled={isLocked}
             value={s.toString().padStart(2, '0')}
             onChange={(e) => updateParts(h, m, parseInt(e.target.value, 10) || 0)}
-            className={`w-14 sm:w-16 h-11 text-center bg-slate-950 border border-white/10 rounded-xl text-lg font-mono font-extrabold text-white focus:outline-none ${colorStyles.focus} ${isLocked ? 'opacity-60 cursor-not-allowed bg-slate-900' : ''}`}
+            className={`w-11 sm:w-12 h-7 sm:h-8 text-center bg-slate-950 border border-white/10 rounded-lg text-sm font-mono font-extrabold text-white focus:outline-none ${colorStyles.focus} ${isLocked ? 'opacity-60 cursor-not-allowed bg-slate-900' : ''}`}
           />
           <button
             type="button"
             disabled={isLocked}
             onClick={() => adjustUnit('s', -1)}
-            className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            className="p-0.5 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
             title="Disminuir Segundo (-1s)"
           >
-            <ChevronDown className="w-4 h-4" />
+            <ChevronDown className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
 
       {/* Quick preset buttons */}
-      <div className="flex items-center justify-between flex-wrap gap-1.5 pt-1">
-        <span className="text-[10px] text-slate-400 font-medium">Ajustes Rápidos:</span>
+      <div className="flex items-center justify-between flex-wrap gap-1">
+        <span className="text-[9px] text-slate-400 font-medium">Atajos:</span>
         <div className="flex items-center gap-1 flex-wrap">
           <button
             type="button"
             disabled={isLocked}
             onClick={() => adjustUnit('m', 15)}
-            className="px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-[10px] font-mono text-slate-300 transition-colors cursor-pointer border border-white/5"
+            className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-[9px] font-mono text-slate-300 transition-colors cursor-pointer border border-white/5"
           >
             +15m
           </button>
@@ -371,7 +371,7 @@ const DurationPickerWheel: React.FC<DurationPickerWheelProps> = ({
             type="button"
             disabled={isLocked}
             onClick={() => adjustUnit('m', 30)}
-            className="px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-[10px] font-mono text-slate-300 transition-colors cursor-pointer border border-white/5"
+            className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-[9px] font-mono text-slate-300 transition-colors cursor-pointer border border-white/5"
           >
             +30m
           </button>
@@ -379,7 +379,7 @@ const DurationPickerWheel: React.FC<DurationPickerWheelProps> = ({
             type="button"
             disabled={isLocked}
             onClick={() => adjustUnit('h', 1)}
-            className="px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-[10px] font-mono text-slate-300 transition-colors cursor-pointer border border-white/5"
+            className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-[9px] font-mono text-slate-300 transition-colors cursor-pointer border border-white/5"
           >
             +1h
           </button>
@@ -387,7 +387,7 @@ const DurationPickerWheel: React.FC<DurationPickerWheelProps> = ({
             type="button"
             disabled={isLocked}
             onClick={() => onChange('00:00:00')}
-            className="px-2 py-0.5 rounded-md bg-rose-500/10 hover:bg-rose-500/20 disabled:opacity-30 disabled:cursor-not-allowed text-[10px] font-mono text-rose-300 transition-colors cursor-pointer border border-rose-500/20"
+            className="px-1.5 py-0.5 rounded bg-rose-500/10 hover:bg-rose-500/20 disabled:opacity-30 disabled:cursor-not-allowed text-[9px] font-mono text-rose-300 transition-colors cursor-pointer border border-rose-500/20"
           >
             00:00:00
           </button>

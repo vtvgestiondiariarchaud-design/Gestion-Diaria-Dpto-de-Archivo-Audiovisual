@@ -143,3 +143,52 @@ body {
   animation: pulse-purple 2s infinite ease-in-out;
 }
 
+/* ==========================================================
+   MODO LITE - OPTIMIZACIÓN DE RENDIMIENTO PARA DISPOSITIVOS
+   ========================================================== */
+body.mode-lite, .mode-lite {
+  background: #0b0f17 !important;
+}
+
+body.mode-lite .liquid-bg,
+.mode-lite .liquid-bg {
+  display: none !important;
+}
+
+body.mode-lite .glass, 
+body.mode-lite .glass-panel,
+body.mode-lite .glass-card, 
+body.mode-lite .frosted-card,
+.mode-lite .glass, 
+.mode-lite .glass-panel,
+.mode-lite .glass-card, 
+.mode-lite .frosted-card {
+  background: #111827 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+body.mode-lite *, .mode-lite * {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+}
+
+body.mode-lite .glow-cyan,
+body.mode-lite .glow-pink,
+body.mode-lite .glow-purple,
+body.mode-lite .glow-violet,
+body.mode-lite .glow-emerald,
+.mode-lite .glow-cyan,
+.mode-lite .glow-pink,
+.mode-lite .glow-purple,
+.mode-lite .glow-violet,
+.mode-lite .glow-emerald {
+  box-shadow: none !important;
+}
+

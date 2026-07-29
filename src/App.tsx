@@ -4,7 +4,7 @@ import {
   Tv, Layers, Utensils, FileText, Calendar, 
   Database, Shield, AlertTriangle, Sparkles, 
   Bell, CheckCircle2, Info, ChevronDown, UserCircle, LogOut, Loader2, KeyRound, UserPlus, Edit2, Check, X, ChevronLeft, ChevronRight, Plus,
-  Umbrella, Kanban, CheckSquare
+  Umbrella, Kanban, CheckSquare, Zap
 } from 'lucide-react';
 
 import { Division, Worker, ShiftAssignment, ShiftChangeRequest, UserRole, TaskBoard, TaskCard, TaskNotification, FreeDayRequest } from './types';
@@ -259,6 +259,23 @@ export default function App() {
   const [newUsername, setNewUsername] = useState('');
   const [newCedula, setNewCedula] = useState('');
 
+  // Modo Lite (Rendimiento Ligero para dispositivos/teléfonos)
+  const [isLiteMode, setIsLiteMode] = useState<boolean>(() => {
+    const saved = localStorage.getItem('vtv_is_lite_mode');
+    return saved === 'true';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('vtv_is_lite_mode', String(isLiteMode));
+    if (isLiteMode) {
+      document.body.classList.add('mode-lite');
+      document.documentElement.classList.add('mode-lite');
+    } else {
+      document.body.classList.remove('mode-lite');
+      document.documentElement.classList.remove('mode-lite');
+    }
+  }, [isLiteMode]);
+
   // Forced password change state
   const [forceNewPassword, setForceNewPassword] = useState('');
   const [forceConfirmPassword, setForceConfirmPassword] = useState('');
@@ -361,6 +378,12 @@ export default function App() {
 
       const fetchedDivisions = await db.fetchDivisions();
       const fetchedWorkers = await db.fetchWorkers();
+      if (currentSession) {
+        const activeW = fetchedWorkers.find(w => w.id === currentSession.userId);
+        if (activeW && activeW.isLiteMode !== undefined) {
+          setIsLiteMode(activeW.isLiteMode);
+        }
+      }
       const fetchedAssignments = await db.fetchAssignments();
       const fetchedRequests = await db.fetchRequests();
       const fetchedFreeDayRequests = await db.fetchFreeDayRequests();
@@ -1480,8 +1503,44 @@ export default function App() {
                 </div>
               </div>
 
-              {/* User Session Profile & Logout */}
-              <div className="flex items-center gap-3.5 bg-slate-900/60 p-2 rounded-2xl border border-white/5">
+              {/* Lite Mode Toggle & User Session Profile & Logout */}
+              <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap justify-end">
+                {/* Botón de Modo Lite */}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const nextMode = !isLiteMode;
+                    setIsLiteMode(nextMode);
+                    if (currentSession) {
+                      const w = workers.find(item => item.id === currentSession.userId);
+                      if (w) {
+                        const updatedWorker = { ...w, isLiteMode: nextMode };
+                        setWorkers(workers.map(item => item.id === w.id ? updatedWorker : item));
+                        try {
+                          await db.updateWorker(updatedWorker);
+                        } catch (e) {
+                          console.warn('Error saving isLiteMode preference:', e);
+                        }
+                      }
+                    }
+                    addNotification(
+                      nextMode ? '⚡ Modo Lite Activado' : '✨ Modo Pro Activado',
+                      nextMode ? 'Se desactivaron animaciones y efectos pesados para máximo rendimiento.' : 'Se restablecieron efectos visuales completos.',
+                      'success'
+                    );
+                  }}
+                  className={`px-2.5 py-1.5 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 cursor-pointer shrink-0 ${
+                    isLiteMode
+                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30'
+                      : 'bg-slate-900/60 hover:bg-slate-800 text-slate-300 border-white/10 hover:text-white'
+                  }`}
+                  title={isLiteMode ? 'Desactivar Modo Lite (Cargar interfaz Pro con efectos)' : 'Activar Modo Lite (Optimizado para teléfonos y PCs de bajo rendimiento)'}
+                >
+                  <Zap size={13} className={isLiteMode ? 'text-amber-400 fill-amber-400' : 'text-slate-400'} />
+                  <span className="font-mono text-[11px]">{isLiteMode ? 'Modo Lite ⚡' : 'Modo Pro ✨'}</span>
+                </button>
+
+                <div className="flex items-center gap-3.5 bg-slate-900/60 p-2 rounded-2xl border border-white/5">
                 <div className="flex items-center gap-2 px-1">
                   <UserCircle size={16} className="text-cyan-400 shrink-0" />
                   {isEditingUsername ? (
@@ -1562,6 +1621,7 @@ export default function App() {
                   <LogOut size={14} />
                 </button>
               </div>
+            </div>
 
             </div>
           </header>
