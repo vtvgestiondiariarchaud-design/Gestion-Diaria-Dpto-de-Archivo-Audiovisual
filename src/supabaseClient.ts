@@ -281,7 +281,41 @@ alter table free_day_requests add column if not exists reviewed_by_worker_id tex
 alter table free_day_requests add column if not exists reviewed_by_name text;
 alter table free_day_requests add column if not exists reviewed_at text;
 
--- 9. DESACTIVAR DE MANERA ABSOLUTA EL ROW-LEVEL SECURITY (RLS)
+-- 9. Crear tablas para el Archivo Físico Audiovisual (Formats, Locations, Programs & Materials)
+create table if not exists physical_formats (
+  id text primary key,
+  name text not null
+);
+
+create table if not exists physical_locations (
+  id text primary key,
+  name text not null
+);
+
+create table if not exists physical_programs (
+  id text primary key,
+  name text not null,
+  release_date text
+);
+
+create table if not exists physical_materials (
+  id text primary key,
+  code bigint not null unique,
+  format_id text not null,
+  program_id text,
+  title text not null,
+  recording_date text,
+  air_date text,
+  segment_number integer default 1,
+  total_time text default '00:00:00',
+  location_id text not null,
+  synopsis text,
+  observations text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  created_by_worker_id text
+);
+
+-- 10. DESACTIVAR DE MANERA ABSOLUTA EL ROW-LEVEL SECURITY (RLS)
 alter table divisions disable row level security;
 alter table workers disable row level security;
 alter table shift_assignments disable row level security;
@@ -291,8 +325,12 @@ alter table task_cards disable row level security;
 alter table task_history disable row level security;
 alter table task_notifications disable row level security;
 alter table free_day_requests disable row level security;
+alter table physical_formats disable row level security;
+alter table physical_locations disable row level security;
+alter table physical_programs disable row level security;
+alter table physical_materials disable row level security;
 
--- 10. CONCEDER PERMISOS TOTALES DE LECTURA Y ESCRITURA AL ROL PÚBLICO (ANON) Y AUTENTICADO
+-- 11. CONCEDER PERMISOS TOTALES DE LECTURA Y ESCRITURA AL ROL PÚBLICO (ANON) Y AUTENTICADO
 grant all privileges on table divisions to anon, authenticated, postgres;
 grant all privileges on table workers to anon, authenticated, postgres;
 grant all privileges on table shift_assignments to anon, authenticated, postgres;
@@ -302,6 +340,10 @@ grant all privileges on table task_cards to anon, authenticated, postgres;
 grant all privileges on table task_history to anon, authenticated, postgres;
 grant all privileges on table task_notifications to anon, authenticated, postgres;
 grant all privileges on table free_day_requests to anon, authenticated, postgres;
+grant all privileges on table physical_formats to anon, authenticated, postgres;
+grant all privileges on table physical_locations to anon, authenticated, postgres;
+grant all privileges on table physical_programs to anon, authenticated, postgres;
+grant all privileges on table physical_materials to anon, authenticated, postgres;
 `;
 };
 
@@ -311,6 +353,10 @@ const LOCAL_WORKERS_KEY = 'vtv_real_workers';
 const LOCAL_ASSIGNMENTS_KEY = 'vtv_real_assignments';
 const LOCAL_REQUESTS_KEY = 'vtv_real_requests';
 const LOCAL_FREE_DAY_REQUESTS_KEY = 'vtv_real_free_day_requests';
+const LOCAL_PHYSICAL_FORMATS_KEY = 'vtv_physical_formats';
+const LOCAL_PHYSICAL_LOCATIONS_KEY = 'vtv_physical_locations';
+const LOCAL_PHYSICAL_PROGRAMS_KEY = 'vtv_physical_programs';
+const LOCAL_PHYSICAL_MATERIALS_KEY = 'vtv_physical_materials';
 
 // Initial local sync loaders
 export const getLocalDb = {
@@ -350,6 +396,42 @@ export const getLocalDb = {
   },
   saveFreeDayRequests: (reqs: FreeDayRequest[]) => {
     localStorage.setItem(LOCAL_FREE_DAY_REQUESTS_KEY, JSON.stringify(reqs));
+  },
+  getPhysicalFormats: (defaultFormats: PhysicalFormat[]): PhysicalFormat[] => {
+    const data = localStorage.getItem(LOCAL_PHYSICAL_FORMATS_KEY);
+    if (data) return JSON.parse(data);
+    localStorage.setItem(LOCAL_PHYSICAL_FORMATS_KEY, JSON.stringify(defaultFormats));
+    return defaultFormats;
+  },
+  savePhysicalFormats: (formats: PhysicalFormat[]) => {
+    localStorage.setItem(LOCAL_PHYSICAL_FORMATS_KEY, JSON.stringify(formats));
+  },
+  getPhysicalLocations: (defaultLocations: PhysicalLocation[]): PhysicalLocation[] => {
+    const data = localStorage.getItem(LOCAL_PHYSICAL_LOCATIONS_KEY);
+    if (data) return JSON.parse(data);
+    localStorage.setItem(LOCAL_PHYSICAL_LOCATIONS_KEY, JSON.stringify(defaultLocations));
+    return defaultLocations;
+  },
+  savePhysicalLocations: (locations: PhysicalLocation[]) => {
+    localStorage.setItem(LOCAL_PHYSICAL_LOCATIONS_KEY, JSON.stringify(locations));
+  },
+  getPhysicalPrograms: (defaultPrograms: PhysicalProgram[]): PhysicalProgram[] => {
+    const data = localStorage.getItem(LOCAL_PHYSICAL_PROGRAMS_KEY);
+    if (data) return JSON.parse(data);
+    localStorage.setItem(LOCAL_PHYSICAL_PROGRAMS_KEY, JSON.stringify(defaultPrograms));
+    return defaultPrograms;
+  },
+  savePhysicalPrograms: (programs: PhysicalProgram[]) => {
+    localStorage.setItem(LOCAL_PHYSICAL_PROGRAMS_KEY, JSON.stringify(programs));
+  },
+  getPhysicalMaterials: (defaultMaterials: PhysicalAudiovisualMaterial[]): PhysicalAudiovisualMaterial[] => {
+    const data = localStorage.getItem(LOCAL_PHYSICAL_MATERIALS_KEY);
+    if (data) return JSON.parse(data);
+    localStorage.setItem(LOCAL_PHYSICAL_MATERIALS_KEY, JSON.stringify(defaultMaterials));
+    return defaultMaterials;
+  },
+  savePhysicalMaterials: (materials: PhysicalAudiovisualMaterial[]) => {
+    localStorage.setItem(LOCAL_PHYSICAL_MATERIALS_KEY, JSON.stringify(materials));
   }
 };
 
@@ -1641,173 +1723,297 @@ export const db = {
     }
   },
 
-  // Physical Archive Database Methods (Strictly Cloud Database Persisted)
+  // Physical Archive Database Methods
   async fetchPhysicalFormats(defaultFormats: PhysicalFormat[]): Promise<PhysicalFormat[]> {
-    if (supabase) {
-      try {
-        const { data, error } = await supabase.from('physical_formats').select('*').order('name', { ascending: true });
-        if (!error && data && data.length > 0) {
-          return data.map(f => ({ id: f.id, name: f.name }));
-        } else if (!error && data && data.length === 0) {
-          const seedPayload = defaultFormats.map(f => ({ id: f.id, name: f.name }));
-          await supabase.from('physical_formats').insert(seedPayload);
-          return defaultFormats;
-        }
-      } catch (err) {
-        console.warn('Error fetching physical_formats from Supabase:', err);
-      }
+    if (!supabase) {
+      return getLocalDb.getPhysicalFormats(defaultFormats);
     }
-    return defaultFormats;
+    try {
+      const { data, error } = await supabase.from('physical_formats').select('*').order('name', { ascending: true });
+      if (error) {
+        console.warn('Supabase physical_formats check warning:', error.message);
+        setSupabaseConnectionStatus('error', `Atención en 'physical_formats': ${error.message}. Ejecuta el Script SQL en Supabase para habilitar las tablas.`);
+        return getLocalDb.getPhysicalFormats(defaultFormats);
+      }
+      if (data && data.length > 0) {
+        const mapped = data.map(f => ({ id: f.id, name: f.name }));
+        getLocalDb.savePhysicalFormats(mapped);
+        setSupabaseConnectionStatus('connected');
+        return mapped;
+      } else {
+        const seedPayload = defaultFormats.map(f => ({ id: f.id, name: f.name }));
+        const { error: seedErr } = await supabase.from('physical_formats').insert(seedPayload);
+        if (seedErr) {
+          console.warn('Error seeding physical_formats to Supabase:', seedErr.message);
+        } else {
+          setSupabaseConnectionStatus('connected');
+        }
+        getLocalDb.savePhysicalFormats(defaultFormats);
+        return defaultFormats;
+      }
+    } catch (err: any) {
+      console.warn('Exception fetching physical_formats:', err);
+      setSupabaseConnectionStatus('error', err?.message || 'Error al conectar con Supabase');
+      return getLocalDb.getPhysicalFormats(defaultFormats);
+    }
   },
 
   async savePhysicalFormat(format: PhysicalFormat): Promise<void> {
+    const current = getLocalDb.getPhysicalFormats([]);
+    const idx = current.findIndex(f => f.id === format.id);
+    if (idx >= 0) current[idx] = format;
+    else current.push(format);
+    getLocalDb.savePhysicalFormats(current);
+
     if (supabase) {
       try {
-        await supabase.from('physical_formats').upsert([{ id: format.id, name: format.name }]);
-      } catch (err) {
-        console.warn('Error saving physical_format to Supabase:', err);
+        const { error } = await supabase.from('physical_formats').upsert([{ id: format.id, name: format.name }]);
+        if (error) {
+          console.warn('Error saving physical_format to Supabase:', error.message);
+          setSupabaseConnectionStatus('error', `Error al guardar formato en Supabase: ${error.message}`);
+        } else {
+          setSupabaseConnectionStatus('connected');
+        }
+      } catch (err: any) {
+        console.warn('Exception saving physical_format to Supabase:', err);
       }
     }
   },
 
   async deletePhysicalFormat(id: string): Promise<void> {
+    const current = getLocalDb.getPhysicalFormats([]);
+    getLocalDb.savePhysicalFormats(current.filter(f => f.id !== id));
+
     if (supabase) {
       try {
-        await supabase.from('physical_formats').delete().eq('id', id);
-      } catch (err) {
-        console.warn('Error deleting physical_format from Supabase:', err);
+        const { error } = await supabase.from('physical_formats').delete().eq('id', id);
+        if (error) {
+          console.warn('Error deleting physical_format in Supabase:', error.message);
+        }
+      } catch (err: any) {
+        console.warn('Exception deleting physical_format in Supabase:', err);
       }
     }
   },
 
   async fetchPhysicalLocations(defaultLocations: PhysicalLocation[]): Promise<PhysicalLocation[]> {
-    if (supabase) {
-      try {
-        const { data, error } = await supabase.from('physical_locations').select('*').order('name', { ascending: true });
-        if (!error && data && data.length > 0) {
-          return data.map(l => ({ id: l.id, name: l.name }));
-        } else if (!error && data && data.length === 0) {
-          const seedPayload = defaultLocations.map(l => ({ id: l.id, name: l.name }));
-          await supabase.from('physical_locations').insert(seedPayload);
-          return defaultLocations;
-        }
-      } catch (err) {
-        console.warn('Error fetching physical_locations from Supabase:', err);
-      }
+    if (!supabase) {
+      return getLocalDb.getPhysicalLocations(defaultLocations);
     }
-    return defaultLocations;
+    try {
+      const { data, error } = await supabase.from('physical_locations').select('*').order('name', { ascending: true });
+      if (error) {
+        console.warn('Supabase physical_locations check warning:', error.message);
+        setSupabaseConnectionStatus('error', `Atención en 'physical_locations': ${error.message}. Ejecuta el Script SQL en Supabase para habilitar las tablas.`);
+        return getLocalDb.getPhysicalLocations(defaultLocations);
+      }
+      if (data && data.length > 0) {
+        const mapped = data.map(l => ({ id: l.id, name: l.name }));
+        getLocalDb.savePhysicalLocations(mapped);
+        setSupabaseConnectionStatus('connected');
+        return mapped;
+      } else {
+        const seedPayload = defaultLocations.map(l => ({ id: l.id, name: l.name }));
+        const { error: seedErr } = await supabase.from('physical_locations').insert(seedPayload);
+        if (seedErr) {
+          console.warn('Error seeding physical_locations to Supabase:', seedErr.message);
+        } else {
+          setSupabaseConnectionStatus('connected');
+        }
+        getLocalDb.savePhysicalLocations(defaultLocations);
+        return defaultLocations;
+      }
+    } catch (err: any) {
+      console.warn('Exception fetching physical_locations:', err);
+      setSupabaseConnectionStatus('error', err?.message || 'Error al conectar con Supabase');
+      return getLocalDb.getPhysicalLocations(defaultLocations);
+    }
   },
 
   async savePhysicalLocation(location: PhysicalLocation): Promise<void> {
+    const current = getLocalDb.getPhysicalLocations([]);
+    const idx = current.findIndex(l => l.id === location.id);
+    if (idx >= 0) current[idx] = location;
+    else current.push(location);
+    getLocalDb.savePhysicalLocations(current);
+
     if (supabase) {
       try {
-        await supabase.from('physical_locations').upsert([{ id: location.id, name: location.name }]);
-      } catch (err) {
-        console.warn('Error saving physical_location to Supabase:', err);
+        const { error } = await supabase.from('physical_locations').upsert([{ id: location.id, name: location.name }]);
+        if (error) {
+          console.warn('Error saving physical_location to Supabase:', error.message);
+          setSupabaseConnectionStatus('error', `Error al guardar ubicación en Supabase: ${error.message}`);
+        } else {
+          setSupabaseConnectionStatus('connected');
+        }
+      } catch (err: any) {
+        console.warn('Exception saving physical_location to Supabase:', err);
       }
     }
   },
 
   async deletePhysicalLocation(id: string): Promise<void> {
+    const current = getLocalDb.getPhysicalLocations([]);
+    getLocalDb.savePhysicalLocations(current.filter(l => l.id !== id));
+
     if (supabase) {
       try {
-        await supabase.from('physical_locations').delete().eq('id', id);
-      } catch (err) {
-        console.warn('Error deleting physical_location from Supabase:', err);
+        const { error } = await supabase.from('physical_locations').delete().eq('id', id);
+        if (error) {
+          console.warn('Error deleting physical_location in Supabase:', error.message);
+        }
+      } catch (err: any) {
+        console.warn('Exception deleting physical_location in Supabase:', err);
       }
     }
   },
 
   async fetchPhysicalPrograms(defaultPrograms: PhysicalProgram[]): Promise<PhysicalProgram[]> {
-    if (supabase) {
-      try {
-        const { data, error } = await supabase.from('physical_programs').select('*').order('name', { ascending: true });
-        if (!error && data && data.length > 0) {
-          return data.map(p => ({ id: p.id, name: p.name, releaseDate: p.release_date || undefined }));
-        } else if (!error && data && data.length === 0) {
-          const seedPayload = defaultPrograms.map(p => ({ id: p.id, name: p.name, release_date: p.releaseDate || null }));
-          await supabase.from('physical_programs').insert(seedPayload);
-          return defaultPrograms;
-        }
-      } catch (err) {
-        console.warn('Error fetching physical_programs from Supabase:', err);
-      }
+    if (!supabase) {
+      return getLocalDb.getPhysicalPrograms(defaultPrograms);
     }
-    return defaultPrograms;
+    try {
+      const { data, error } = await supabase.from('physical_programs').select('*').order('name', { ascending: true });
+      if (error) {
+        console.warn('Supabase physical_programs check warning:', error.message);
+        setSupabaseConnectionStatus('error', `Atención en 'physical_programs': ${error.message}. Ejecuta el Script SQL en Supabase para habilitar las tablas.`);
+        return getLocalDb.getPhysicalPrograms(defaultPrograms);
+      }
+      if (data && data.length > 0) {
+        const mapped = data.map(p => ({ id: p.id, name: p.name, releaseDate: p.release_date || undefined }));
+        getLocalDb.savePhysicalPrograms(mapped);
+        setSupabaseConnectionStatus('connected');
+        return mapped;
+      } else {
+        const seedPayload = defaultPrograms.map(p => ({ id: p.id, name: p.name, release_date: p.releaseDate || null }));
+        const { error: seedErr } = await supabase.from('physical_programs').insert(seedPayload);
+        if (seedErr) {
+          console.warn('Error seeding physical_programs to Supabase:', seedErr.message);
+        } else {
+          setSupabaseConnectionStatus('connected');
+        }
+        getLocalDb.savePhysicalPrograms(defaultPrograms);
+        return defaultPrograms;
+      }
+    } catch (err: any) {
+      console.warn('Exception fetching physical_programs:', err);
+      setSupabaseConnectionStatus('error', err?.message || 'Error al conectar con Supabase');
+      return getLocalDb.getPhysicalPrograms(defaultPrograms);
+    }
   },
 
   async savePhysicalProgram(program: PhysicalProgram): Promise<void> {
+    const current = getLocalDb.getPhysicalPrograms([]);
+    const idx = current.findIndex(p => p.id === program.id);
+    if (idx >= 0) current[idx] = program;
+    else current.push(program);
+    getLocalDb.savePhysicalPrograms(current);
+
     if (supabase) {
       try {
-        await supabase.from('physical_programs').upsert([{ id: program.id, name: program.name, release_date: program.releaseDate || null }]);
-      } catch (err) {
-        console.warn('Error saving physical_program to Supabase:', err);
+        const { error } = await supabase.from('physical_programs').upsert([{ id: program.id, name: program.name, release_date: program.releaseDate || null }]);
+        if (error) {
+          console.warn('Error saving physical_program to Supabase:', error.message);
+          setSupabaseConnectionStatus('error', `Error al guardar programa en Supabase: ${error.message}`);
+        } else {
+          setSupabaseConnectionStatus('connected');
+        }
+      } catch (err: any) {
+        console.warn('Exception saving physical_program to Supabase:', err);
       }
     }
   },
 
   async deletePhysicalProgram(id: string): Promise<void> {
+    const current = getLocalDb.getPhysicalPrograms([]);
+    getLocalDb.savePhysicalPrograms(current.filter(p => p.id !== id));
+
     if (supabase) {
       try {
-        await supabase.from('physical_programs').delete().eq('id', id);
-      } catch (err) {
-        console.warn('Error deleting physical_program from Supabase:', err);
+        const { error } = await supabase.from('physical_programs').delete().eq('id', id);
+        if (error) {
+          console.warn('Error deleting physical_program in Supabase:', error.message);
+        }
+      } catch (err: any) {
+        console.warn('Exception deleting physical_program in Supabase:', err);
       }
     }
   },
 
   async fetchPhysicalMaterials(defaultMaterials: PhysicalAudiovisualMaterial[]): Promise<PhysicalAudiovisualMaterial[]> {
-    if (supabase) {
-      try {
-        const { data, error } = await supabase.from('physical_materials').select('*').order('code', { ascending: true });
-        if (!error && data && data.length > 0) {
-          return data.map(m => ({
-            id: m.id,
-            code: Number(m.code),
-            formatId: m.format_id,
-            programId: m.program_id || undefined,
-            title: m.title,
-            recordingDate: m.recording_date || undefined,
-            airDate: m.air_date || undefined,
-            segmentNumber: m.segment_number ? Number(m.segment_number) : 1,
-            totalTime: m.total_time || '00:00:00',
-            locationId: m.location_id,
-            synopsis: m.synopsis || undefined,
-            observations: m.observations || undefined,
-            createdAt: m.created_at || new Date().toISOString(),
-            createdByWorkerId: m.created_by_worker_id || undefined
-          }));
-        } else if (!error && data && data.length === 0) {
-          const seedPayload = defaultMaterials.map(m => ({
-            id: m.id,
-            code: m.code,
-            format_id: m.formatId,
-            program_id: m.programId || null,
-            title: m.title,
-            recording_date: m.recordingDate || null,
-            air_date: m.airDate || null,
-            segment_number: m.segmentNumber || 1,
-            total_time: m.totalTime || '00:00:00',
-            location_id: m.locationId,
-            synopsis: m.synopsis || null,
-            observations: m.observations || null,
-            created_at: m.createdAt || new Date().toISOString(),
-            created_by_worker_id: m.createdByWorkerId || null
-          }));
-          await supabase.from('physical_materials').insert(seedPayload);
-          return defaultMaterials;
-        }
-      } catch (err) {
-        console.warn('Error fetching physical_materials from Supabase:', err);
-      }
+    if (!supabase) {
+      return getLocalDb.getPhysicalMaterials(defaultMaterials);
     }
-    return defaultMaterials;
+    try {
+      const { data, error } = await supabase.from('physical_materials').select('*').order('code', { ascending: true });
+      if (error) {
+        console.warn('Supabase physical_materials check warning:', error.message);
+        setSupabaseConnectionStatus('error', `Atención en 'physical_materials': ${error.message}. Ejecuta el Script SQL en Supabase para habilitar la tabla physical_materials.`);
+        return getLocalDb.getPhysicalMaterials(defaultMaterials);
+      }
+      if (data && data.length > 0) {
+        const mapped = data.map(m => ({
+          id: m.id,
+          code: Number(m.code),
+          formatId: m.format_id,
+          programId: m.program_id || undefined,
+          title: m.title,
+          recordingDate: m.recording_date || undefined,
+          airDate: m.air_date || undefined,
+          segmentNumber: m.segment_number ? Number(m.segment_number) : 1,
+          totalTime: m.total_time || '00:00:00',
+          locationId: m.location_id,
+          synopsis: m.synopsis || undefined,
+          observations: m.observations || undefined,
+          createdAt: m.created_at || new Date().toISOString(),
+          createdByWorkerId: m.created_by_worker_id || undefined
+        }));
+        getLocalDb.savePhysicalMaterials(mapped);
+        setSupabaseConnectionStatus('connected');
+        return mapped;
+      } else {
+        const seedPayload = defaultMaterials.map(m => ({
+          id: m.id,
+          code: m.code,
+          format_id: m.formatId,
+          program_id: m.programId || null,
+          title: m.title,
+          recording_date: m.recordingDate || null,
+          air_date: m.airDate || null,
+          segment_number: m.segmentNumber || 1,
+          total_time: m.totalTime || '00:00:00',
+          location_id: m.locationId,
+          synopsis: m.synopsis || null,
+          observations: m.observations || null,
+          created_at: m.createdAt || new Date().toISOString(),
+          created_by_worker_id: m.createdByWorkerId || null
+        }));
+        const { error: seedErr } = await supabase.from('physical_materials').insert(seedPayload);
+        if (seedErr) {
+          console.warn('Error seeding physical_materials to Supabase:', seedErr.message);
+        } else {
+          setSupabaseConnectionStatus('connected');
+        }
+        getLocalDb.savePhysicalMaterials(defaultMaterials);
+        return defaultMaterials;
+      }
+    } catch (err: any) {
+      console.warn('Exception fetching physical_materials:', err);
+      setSupabaseConnectionStatus('error', err?.message || 'Error al conectar con Supabase');
+      return getLocalDb.getPhysicalMaterials(defaultMaterials);
+    }
   },
 
   async savePhysicalMaterial(material: PhysicalAudiovisualMaterial): Promise<void> {
+    const current = getLocalDb.getPhysicalMaterials([]);
+    const idx = current.findIndex(m => m.id === material.id);
+    if (idx >= 0) current[idx] = material;
+    else current.unshift(material);
+    getLocalDb.savePhysicalMaterials(current);
+
     if (supabase) {
       try {
-        await supabase.from('physical_materials').upsert([{
+        const { error } = await supabase.from('physical_materials').upsert([{
           id: material.id,
           code: material.code,
           format_id: material.formatId,
@@ -1823,13 +2029,27 @@ export const db = {
           created_at: material.createdAt || new Date().toISOString(),
           created_by_worker_id: material.createdByWorkerId || null
         }]);
-      } catch (err) {
-        console.warn('Error saving physical_material to Supabase:', err);
+        if (error) {
+          console.warn('Error saving physical_material to Supabase:', error.message);
+          setSupabaseConnectionStatus('error', `Error al guardar material en Supabase: ${error.message}`);
+        } else {
+          setSupabaseConnectionStatus('connected');
+        }
+      } catch (err: any) {
+        console.warn('Exception saving physical_material to Supabase:', err);
       }
     }
   },
 
   async bulkSavePhysicalMaterials(newMaterials: PhysicalAudiovisualMaterial[]): Promise<void> {
+    const current = getLocalDb.getPhysicalMaterials([]);
+    newMaterials.forEach(m => {
+      const idx = current.findIndex(existing => existing.id === m.id || existing.code === m.code);
+      if (idx >= 0) current[idx] = m;
+      else current.unshift(m);
+    });
+    getLocalDb.savePhysicalMaterials(current);
+
     if (supabase) {
       try {
         const payload = newMaterials.map(m => ({
@@ -1848,19 +2068,31 @@ export const db = {
           created_at: m.createdAt || new Date().toISOString(),
           created_by_worker_id: m.createdByWorkerId || null
         }));
-        await supabase.from('physical_materials').upsert(payload);
-      } catch (err) {
-        console.warn('Error bulk saving physical_materials to Supabase:', err);
+        const { error } = await supabase.from('physical_materials').upsert(payload);
+        if (error) {
+          console.warn('Error bulk saving physical_materials to Supabase:', error.message);
+          setSupabaseConnectionStatus('error', `Error al guardar lote en Supabase: ${error.message}`);
+        } else {
+          setSupabaseConnectionStatus('connected');
+        }
+      } catch (err: any) {
+        console.warn('Exception bulk saving physical_materials to Supabase:', err);
       }
     }
   },
 
   async deletePhysicalMaterial(id: string): Promise<void> {
+    const current = getLocalDb.getPhysicalMaterials([]);
+    getLocalDb.savePhysicalMaterials(current.filter(m => m.id !== id));
+
     if (supabase) {
       try {
-        await supabase.from('physical_materials').delete().eq('id', id);
-      } catch (err) {
-        console.warn('Error deleting physical_material from Supabase:', err);
+        const { error } = await supabase.from('physical_materials').delete().eq('id', id);
+        if (error) {
+          console.warn('Error deleting physical_material in Supabase:', error.message);
+        }
+      } catch (err: any) {
+        console.warn('Exception deleting physical_material in Supabase:', err);
       }
     }
   }

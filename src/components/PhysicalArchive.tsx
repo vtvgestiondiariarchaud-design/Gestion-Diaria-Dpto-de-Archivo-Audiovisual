@@ -28,7 +28,13 @@ import {
   PhysicalAudiovisualMaterial, 
   UserRole 
 } from '../types';
-import { db } from '../supabaseClient';
+import { 
+  db, 
+  isSupabaseConfigured, 
+  supabaseConnectionStatus, 
+  lastSupabaseError 
+} from '../supabaseClient';
+import DatabaseSchema from './DatabaseSchema';
 
 interface PhysicalArchiveProps {
   userRole: UserRole;
@@ -143,6 +149,29 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
   const [programs, setPrograms] = useState<PhysicalProgram[]>(DEFAULT_PROGRAMS);
   const [materials, setMaterials] = useState<PhysicalAudiovisualMaterial[]>(DEFAULT_MATERIALS);
   const [isLoadingDb, setIsLoadingDb] = useState<boolean>(true);
+  const [showSqlModal, setShowSqlModal] = useState<boolean>(false);
+
+  const refreshFromDb = async () => {
+    try {
+      setIsLoadingDb(true);
+      const [fRes, lRes, pRes, mRes] = await Promise.all([
+        db.fetchPhysicalFormats(DEFAULT_FORMATS),
+        db.fetchPhysicalLocations(DEFAULT_LOCATIONS),
+        db.fetchPhysicalPrograms(DEFAULT_PROGRAMS),
+        db.fetchPhysicalMaterials(DEFAULT_MATERIALS)
+      ]);
+      setFormats(fRes);
+      setLocations(lRes);
+      setPrograms(pRes);
+      setMaterials(mRes);
+      onAddNotification?.('Sincronización con Supabase completada.', 'success');
+    } catch (err: any) {
+      console.error('Error al actualizar desde Supabase:', err);
+      onAddNotification?.(`Error al consultar Supabase: ${err?.message || err}`, 'warning');
+    } finally {
+      setIsLoadingDb(false);
+    }
+  };
 
   // Synchronize strictly with backend database on mount
   useEffect(() => {
@@ -856,6 +885,16 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
 
           <div className="flex items-center gap-2 flex-wrap">
             <button
+              onClick={refreshFromDb}
+              disabled={isLoadingDb}
+              className="px-3 py-2 rounded-xl text-xs font-bold bg-slate-900 text-slate-300 hover:text-white hover:bg-slate-800 border border-white/10 transition-all flex items-center gap-1.5 cursor-pointer shadow-sm disabled:opacity-50"
+              title="Recargar datos directamente desde Supabase Cloud"
+            >
+              <RefreshCw size={14} className={isLoadingDb ? 'animate-spin' : ''} />
+              <span>Sincronizar</span>
+            </button>
+
+            <button
               onClick={downloadCSVTemplate}
               className="px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-900 text-amber-300 hover:bg-slate-800 border border-amber-500/30 transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
               title="Descargar plantilla CSV compatible con el sistema"
@@ -887,6 +926,42 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Database Connection / Table Alert Banner */}
+        {(!isSupabaseConfigured || supabaseConnectionStatus === 'error' || lastSupabaseError) && (
+          <div className="mt-4 p-3.5 bg-amber-950/60 border border-amber-500/40 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-amber-200">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle size={18} className="text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold text-amber-300">
+                  {!isSupabaseConfigured 
+                    ? 'Atención: Credenciales de Supabase no configuradas'
+                    : 'Aviso de Sincronización con Base de Datos Supabase'}
+                </p>
+                <p className="text-slate-300 text-[11px] leading-relaxed mt-0.5">
+                  {!isSupabaseConfigured
+                    ? 'La aplicación no posee la URL/KEY de Supabase para consultar la base de datos cloud.'
+                    : (lastSupabaseError || 'Si las tablas no existen en Supabase, ejecuta el Script SQL para habilitar physical_formats, physical_locations, physical_programs y physical_materials.')}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
+              <button
+                onClick={refreshFromDb}
+                className="px-2.5 py-1.5 bg-slate-900 border border-white/10 rounded-lg text-amber-300 hover:text-white font-bold text-[11px] flex items-center gap-1"
+              >
+                <RefreshCw size={11} className={isLoadingDb ? 'animate-spin' : ''} />
+                <span>Reintentar</span>
+              </button>
+              <button
+                onClick={() => setShowSqlModal(true)}
+                className="px-3 py-1.5 bg-amber-500 text-slate-950 rounded-lg font-black text-[11px] hover:bg-amber-400 transition-all"
+              >
+                Ver Script SQL
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Sub Navigation Bar */}
         <div className="flex items-center gap-2 mt-5 pt-4 border-t border-white/10 overflow-x-auto scrollbar-none">
@@ -2009,6 +2084,11 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* SQL SCHEMA & SETUP MODAL */}
+      {showSqlModal && (
+        <DatabaseSchema onClose={() => setShowSqlModal(false)} />
       )}
     </div>
   );
