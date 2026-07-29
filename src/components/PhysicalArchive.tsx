@@ -13,7 +13,13 @@ import {
   Filter, 
   Info, 
   X, 
-  AlertTriangle
+  AlertTriangle,
+  Upload,
+  Download,
+  FileSpreadsheet,
+  CheckCircle2,
+  RefreshCw,
+  FileText
 } from 'lucide-react';
 import { 
   PhysicalFormat, 
@@ -22,6 +28,7 @@ import {
   PhysicalAudiovisualMaterial, 
   UserRole 
 } from '../types';
+import { db } from '../supabaseClient';
 
 interface PhysicalArchiveProps {
   userRole: UserRole;
@@ -127,46 +134,43 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
   currentUserId,
   onAddNotification
 }) => {
-  // Navigation Sub-Tabs (Materials, Programs, Formats, Locations) - SQL removed
+  // Navigation Sub-Tabs
   const [activeSubTab, setActiveSubTab] = useState<'materials' | 'programs' | 'formats' | 'locations'>('materials');
 
-  // Storage States
-  const [formats, setFormats] = useState<PhysicalFormat[]>(() => {
-    const saved = localStorage.getItem('vtv_physical_formats');
-    return saved ? JSON.parse(saved) : DEFAULT_FORMATS;
-  });
+  // Database-backed States
+  const [formats, setFormats] = useState<PhysicalFormat[]>(DEFAULT_FORMATS);
+  const [locations, setLocations] = useState<PhysicalLocation[]>(DEFAULT_LOCATIONS);
+  const [programs, setPrograms] = useState<PhysicalProgram[]>(DEFAULT_PROGRAMS);
+  const [materials, setMaterials] = useState<PhysicalAudiovisualMaterial[]>(DEFAULT_MATERIALS);
+  const [isLoadingDb, setIsLoadingDb] = useState<boolean>(true);
 
-  const [locations, setLocations] = useState<PhysicalLocation[]>(() => {
-    const saved = localStorage.getItem('vtv_physical_locations');
-    return saved ? JSON.parse(saved) : DEFAULT_LOCATIONS;
-  });
-
-  const [programs, setPrograms] = useState<PhysicalProgram[]>(() => {
-    const saved = localStorage.getItem('vtv_physical_programs');
-    return saved ? JSON.parse(saved) : DEFAULT_PROGRAMS;
-  });
-
-  const [materials, setMaterials] = useState<PhysicalAudiovisualMaterial[]>(() => {
-    const saved = localStorage.getItem('vtv_physical_materials');
-    return saved ? JSON.parse(saved) : DEFAULT_MATERIALS;
-  });
-
-  // Save to localStorage on changes
+  // Synchronize strictly with backend database on mount
   useEffect(() => {
-    localStorage.setItem('vtv_physical_formats', JSON.stringify(formats));
-  }, [formats]);
-
-  useEffect(() => {
-    localStorage.setItem('vtv_physical_locations', JSON.stringify(locations));
-  }, [locations]);
-
-  useEffect(() => {
-    localStorage.setItem('vtv_physical_programs', JSON.stringify(programs));
-  }, [programs]);
-
-  useEffect(() => {
-    localStorage.setItem('vtv_physical_materials', JSON.stringify(materials));
-  }, [materials]);
+    let isMounted = true;
+    async function loadDatabase() {
+      try {
+        setIsLoadingDb(true);
+        const [fRes, lRes, pRes, mRes] = await Promise.all([
+          db.fetchPhysicalFormats(DEFAULT_FORMATS),
+          db.fetchPhysicalLocations(DEFAULT_LOCATIONS),
+          db.fetchPhysicalPrograms(DEFAULT_PROGRAMS),
+          db.fetchPhysicalMaterials(DEFAULT_MATERIALS)
+        ]);
+        if (isMounted) {
+          setFormats(fRes);
+          setLocations(lRes);
+          setPrograms(pRes);
+          setMaterials(mRes);
+        }
+      } catch (err) {
+        console.error('Error fetching physical archive from DB:', err);
+      } finally {
+        if (isMounted) setIsLoadingDb(false);
+      }
+    }
+    loadDatabase();
+    return () => { isMounted = false; };
+  }, []);
 
   // Hierarchical Permission Check for Location Modifications:
   // Jefes, Coordinadores and SuperAdmin can add or modify locations
@@ -198,6 +202,16 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
   const [locationNameInput, setLocationNameInput] = useState('');
 
   const [selectedDetailMaterial, setSelectedDetailMaterial] = useState<PhysicalAudiovisualMaterial | null>(null);
+
+  // CSV Import Modal State
+  const [showCsvImportModal, setShowCsvImportModal] = useState(false);
+  const [csvFileName, setCsvFileName] = useState('');
+  const [parsedCsvItems, setParsedCsvItems] = useState<PhysicalAudiovisualMaterial[]>([]);
+  const [csvNewFormats, setCsvNewFormats] = useState<PhysicalFormat[]>([]);
+  const [csvNewLocations, setCsvNewLocations] = useState<PhysicalLocation[]>([]);
+  const [csvNewPrograms, setCsvNewPrograms] = useState<PhysicalProgram[]>([]);
+  const [csvErrorMsg, setCsvErrorMsg] = useState<string | null>(null);
+  const [isProcessingCsv, setIsProcessingCsv] = useState(false);
 
   // Custom Deletion Confirmation Modal State
   const [itemToDelete, setItemToDelete] = useState<{
@@ -262,8 +276,8 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
     setShowMaterialModal(true);
   };
 
-  // Save Material
-  const handleSaveMaterial = (e: React.FormEvent) => {
+  // Save Material (Database synchronized)
+  const handleSaveMaterial = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!matTitleInput.trim()) {
       alert('Por favor ingrese el nombre del material.');
@@ -280,27 +294,24 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
 
     if (editingMaterial) {
       // Update
-      const updated = materials.map(m => {
-        if (m.id === editingMaterial.id) {
-          return {
-            ...m,
-            code: Number(matCodeInput),
-            title: matTitleInput.trim(),
-            formatId: matFormatIdInput,
-            programId: matProgramIdInput || undefined,
-            recordingDate: matRecordingDateInput || undefined,
-            airDate: matAirDateInput || undefined,
-            segmentNumber: Number(matSegmentInput) || 1,
-            totalTime: matTotalTimeInput.trim() || '00:00:00',
-            locationId: matLocationIdInput,
-            synopsis: matSynopsisInput.trim() || undefined,
-            observations: matObservationsInput.trim() || undefined
-          };
-        }
-        return m;
-      });
-      setMaterials(updated);
-      onAddNotification?.(`Material código AA-${String(matCodeInput).padStart(5, '0')} actualizado con éxito.`, 'success');
+      const updatedMat: PhysicalAudiovisualMaterial = {
+        ...editingMaterial,
+        code: Number(matCodeInput),
+        title: matTitleInput.trim(),
+        formatId: matFormatIdInput,
+        programId: matProgramIdInput || undefined,
+        recordingDate: matRecordingDateInput || undefined,
+        airDate: matAirDateInput || undefined,
+        segmentNumber: Number(matSegmentInput) || 1,
+        totalTime: matTotalTimeInput.trim() || '00:00:00',
+        locationId: matLocationIdInput,
+        synopsis: matSynopsisInput.trim() || undefined,
+        observations: matObservationsInput.trim() || undefined
+      };
+
+      setMaterials(materials.map(m => m.id === editingMaterial.id ? updatedMat : m));
+      await db.savePhysicalMaterial(updatedMat);
+      onAddNotification?.(`Material código AA-${String(matCodeInput).padStart(6, '0')} actualizado en la base de datos.`, 'success');
     } else {
       // Check for code conflict
       const codeExists = materials.some(m => m.code === Number(matCodeInput));
@@ -322,8 +333,10 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
         createdAt: new Date().toISOString(),
         createdByWorkerId: currentUserId
       };
+
       setMaterials([newMat, ...materials]);
-      onAddNotification?.(`Nuevo material audiovisual AA-${String(finalCode).padStart(5, '0')} registrado en Archivo Físico.`, 'success');
+      await db.savePhysicalMaterial(newMat);
+      onAddNotification?.(`Nuevo material audiovisual AA-${String(finalCode).padStart(6, '0')} registrado y guardado en la base de datos.`, 'success');
     }
 
     setShowMaterialModal(false);
@@ -334,7 +347,7 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
     setItemToDelete({
       type: 'material',
       id: m.id,
-      nameOrCode: `AA-${String(m.code).padStart(5, '0')}`,
+      nameOrCode: `AA-${String(m.code).padStart(6, '0')}`,
       title: m.title
     });
   };
@@ -382,8 +395,8 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
     });
   };
 
-  // Execute Deletion
-  const confirmExecuteDelete = () => {
+  // Execute Deletion in Database
+  const confirmExecuteDelete = async () => {
     if (!itemToDelete) return;
 
     const { type, id, nameOrCode } = itemToDelete;
@@ -391,15 +404,19 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
     if (type === 'material') {
       setMaterials(prev => prev.filter(m => m.id !== id));
       if (selectedDetailMaterial?.id === id) setSelectedDetailMaterial(null);
-      onAddNotification?.(`Material ${nameOrCode} eliminado del catálogo.`, 'info');
+      await db.deletePhysicalMaterial(id);
+      onAddNotification?.(`Material ${nameOrCode} eliminado de la base de datos.`, 'info');
     } else if (type === 'format') {
       setFormats(prev => prev.filter(f => f.id !== id));
+      await db.deletePhysicalFormat(id);
       onAddNotification?.(`Formato "${nameOrCode}" eliminado.`, 'info');
     } else if (type === 'program') {
       setPrograms(prev => prev.filter(p => p.id !== id));
+      await db.deletePhysicalProgram(id);
       onAddNotification?.(`Programa "${nameOrCode}" eliminado.`, 'info');
     } else if (type === 'location') {
       setLocations(prev => prev.filter(l => l.id !== id));
+      await db.deletePhysicalLocation(id);
       onAddNotification?.(`Localización "${nameOrCode}" eliminada.`, 'info');
     }
 
@@ -407,35 +424,40 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
   };
 
   // FORMATS HANDLERS
-  const handleSaveFormat = (e: React.FormEvent) => {
+  const handleSaveFormat = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formatNameInput.trim()) return;
 
     if (editingFormat) {
-      setFormats(formats.map(f => f.id === editingFormat.id ? { ...f, name: formatNameInput.trim() } : f));
-      onAddNotification?.(`Formato "${formatNameInput}" actualizado.`, 'success');
+      const updatedFmt = { ...editingFormat, name: formatNameInput.trim() };
+      setFormats(formats.map(f => f.id === editingFormat.id ? updatedFmt : f));
+      await db.savePhysicalFormat(updatedFmt);
+      onAddNotification?.(`Formato "${formatNameInput}" actualizado en la base de datos.`, 'success');
     } else {
       const newFmt: PhysicalFormat = {
         id: `fmt_${Date.now()}`,
         name: formatNameInput.trim()
       };
       setFormats([...formats, newFmt]);
-      onAddNotification?.(`Nuevo formato "${formatNameInput}" añadido al sistema.`, 'success');
+      await db.savePhysicalFormat(newFmt);
+      onAddNotification?.(`Nuevo formato "${formatNameInput}" añadido a la base de datos.`, 'success');
     }
     setShowFormatModal(false);
   };
 
   // PROGRAM HANDLERS
-  const handleSaveProgram = (e: React.FormEvent) => {
+  const handleSaveProgram = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!programNameInput.trim()) return;
 
     if (editingProgram) {
-      setPrograms(programs.map(p => p.id === editingProgram.id ? {
-        ...p,
+      const updatedPrg = {
+        ...editingProgram,
         name: programNameInput.trim(),
         releaseDate: programReleaseDateInput || undefined
-      } : p));
+      };
+      setPrograms(programs.map(p => p.id === editingProgram.id ? updatedPrg : p));
+      await db.savePhysicalProgram(updatedPrg);
       onAddNotification?.(`Programa "${programNameInput}" actualizado.`, 'success');
     } else {
       const newPrg: PhysicalProgram = {
@@ -444,13 +466,14 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
         releaseDate: programReleaseDateInput || undefined
       };
       setPrograms([...programs, newPrg]);
-      onAddNotification?.(`Programa "${programNameInput}" agregado a la lista.`, 'success');
+      await db.savePhysicalProgram(newPrg);
+      onAddNotification?.(`Programa "${programNameInput}" agregado a la base de datos.`, 'success');
     }
     setShowProgramModal(false);
   };
 
   // LOCATION HANDLERS
-  const handleSaveLocation = (e: React.FormEvent) => {
+  const handleSaveLocation = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canManageLocations) {
       alert('Acceso restringido: Solo Jefes, Coordinadores y Superadministradores tienen jerarquía para agregar o modificar localizaciones físicas.');
@@ -459,7 +482,9 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
     if (!locationNameInput.trim()) return;
 
     if (editingLocation) {
-      setLocations(locations.map(l => l.id === editingLocation.id ? { ...l, name: locationNameInput.trim() } : l));
+      const updatedLoc = { ...editingLocation, name: locationNameInput.trim() };
+      setLocations(locations.map(l => l.id === editingLocation.id ? updatedLoc : l));
+      await db.savePhysicalLocation(updatedLoc);
       onAddNotification?.(`Ubicación "${locationNameInput}" modificada.`, 'success');
     } else {
       const newLoc: PhysicalLocation = {
@@ -467,17 +492,315 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
         name: locationNameInput.trim()
       };
       setLocations([...locations, newLoc]);
-      onAddNotification?.(`Nueva ubicación física "${locationNameInput}" registrada.`, 'success');
+      await db.savePhysicalLocation(newLoc);
+      onAddNotification?.(`Nueva ubicación física "${locationNameInput}" registrada en la base de datos.`, 'success');
     }
     setShowLocationModal(false);
+  };
+
+  // CSV TEMPLATE DOWNLOAD GENERATOR
+  const downloadCSVTemplate = () => {
+    const headers = [
+      'Codigo',
+      'Titulo',
+      'Formato',
+      'Programa',
+      'Localizacion',
+      'FechaGrabacion',
+      'FechaAire',
+      'NumeroSegmento',
+      'Duracion',
+      'Sinopsis',
+      'Observaciones'
+    ];
+
+    const sampleRows = [
+      [
+        '1004',
+        'Discurso de Aniversario VTV - Acto Central',
+        'Betacam',
+        'Reportajes Especiales de Patria',
+        'Archivo Histórico',
+        '2005-08-01',
+        '2005-08-02',
+        '1',
+        '00:45:00',
+        'Resguardo de cinta máster transmisión original',
+        'Cinta en óptimo estado físico'
+      ],
+      [
+        '1005',
+        'Noticiero Edición Mediodía - Transmisión en Vivo',
+        'DVCPRO 66L',
+        'Noticiero VTV - Edición Central',
+        'Archivo de Programación',
+        '2024-01-15',
+        '2024-01-15',
+        '2',
+        '01:10:00',
+        'Emisión completa de noticias del mediodía',
+        'Procesada e ingestada'
+      ]
+    ];
+
+    const csvContent = '\uFEFF' + [
+      headers.join(','),
+      ...sampleRows.map(row => row.map(val => `"${val.replace(/"/g, '""')}"`).join(','))
+    ].join('\r\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', 'plantilla_archivo_audiovisual_vtv.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    onAddNotification?.('Plantilla CSV descargada con éxito. Rellena los datos y vuelve a subirla.', 'success');
+  };
+
+  // CSV FILE PARSER LOGIC
+  const handleCsvFileUpload = (file: File) => {
+    setCsvErrorMsg(null);
+    setCsvFileName(file.name);
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      if (!text) {
+        setCsvErrorMsg('El archivo seleccionado está vacío.');
+        return;
+      }
+      parseCsvContent(text);
+    };
+    reader.onerror = () => {
+      setCsvErrorMsg('Error al leer el archivo en el navegador.');
+    };
+    reader.readAsText(file, 'UTF-8');
+  };
+
+  const parseCsvContent = (text: string) => {
+    try {
+      const lines = text.split(/\r\n|\n|\r/).filter(l => l.trim().length > 0);
+      if (lines.length < 2) {
+        setCsvErrorMsg('El archivo CSV no contiene filas de datos para importar.');
+        return;
+      }
+
+      const firstLine = lines[0];
+      const delimiter = firstLine.includes(';') ? ';' : ',';
+
+      const tokenize = (line: string): string[] => {
+        const result: string[] = [];
+        let cur = '';
+        let inQuotes = false;
+        for (let i = 0; i < line.length; i++) {
+          const char = line[i];
+          if (char === '"') {
+            if (inQuotes && line[i + 1] === '"') {
+              cur += '"';
+              i++;
+            } else {
+              inQuotes = !inQuotes;
+            }
+          } else if (char === delimiter && !inQuotes) {
+            result.push(cur.trim());
+            cur = '';
+          } else {
+            cur += char;
+          }
+        }
+        result.push(cur.trim());
+        return result;
+      };
+
+      const rawHeaders = tokenize(lines[0]).map(h => 
+        h.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      );
+
+      const getIndex = (keys: string[]) => {
+        return rawHeaders.findIndex(h => keys.some(k => h.includes(k)));
+      };
+
+      const codeIdx = getIndex(['codigo', 'code', 'id']);
+      const titleIdx = getIndex(['titulo', 'title', 'nombre', 'material']);
+      const formatIdx = getIndex(['formato', 'format', 'soporte']);
+      const programIdx = getIndex(['programa', 'program', 'serie']);
+      const locationIdx = getIndex(['localizacion', 'location', 'ubicacion', 'estante', 'archivo']);
+      const recDateIdx = getIndex(['fechagrabacion', 'grabacion', 'recording', 'fecha_grabacion']);
+      const airDateIdx = getIndex(['fechaaire', 'aire', 'air', 'emision', 'fecha_aire']);
+      const segIdx = getIndex(['segmento', 'segment', 'numero']);
+      const durationIdx = getIndex(['duracion', 'time', 'tiempo', 'totaltime']);
+      const synopsisIdx = getIndex(['sinopsis', 'synopsis', 'resumen', 'descripcion']);
+      const obsIdx = getIndex(['observacion', 'observation', 'nota', 'comentario']);
+
+      if (titleIdx === -1) {
+        setCsvErrorMsg('No se encontró la columna de "Titulo" en el archivo CSV. Asegúrate de usar la plantilla.');
+        return;
+      }
+
+      const newMaterials: PhysicalAudiovisualMaterial[] = [];
+      const newFmtsMap = new Map<string, PhysicalFormat>();
+      const newLocsMap = new Map<string, PhysicalLocation>();
+      const newPrgsMap = new Map<string, PhysicalProgram>();
+
+      let currentFmts = [...formats];
+      let currentLocs = [...locations];
+      let currentPrgs = [...programs];
+
+      let maxCode = Math.max(1000, ...materials.map(m => m.code || 0));
+
+      for (let i = 1; i < lines.length; i++) {
+        const row = tokenize(lines[i]);
+        if (row.length === 0 || row.every(cell => cell === '')) continue;
+
+        const rawTitle = titleIdx !== -1 && row[titleIdx] ? row[titleIdx] : '';
+        if (!rawTitle.trim()) continue;
+
+        // Parse Code
+        let parsedCode = 0;
+        if (codeIdx !== -1 && row[codeIdx]) {
+          const digitsOnly = row[codeIdx].replace(/[^0-9]/g, '');
+          if (digitsOnly) parsedCode = parseInt(digitsOnly, 10);
+        }
+        if (!parsedCode || parsedCode <= 0) {
+          maxCode++;
+          parsedCode = maxCode;
+        } else {
+          if (parsedCode > maxCode) maxCode = parsedCode;
+        }
+
+        // Format
+        const rawFmtName = formatIdx !== -1 && row[formatIdx] ? row[formatIdx].trim() : 'DVCPRO 66L';
+        let matchedFmt = currentFmts.find(f => f.name.toLowerCase() === rawFmtName.toLowerCase());
+        if (!matchedFmt) {
+          const fmtId = `fmt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+          matchedFmt = { id: fmtId, name: rawFmtName };
+          currentFmts.push(matchedFmt);
+          newFmtsMap.set(fmtId, matchedFmt);
+        }
+
+        // Location
+        const rawLocName = locationIdx !== -1 && row[locationIdx] ? row[locationIdx].trim() : 'Archivo de Programación';
+        let matchedLoc = currentLocs.find(l => l.name.toLowerCase() === rawLocName.toLowerCase());
+        if (!matchedLoc) {
+          const locId = `loc_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+          matchedLoc = { id: locId, name: rawLocName };
+          currentLocs.push(matchedLoc);
+          newLocsMap.set(locId, matchedLoc);
+        }
+
+        // Program
+        let matchedPrgId: string | undefined = undefined;
+        if (programIdx !== -1 && row[programIdx] && row[programIdx].trim()) {
+          const rawPrgName = row[programIdx].trim();
+          let matchedPrg = currentPrgs.find(p => p.name.toLowerCase() === rawPrgName.toLowerCase());
+          if (!matchedPrg) {
+            const prgId = `prg_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+            matchedPrg = { id: prgId, name: rawPrgName };
+            currentPrgs.push(matchedPrg);
+            newPrgsMap.set(prgId, matchedPrg);
+          }
+          matchedPrgId = matchedPrg.id;
+        }
+
+        // Segment & Duration
+        const rawSeg = segIdx !== -1 && row[segIdx] ? parseInt(row[segIdx].replace(/[^0-9]/g, ''), 10) : 1;
+        const rawDur = durationIdx !== -1 && row[durationIdx] ? row[durationIdx].trim() : '00:30:00';
+
+        const item: PhysicalAudiovisualMaterial = {
+          id: `mat_csv_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 5)}`,
+          code: parsedCode,
+          title: rawTitle.trim(),
+          formatId: matchedFmt.id,
+          locationId: matchedLoc.id,
+          programId: matchedPrgId,
+          recordingDate: recDateIdx !== -1 && row[recDateIdx] ? row[recDateIdx].trim() : undefined,
+          airDate: airDateIdx !== -1 && row[airDateIdx] ? row[airDateIdx].trim() : undefined,
+          segmentNumber: isNaN(rawSeg) || rawSeg <= 0 ? 1 : rawSeg,
+          totalTime: rawDur || '00:30:00',
+          synopsis: synopsisIdx !== -1 && row[synopsisIdx] ? row[synopsisIdx].trim() : undefined,
+          observations: obsIdx !== -1 && row[obsIdx] ? row[obsIdx].trim() : undefined,
+          createdAt: new Date().toISOString(),
+          createdByWorkerId: currentUserId
+        };
+
+        newMaterials.push(item);
+      }
+
+      if (newMaterials.length === 0) {
+        setCsvErrorMsg('No se encontraron registros de materiales válidos para importar.');
+        return;
+      }
+
+      setParsedCsvItems(newMaterials);
+      setCsvNewFormats(Array.from(newFmtsMap.values()));
+      setCsvNewLocations(Array.from(newLocsMap.values()));
+      setCsvNewPrograms(Array.from(newPrgsMap.values()));
+
+    } catch (err: any) {
+      console.error('Error parsing CSV:', err);
+      setCsvErrorMsg(`Error al procesar la estructura CSV: ${err?.message || 'Formato no reconocido'}`);
+    }
+  };
+
+  // Save imported CSV batch to database
+  const handleConfirmCsvImport = async () => {
+    if (parsedCsvItems.length === 0) return;
+    setIsProcessingCsv(true);
+
+    try {
+      // Save created formats, locations, programs
+      for (const fmt of csvNewFormats) {
+        await db.savePhysicalFormat(fmt);
+      }
+      for (const loc of csvNewLocations) {
+        await db.savePhysicalLocation(loc);
+      }
+      for (const prg of csvNewPrograms) {
+        await db.savePhysicalProgram(prg);
+      }
+
+      // Bulk save materials directly to Supabase Cloud DB
+      await db.bulkSavePhysicalMaterials(parsedCsvItems);
+
+      // Update local state
+      if (csvNewFormats.length > 0) setFormats(prev => [...prev, ...csvNewFormats]);
+      if (csvNewLocations.length > 0) setLocations(prev => [...prev, ...csvNewLocations]);
+      if (csvNewPrograms.length > 0) setPrograms(prev => [...prev, ...csvNewPrograms]);
+
+      setMaterials(prev => {
+        const map = new Map<number, PhysicalAudiovisualMaterial>();
+        [...parsedCsvItems, ...prev].forEach(m => {
+          if (!map.has(m.code)) map.set(m.code, m);
+        });
+        return Array.from(map.values()).sort((a, b) => a.code - b.code);
+      });
+
+      onAddNotification?.(`¡Importación exitosa! Se registraron ${parsedCsvItems.length} materiales audiovisuales en la base de datos.`, 'success');
+
+      // Reset
+      setShowCsvImportModal(false);
+      setParsedCsvItems([]);
+      setCsvNewFormats([]);
+      setCsvNewLocations([]);
+      setCsvNewPrograms([]);
+      setCsvFileName('');
+    } catch (err: any) {
+      console.error('Error confirming CSV import:', err);
+      alert(`Error al guardar en la base de datos: ${err?.message || err}`);
+    } finally {
+      setIsProcessingCsv(false);
+    }
   };
 
   // Filtered Materials
   const filteredMaterials = useMemo(() => {
     return materials.filter(m => {
-      // Search term
       const codeStr = String(m.code);
-      const codeFormatted = `AA-${codeStr.padStart(5, '0')}`;
+      const codeFormatted = `AA-${codeStr.padStart(6, '0')}`;
       const q = searchTerm.toLowerCase().trim();
       
       const formatName = (formats.find(f => f.id === m.formatId)?.name || '').toLowerCase();
@@ -517,22 +840,50 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
               <div className="flex items-center gap-2">
                 <h1 className="text-xl font-black text-white tracking-wide">Archivo Físico Audiovisual</h1>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                  Patrimonio
+                  Base de Datos Cloud
                 </span>
+                {isLoadingDb && (
+                  <span className="flex items-center gap-1 text-[10px] text-amber-400 animate-pulse">
+                    <RefreshCw size={10} className="animate-spin" /> Sincronizando BD...
+                  </span>
+                )}
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                Control, catalogación y ubicación de cintas, soportes magnéticos y película fílmica.
+                Control, catalogación e inventario persistente de cintas y soportes audiovisuales.
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={downloadCSVTemplate}
+              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-900 text-amber-300 hover:bg-slate-800 border border-amber-500/30 transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
+              title="Descargar plantilla CSV compatible con el sistema"
+            >
+              <Download size={15} />
+              <span>Plantilla CSV</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setShowCsvImportModal(true);
+                setCsvErrorMsg(null);
+                setParsedCsvItems([]);
+                setCsvFileName('');
+              }}
+              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-900 text-cyan-300 hover:bg-slate-800 border border-cyan-500/30 transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
+              title="Importar catálogo masivo en formato CSV"
+            >
+              <FileSpreadsheet size={15} />
+              <span>Importar CSV</span>
+            </button>
+
             <button
               onClick={handleOpenAddMaterial}
               className="px-4 py-2 rounded-xl text-xs font-bold bg-amber-500 text-slate-950 hover:bg-amber-400 transition-all flex items-center gap-1.5 shadow-[0_0_15px_rgba(245,158,11,0.3)] cursor-pointer"
             >
               <Plus size={16} />
-              <span>Registrar Material Físico</span>
+              <span>Registrar Material</span>
             </button>
           </div>
         </div>
@@ -684,7 +1035,7 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
                   {filteredMaterials.length === 0 ? (
                     <tr>
                       <td colSpan={8} className="py-10 text-center text-slate-500 italic">
-                        No se encontraron registros de material audiovisual con los criterios especificados.
+                        No se encontraron registros de material audiovisual en la base de datos con los criterios especificados.
                       </td>
                     </tr>
                   ) : (
@@ -692,7 +1043,7 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
                       const fmt = formats.find(f => f.id === m.formatId);
                       const prg = programs.find(p => p.id === m.programId);
                       const loc = locations.find(l => l.id === m.locationId);
-                      const codeFormatted = `AA-${String(m.code).padStart(5, '0')}`;
+                      const codeFormatted = `AA-${String(m.code).padStart(6, '0')}`;
 
                       return (
                         <tr key={m.id} className="hover:bg-white/[0.02] transition-all">
@@ -701,65 +1052,65 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
                               {codeFormatted}
                             </span>
                           </td>
-                          <td className="py-3 px-4 max-w-xs">
-                            <div className="font-bold text-white text-xs truncate" title={m.title}>
+                          <td className="py-3 px-4">
+                            <div className="font-bold text-white max-w-xs truncate" title={m.title}>
                               {m.title}
                             </div>
                             {m.synopsis && (
-                              <div className="text-[10px] text-slate-400 line-clamp-1 italic mt-0.5">
+                              <p className="text-[11px] text-slate-400 truncate max-w-xs mt-0.5">
                                 {m.synopsis}
-                              </div>
+                              </p>
                             )}
                           </td>
                           <td className="py-3 px-4 whitespace-nowrap">
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-cyan-300 border border-cyan-500/20">
-                              <Disc size={10} />
-                              {fmt?.name || 'Desconocido'}
+                            <span className="px-2 py-1 rounded-lg bg-slate-800 text-slate-300 font-semibold border border-white/5 text-[11px]">
+                              {fmt?.name || 'N/A'}
                             </span>
                           </td>
                           <td className="py-3 px-4 whitespace-nowrap text-slate-300">
                             {prg ? (
-                              <span className="flex items-center gap-1 text-xs">
-                                <Tv size={11} className="text-indigo-400" />
-                                {prg.name}
-                              </span>
+                              <span className="text-indigo-300 font-medium">{prg.name}</span>
                             ) : (
-                              <span className="text-slate-500 italic text-[11px]">N/A</span>
+                              <span className="text-slate-500 italic">Sin Programa</span>
                             )}
                           </td>
                           <td className="py-3 px-4 whitespace-nowrap">
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
-                              <MapPin size={10} />
-                              {loc?.name || 'Sin ubicación'}
+                            <span className="inline-flex items-center gap-1 text-emerald-400 font-medium bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">
+                              <MapPin size={12} />
+                              <span>{loc?.name || 'N/A'}</span>
                             </span>
                           </td>
-                          <td className="py-3 px-4 whitespace-nowrap text-[11px] text-slate-400">
-                            <div>Grab: <span className="text-slate-200">{m.recordingDate || 'S/F'}</span></div>
-                            {m.airDate && <div className="text-[10px] text-slate-500">Aire: {m.airDate}</div>}
+                          <td className="py-3 px-4 whitespace-nowrap text-slate-400">
+                            <div className="flex flex-col text-[11px]">
+                              {m.recordingDate && <span>Grab: {m.recordingDate}</span>}
+                              {m.airDate && <span className="text-slate-500">Aire: {m.airDate}</span>}
+                              {!m.recordingDate && !m.airDate && <span>s/f</span>}
+                            </div>
                           </td>
                           <td className="py-3 px-4 whitespace-nowrap text-center font-mono text-xs font-medium text-slate-300">
                             {m.totalTime || '00:00:00'}
-                            {m.segmentNumber ? <span className="text-[10px] text-slate-500 block">Seg. {m.segmentNumber}</span> : null}
                           </td>
                           <td className="py-3 px-4 whitespace-nowrap text-right">
                             <div className="flex items-center justify-end gap-1.5">
                               <button
                                 onClick={() => setSelectedDetailMaterial(m)}
-                                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-all cursor-pointer"
-                                title="Ver Ficha Técnica"
+                                className="p-1.5 rounded-lg bg-slate-800 text-amber-300 hover:bg-slate-700 transition-all cursor-pointer"
+                                title="Ver Ficha Técnica Completa"
                               >
                                 <Info size={14} />
                               </button>
+
                               <button
                                 onClick={() => handleOpenEditMaterial(m)}
-                                className="p-1.5 rounded-lg bg-slate-800 hover:bg-amber-500/20 text-slate-300 hover:text-amber-300 transition-all cursor-pointer"
-                                title="Editar Material"
+                                className="p-1.5 rounded-lg bg-slate-800 text-cyan-300 hover:bg-slate-700 transition-all cursor-pointer"
+                                title="Editar Registro"
                               >
                                 <Edit2 size={14} />
                               </button>
+
                               <button
                                 onClick={() => promptDeleteMaterial(m)}
-                                className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-all cursor-pointer"
+                                className="p-1.5 rounded-lg bg-slate-800 text-rose-400 hover:bg-rose-500/20 transition-all cursor-pointer"
                                 title="Eliminar Registro"
                               >
                                 <Trash2 size={14} />
@@ -777,14 +1128,14 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
         </div>
       )}
 
-      {/* SUBTAB 2: PROGRAMAS CATALOG */}
+      {/* SUBTAB 2: PROGRAMAS (SERIES / EMISIONES) */}
       {activeSubTab === 'programs' && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-bold text-slate-200 flex items-center gap-2">
-              <Tv size={16} className="text-indigo-400" />
-              <span>Catálogo de Programas de la Planta</span>
-            </h2>
+            <div>
+              <h2 className="text-sm font-bold text-white">Catálogo de Programas y Producciones</h2>
+              <p className="text-xs text-slate-400">Programas de televisión vinculables a los soportes magnéticos del archivo.</p>
+            </div>
             <button
               onClick={() => {
                 setEditingProgram(null);
@@ -792,31 +1143,32 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
                 setProgramReleaseDateInput('');
                 setShowProgramModal(true);
               }}
-              className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-amber-500 text-slate-950 hover:bg-amber-400 transition-all flex items-center gap-1 cursor-pointer"
+              className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-amber-500 text-slate-950 hover:bg-amber-400 transition-all flex items-center gap-1.5 cursor-pointer shadow-md"
             >
-              <Plus size={14} />
-              <span>Nuevo Programa</span>
+              <Plus size={15} />
+              <span>Agregar Programa</span>
             </button>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
             {programs.map(p => {
-              const countAssigned = materials.filter(m => m.programId === p.id).length;
+              const count = materials.filter(m => m.programId === p.id).length;
               return (
-                <div key={p.id} className="p-4 bg-slate-900 border border-white/10 rounded-xl flex items-center justify-between gap-3">
-                  <div>
-                    <h3 className="font-bold text-white text-sm">{p.name}</h3>
-                    <div className="text-xs text-slate-400 mt-1 flex items-center gap-2">
-                      <span className="flex items-center gap-1">
-                        <Calendar size={12} className="text-amber-400" />
-                        Estreno: {p.releaseDate || 'No registrada'}
-                      </span>
-                      <span className="px-2 py-0.5 rounded-md bg-white/5 text-[10px] text-amber-300 font-bold">
-                        {countAssigned} cintas
+                <div key={p.id} className="p-4 bg-slate-900/90 border border-white/10 rounded-2xl flex items-center justify-between gap-3 hover:border-amber-500/30 transition-all">
+                  <div className="space-y-1 overflow-hidden">
+                    <div className="flex items-center gap-2">
+                      <Tv size={16} className="text-indigo-400 shrink-0" />
+                      <h3 className="font-bold text-white text-xs truncate" title={p.name}>{p.name}</h3>
+                    </div>
+                    <div className="flex items-center gap-2 text-[11px] text-slate-400">
+                      {p.releaseDate && <span>Estreno: {p.releaseDate}</span>}
+                      <span className="text-amber-400/90 font-medium bg-amber-500/10 px-1.5 py-0.5 rounded text-[10px]">
+                        {count} {count === 1 ? 'material' : 'materiales'}
                       </span>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1">
+
+                  <div className="flex items-center gap-1 shrink-0">
                     <button
                       onClick={() => {
                         setEditingProgram(p);
@@ -824,13 +1176,13 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
                         setProgramReleaseDateInput(p.releaseDate || '');
                         setShowProgramModal(true);
                       }}
-                      className="p-1.5 rounded-lg bg-slate-800 hover:bg-amber-500/20 text-slate-300 hover:text-amber-300 transition-all cursor-pointer"
+                      className="p-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
                     >
                       <Edit2 size={13} />
                     </button>
                     <button
                       onClick={() => promptDeleteProgram(p)}
-                      className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-all cursor-pointer"
+                      className="p-1.5 rounded-lg bg-slate-800 text-rose-400 hover:bg-rose-500/20 cursor-pointer"
                     >
                       <Trash2 size={13} />
                     </button>
@@ -842,52 +1194,56 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
         </div>
       )}
 
-      {/* SUBTAB 3: FORMATS CATALOG */}
+      {/* SUBTAB 3: FORMATOS AUDIOVISUALES */}
       {activeSubTab === 'formats' && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-bold text-slate-200 flex items-center gap-2">
-              <Disc size={16} className="text-amber-400" />
-              <span>Formatos Físicos Registrados</span>
-            </h2>
+            <div>
+              <h2 className="text-sm font-bold text-white">Soportes y Formatos Físicos</h2>
+              <p className="text-xs text-slate-400">Listado técnico de cintas magnéticas, cartuchos, LTO y soportes ópticos/fílmicos.</p>
+            </div>
             <button
               onClick={() => {
                 setEditingFormat(null);
                 setFormatNameInput('');
                 setShowFormatModal(true);
               }}
-              className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-amber-500 text-slate-950 hover:bg-amber-400 transition-all flex items-center gap-1 cursor-pointer"
+              className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-amber-500 text-slate-950 hover:bg-amber-400 transition-all flex items-center gap-1.5 cursor-pointer shadow-md"
             >
-              <Plus size={14} />
+              <Plus size={15} />
               <span>Agregar Formato</span>
             </button>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
             {formats.map(f => {
-              const countAssigned = materials.filter(m => m.formatId === f.id).length;
+              const count = materials.filter(m => m.formatId === f.id).length;
               return (
-                <div key={f.id} className="p-3 bg-slate-900 border border-white/10 rounded-xl flex items-center justify-between gap-2 group hover:border-amber-500/30 transition-all">
-                  <div>
-                    <div className="font-bold text-white text-xs">{f.name}</div>
-                    <div className="text-[10px] text-slate-400">{countAssigned} registros</div>
+                <div key={f.id} className="p-3.5 bg-slate-900/90 border border-white/10 rounded-2xl flex items-center justify-between gap-2 hover:border-amber-500/30 transition-all">
+                  <div className="overflow-hidden">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-white">
+                      <Disc size={14} className="text-amber-400 shrink-0" />
+                      <span className="truncate" title={f.name}>{f.name}</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-mono mt-0.5 block">
+                      {count} reg.
+                    </span>
                   </div>
-                  <div className="flex items-center gap-0.5">
+
+                  <div className="flex items-center gap-1 shrink-0">
                     <button
                       onClick={() => {
                         setEditingFormat(f);
                         setFormatNameInput(f.name);
                         setShowFormatModal(true);
                       }}
-                      className="p-1 text-slate-400 hover:text-amber-300 cursor-pointer"
-                      title="Editar formato"
+                      className="p-1 rounded bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
                     >
                       <Edit2 size={12} />
                     </button>
                     <button
                       onClick={() => promptDeleteFormat(f)}
-                      className="p-1 text-slate-400 hover:text-rose-400 cursor-pointer"
-                      title="Borrar formato"
+                      className="p-1 rounded bg-slate-800 text-rose-400 hover:bg-rose-500/20 cursor-pointer"
                     >
                       <Trash2 size={12} />
                     </button>
@@ -899,20 +1255,14 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
         </div>
       )}
 
-      {/* SUBTAB 4: LOCATIONS CATALOG (Permission Restricted) */}
+      {/* SUBTAB 4: LOCALIZACIONES FÍSICAS */}
       {activeSubTab === 'locations' && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-sm font-bold text-slate-200 flex items-center gap-2">
-                <MapPin size={16} className="text-emerald-400" />
-                <span>Localizaciones Física y Bóvedas</span>
-              </h2>
-              <p className="text-xs text-slate-400">
-                Ubicaciones de depósito (Archivo de Programación, Histórico, Muerto, Fílmico, Librería Robótica).
-              </p>
+              <h2 className="text-sm font-bold text-white">Ubicaciones y Bóvedas del Archivo</h2>
+              <p className="text-xs text-slate-400">Espacios físicos, estantes, depósitos y librerías automatizadas.</p>
             </div>
-
             {canManageLocations ? (
               <button
                 onClick={() => {
@@ -920,49 +1270,49 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
                   setLocationNameInput('');
                   setShowLocationModal(true);
                 }}
-                className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-amber-500 text-slate-950 hover:bg-amber-400 transition-all flex items-center gap-1 cursor-pointer"
+                className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-amber-500 text-slate-950 hover:bg-amber-400 transition-all flex items-center gap-1.5 cursor-pointer shadow-md"
               >
-                <Plus size={14} />
-                <span>Nueva Localización</span>
+                <Plus size={15} />
+                <span>Agregar Ubicación</span>
               </button>
             ) : (
-              <span className="px-3 py-1 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs font-bold flex items-center gap-1.5">
-                <Lock size={12} />
-                <span>Permisos de Alta/Modificación restringidos a Jefes y Coordinadores</span>
-              </span>
+              <div className="flex items-center gap-1.5 text-xs text-amber-400/80 bg-amber-500/10 border border-amber-500/20 px-3 py-1.5 rounded-xl">
+                <Lock size={13} />
+                <span>Modificación restringida a Jefatura</span>
+              </div>
             )}
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
             {locations.map(l => {
-              const countAssigned = materials.filter(m => m.locationId === l.id).length;
+              const count = materials.filter(m => m.locationId === l.id).length;
               return (
-                <div key={l.id} className="p-4 bg-slate-900 border border-white/10 rounded-xl flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold text-sm">
-                      <MapPin size={18} />
+                <div key={l.id} className="p-4 bg-slate-900/90 border border-white/10 rounded-2xl flex items-center justify-between gap-3 hover:border-amber-500/30 transition-all">
+                  <div className="space-y-1 overflow-hidden">
+                    <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs">
+                      <MapPin size={16} className="shrink-0" />
+                      <h3 className="truncate" title={l.name}>{l.name}</h3>
                     </div>
-                    <div>
-                      <h3 className="font-bold text-white text-sm">{l.name}</h3>
-                      <div className="text-xs text-slate-400">{countAssigned} soportes resguardados</div>
-                    </div>
+                    <span className="text-[11px] text-slate-400 font-mono block">
+                      {count} {count === 1 ? 'material resguardado' : 'materiales resguardados'}
+                    </span>
                   </div>
 
                   {canManageLocations && (
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1 shrink-0">
                       <button
                         onClick={() => {
                           setEditingLocation(l);
                           setLocationNameInput(l.name);
                           setShowLocationModal(true);
                         }}
-                        className="p-1.5 rounded-lg bg-slate-800 hover:bg-amber-500/20 text-slate-300 hover:text-amber-300 transition-all cursor-pointer"
+                        className="p-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
                       >
                         <Edit2 size={13} />
                       </button>
                       <button
                         onClick={() => promptDeleteLocation(l)}
-                        className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-all cursor-pointer"
+                        className="p-1.5 rounded-lg bg-slate-800 text-rose-400 hover:bg-rose-500/20 cursor-pointer"
                       >
                         <Trash2 size={13} />
                       </button>
@@ -975,47 +1325,56 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
         </div>
       )}
 
-      {/* MODAL 1: ADD/EDIT MATERIAL */}
+      {/* MODAL 1: REGISTER / EDIT AUDIOVISUAL MATERIAL */}
       {showMaterialModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-amber-500/30 rounded-2xl p-5 max-w-2xl w-full space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto scrollbar-thin">
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <h3 className="text-base font-black text-white flex items-center gap-2">
-                <FolderArchive size={18} className="text-amber-400" />
-                <span>{editingMaterial ? 'Editar Material Audiovisual' : 'Registrar Nuevo Material Físico'}</span>
-              </h3>
-              <button onClick={() => setShowMaterialModal(false)} className="text-slate-400 hover:text-white cursor-pointer">
-                <X size={18} />
-              </button>
+          <div className="bg-slate-900 border border-amber-500/30 rounded-2xl p-6 max-w-2xl w-full space-y-4 shadow-2xl relative max-h-[90vh] overflow-y-auto scrollbar-thin">
+            <button
+              onClick={() => setShowMaterialModal(false)}
+              className="absolute right-4 top-4 text-slate-400 hover:text-white cursor-pointer"
+            >
+              <X size={18} />
+            </button>
+
+            <div className="flex items-center gap-3 border-b border-white/10 pb-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                <FolderArchive size={20} />
+              </div>
+              <div>
+                <h3 className="font-black text-white text-base">
+                  {editingMaterial ? 'Editar Material Audiovisual' : 'Nuevo Registro de Archivo Físico'}
+                </h3>
+                <p className="text-xs text-slate-400">Catálogo de patrimonio audiovisual e inventario físico de la planta.</p>
+              </div>
             </div>
 
             <form onSubmit={handleSaveMaterial} className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div>
-                  <label className="text-[11px] font-bold text-amber-300 uppercase tracking-wider block mb-1">
-                    Código Físico (Entero):
+                  <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                    Código Físico Progresivo
                   </label>
                   <div className="relative">
-                    <span className="absolute left-2.5 top-2.5 font-mono text-xs text-amber-400 font-bold">AA-</span>
+                    <span className="absolute left-3 top-2 text-xs font-mono font-bold text-amber-400">AA-</span>
                     <input
                       type="number"
                       required
+                      min={1000}
                       value={matCodeInput}
-                      onChange={(e) => setMatCodeInput(Number(e.target.value))}
-                      className="w-full bg-slate-950 border border-white/10 rounded-xl pl-9 pr-3 py-2 text-xs text-white font-mono font-bold focus:outline-none focus:border-amber-500"
+                      onChange={(e) => setMatCodeInput(parseInt(e.target.value) || 1001)}
+                      className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-3 py-2 text-xs text-white font-mono font-bold focus:outline-none focus:border-amber-500"
                     />
                   </div>
-                  <span className="text-[10px] text-slate-500 mt-0.5 block">Código incremental único</span>
                 </div>
 
                 <div className="md:col-span-2">
-                  <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block mb-1">
-                    Nombre / Título del Material *:
+                  <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                    Título / Nombre del Material *
                   </label>
                   <input
                     type="text"
                     required
-                    placeholder="Ej. Entrevista Especial Noticiero Guardia Nocturna"
+                    placeholder="Ej. Discurso de Transmisión Especial..."
                     value={matTitleInput}
                     onChange={(e) => setMatTitleInput(e.target.value)}
                     className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
@@ -1025,8 +1384,8 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div>
-                  <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block mb-1">
-                    Formato *:
+                  <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                    Formato / Soporte *
                   </label>
                   <select
                     value={matFormatIdInput}
@@ -1034,30 +1393,14 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
                     className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500 cursor-pointer"
                   >
                     {formats.map(f => (
-                      <option key={f.id} value={f.id}>{f.name}</option>
+                      <option key={f.id} value={f.id} className="bg-slate-900">{f.name}</option>
                     ))}
                   </select>
                 </div>
 
                 <div>
-                  <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block mb-1">
-                    Programa Asociado:
-                  </label>
-                  <select
-                    value={matProgramIdInput}
-                    onChange={(e) => setMatProgramIdInput(e.target.value)}
-                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500 cursor-pointer"
-                  >
-                    <option value="">Sin Programa Específico</option>
-                    {programs.map(p => (
-                      <option key={p.id} value={p.id}>{p.name}</option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block mb-1">
-                    Localización Física *:
+                  <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                    Localización Física *
                   </label>
                   <select
                     value={matLocationIdInput}
@@ -1065,7 +1408,23 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
                     className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500 cursor-pointer"
                   >
                     {locations.map(l => (
-                      <option key={l.id} value={l.id}>{l.name}</option>
+                      <option key={l.id} value={l.id} className="bg-slate-900">{l.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                    Programa Vinculado
+                  </label>
+                  <select
+                    value={matProgramIdInput}
+                    onChange={(e) => setMatProgramIdInput(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500 cursor-pointer"
+                  >
+                    <option value="" className="bg-slate-900">-- Ninguno (Sin programa) --</option>
+                    {programs.map(p => (
+                      <option key={p.id} value={p.id} className="bg-slate-900">{p.name}</option>
                     ))}
                   </select>
                 </div>
@@ -1073,8 +1432,8 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
 
               <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                 <div>
-                  <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block mb-1">
-                    Fecha de Grabación:
+                  <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                    Fecha Grabación
                   </label>
                   <input
                     type="date"
@@ -1085,8 +1444,8 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
                 </div>
 
                 <div>
-                  <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block mb-1">
-                    Fecha al Aire:
+                  <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                    Fecha Emisión / Aire
                   </label>
                   <input
                     type="date"
@@ -1097,25 +1456,25 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
                 </div>
 
                 <div>
-                  <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block mb-1">
-                    NRO de Segmento:
+                  <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                    N° Segmento
                   </label>
                   <input
                     type="number"
                     min={1}
                     value={matSegmentInput}
-                    onChange={(e) => setMatSegmentInput(Number(e.target.value))}
+                    onChange={(e) => setMatSegmentInput(parseInt(e.target.value) || 1)}
                     className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
                   />
                 </div>
 
                 <div>
-                  <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block mb-1">
-                    Tiempo Total (HH:MM:SS):
+                  <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                    Duración (HH:MM:SS)
                   </label>
                   <input
                     type="text"
-                    placeholder="00:30:00"
+                    placeholder="00:45:00"
                     value={matTotalTimeInput}
                     onChange={(e) => setMatTotalTimeInput(e.target.value)}
                     className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-amber-500"
@@ -1124,32 +1483,32 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
               </div>
 
               <div>
-                <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block mb-1">
-                  Sinopsis / Contenido del Material:
+                <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                  Sinopsis / Contenido Informativo
                 </label>
                 <textarea
                   rows={2}
-                  placeholder="Resumen del contenido audiovisual registrado..."
+                  placeholder="Resumen del contenido grabado en el soporte..."
                   value={matSynopsisInput}
                   onChange={(e) => setMatSynopsisInput(e.target.value)}
-                  className="w-full bg-slate-950 border border-white/10 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-amber-500"
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-amber-500"
                 />
               </div>
 
               <div>
-                <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block mb-1">
-                  Observaciones Técnicas / Estado de la Cinta:
+                <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                  Observaciones Técnicas / Estado de Conservación
                 </label>
                 <textarea
                   rows={2}
-                  placeholder="Detalles físicos, conservación, número de rack, etc."
+                  placeholder="Estado físico del soporte, código de caja o anotaciones de cinta..."
                   value={matObservationsInput}
                   onChange={(e) => setMatObservationsInput(e.target.value)}
-                  className="w-full bg-slate-950 border border-white/10 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-amber-500"
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-amber-500"
                 />
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-white/10">
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/10">
                 <button
                   type="button"
                   onClick={() => setShowMaterialModal(false)}
@@ -1161,7 +1520,7 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
                   type="submit"
                   className="px-5 py-2 rounded-xl text-xs font-bold bg-amber-500 text-slate-950 hover:bg-amber-400 transition-all cursor-pointer shadow-lg"
                 >
-                  {editingMaterial ? 'Guardar Cambios' : 'Registrar Material'}
+                  {editingMaterial ? 'Guardar Cambios' : 'Registrar en BD Cloud'}
                 </button>
               </div>
             </form>
@@ -1169,29 +1528,199 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
         </div>
       )}
 
-      {/* MODAL 2: ADD/EDIT FORMAT */}
+      {/* MODAL 2: CSV IMPORT & TEMPLATE DOWNLOAD SYSTEM */}
+      {showCsvImportModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-cyan-500/30 rounded-2xl p-6 max-w-3xl w-full space-y-4 shadow-2xl relative max-h-[90vh] overflow-y-auto scrollbar-thin">
+            <button
+              onClick={() => setShowCsvImportModal(false)}
+              className="absolute right-4 top-4 text-slate-400 hover:text-white cursor-pointer"
+            >
+              <X size={18} />
+            </button>
+
+            <div className="flex items-center gap-3 border-b border-white/10 pb-3">
+              <div className="w-10 h-10 rounded-xl bg-cyan-500/20 border border-cyan-500/30 flex items-center justify-center text-cyan-300">
+                <FileSpreadsheet size={22} />
+              </div>
+              <div>
+                <h3 className="font-black text-white text-base">Importación Masiva de Archivo CSV</h3>
+                <p className="text-xs text-slate-400">Carga inventarios completos de cintas y soportes sincronizados a la base de datos.</p>
+              </div>
+            </div>
+
+            {/* Template Download Prompt */}
+            <div className="p-3.5 bg-slate-950/90 rounded-xl border border-white/10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
+              <div className="flex items-start gap-2.5">
+                <FileText className="text-amber-400 shrink-0 mt-0.5" size={18} />
+                <div>
+                  <span className="font-bold text-white block">¿No tienes el formato correcto?</span>
+                  <span className="text-slate-400 text-[11px]">
+                    Descarga la plantilla CSV oficial estructurada con todas las columnas necesarias.
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={downloadCSVTemplate}
+                className="px-3.5 py-1.5 rounded-lg bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 border border-amber-500/30 font-bold transition-all text-xs flex items-center gap-1.5 shrink-0 cursor-pointer"
+              >
+                <Download size={14} />
+                <span>Descargar Plantilla CSV</span>
+              </button>
+            </div>
+
+            {/* Upload File Zone */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-200">
+                Selecciona o arrastra tu archivo .CSV
+              </label>
+              <div className="border-2 border-dashed border-cyan-500/30 hover:border-cyan-400/60 rounded-2xl p-6 bg-slate-950/50 flex flex-col items-center justify-center text-center transition-all cursor-pointer relative">
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleCsvFileUpload(file);
+                  }}
+                  className="absolute inset-0 opacity-0 cursor-pointer"
+                />
+                <Upload size={32} className="text-cyan-400 mb-2" />
+                <span className="text-xs font-bold text-white">Haz clic aquí para seleccionar tu archivo CSV</span>
+                <span className="text-[11px] text-slate-400 mt-1">Soporta codificación UTF-8 y delimitadores por coma (,) o punto y coma (;)</span>
+              </div>
+            </div>
+
+            {/* Error Display */}
+            {csvErrorMsg && (
+              <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
+                <AlertTriangle size={16} className="shrink-0" />
+                <span>{csvErrorMsg}</span>
+              </div>
+            )}
+
+            {/* Parsed Preview Table */}
+            {parsedCsvItems.length > 0 && (
+              <div className="space-y-3 pt-2">
+                <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 size={16} className="text-emerald-400" />
+                    <span className="text-xs font-bold text-white">
+                      Vista previa de datos extraídos ({parsedCsvItems.length} materiales listos)
+                    </span>
+                  </div>
+                  <span className="text-[11px] text-slate-400 font-mono">
+                    {csvFileName}
+                  </span>
+                </div>
+
+                {(csvNewFormats.length > 0 || csvNewLocations.length > 0 || csvNewPrograms.length > 0) && (
+                  <div className="p-3 bg-indigo-950/40 rounded-xl border border-indigo-500/30 text-xs text-indigo-200 space-y-1">
+                    <span className="font-bold block text-indigo-300">Nuevos registros detectados que se crearán automáticamente:</span>
+                    <ul className="list-disc list-inside text-[11px] text-slate-300 space-y-0.5">
+                      {csvNewFormats.length > 0 && <li>Formatos: {csvNewFormats.map(f => f.name).join(', ')}</li>}
+                      {csvNewLocations.length > 0 && <li>Ubicaciones: {csvNewLocations.map(l => l.name).join(', ')}</li>}
+                      {csvNewPrograms.length > 0 && <li>Programas: {csvNewPrograms.map(p => p.name).join(', ')}</li>}
+                    </ul>
+                  </div>
+                )}
+
+                <div className="max-h-48 overflow-y-auto border border-white/10 rounded-xl bg-slate-950/80">
+                  <table className="w-full text-left border-collapse text-[11px]">
+                    <thead>
+                      <tr className="bg-slate-900 text-slate-400 font-bold border-b border-white/10 sticky top-0">
+                        <th className="py-2 px-3">Código</th>
+                        <th className="py-2 px-3">Título</th>
+                        <th className="py-2 px-3">Formato</th>
+                        <th className="py-2 px-3">Ubicación</th>
+                        <th className="py-2 px-3">Duración</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5 text-slate-300">
+                      {parsedCsvItems.slice(0, 15).map((item, idx) => {
+                        const fmtName = formats.find(f => f.id === item.formatId)?.name || csvNewFormats.find(f => f.id === item.formatId)?.name || 'N/A';
+                        const locName = locations.find(l => l.id === item.locationId)?.name || csvNewLocations.find(l => l.id === item.locationId)?.name || 'N/A';
+                        return (
+                          <tr key={idx} className="hover:bg-white/5">
+                            <td className="py-1.5 px-3 font-mono font-bold text-amber-300">
+                              AA-{String(item.code).padStart(6, '0')}
+                            </td>
+                            <td className="py-1.5 px-3 font-bold text-white max-w-xs truncate">{item.title}</td>
+                            <td className="py-1.5 px-3">{fmtName}</td>
+                            <td className="py-1.5 px-3 text-emerald-400">{locName}</td>
+                            <td className="py-1.5 px-3 font-mono">{item.totalTime}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  {parsedCsvItems.length > 15 && (
+                    <div className="p-2 text-center text-[10px] text-slate-500 italic bg-slate-900/50">
+                      Y {parsedCsvItems.length - 15} materiales adicionales...
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-white/10">
+              <button
+                type="button"
+                onClick={() => setShowCsvImportModal(false)}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={parsedCsvItems.length === 0 || isProcessingCsv}
+                onClick={handleConfirmCsvImport}
+                className={`px-5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-all cursor-pointer shadow-lg ${
+                  parsedCsvItems.length === 0 || isProcessingCsv
+                    ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                    : 'bg-cyan-500 text-slate-950 hover:bg-cyan-400 font-extrabold'
+                }`}
+              >
+                {isProcessingCsv && <RefreshCw size={14} className="animate-spin" />}
+                <span>
+                  {isProcessingCsv ? 'Guardando en Base de Datos...' : `Confirmar e Importar ${parsedCsvItems.length} Registros`}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 3: ADD/EDIT FORMAT */}
       {showFormatModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-amber-500/30 rounded-2xl p-5 max-w-md w-full space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <Disc size={16} className="text-amber-400" />
-                <span>{editingFormat ? 'Editar Formato' : 'Agregar Nuevo Formato'}</span>
-              </h3>
-              <button onClick={() => setShowFormatModal(false)} className="text-slate-400 hover:text-white cursor-pointer">
-                <X size={16} />
-              </button>
+          <div className="bg-slate-900 border border-amber-500/30 rounded-2xl p-6 max-w-md w-full space-y-4 shadow-2xl relative">
+            <button
+              onClick={() => setShowFormatModal(false)}
+              className="absolute right-4 top-4 text-slate-400 hover:text-white cursor-pointer"
+            >
+              <X size={18} />
+            </button>
+
+            <div className="flex items-center gap-3 border-b border-white/10 pb-3">
+              <Disc size={22} className="text-amber-400" />
+              <div>
+                <h3 className="font-black text-white text-base">
+                  {editingFormat ? 'Editar Formato' : 'Nuevo Formato Audiovisual'}
+                </h3>
+                <p className="text-xs text-slate-400">Tipo de cinta o soporte físico magnético/digital.</p>
+              </div>
             </div>
 
             <form onSubmit={handleSaveFormat} className="space-y-4">
               <div>
-                <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block mb-1">
-                  Nombre del Formato Físico *:
+                <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                  Nombre del Formato *
                 </label>
                 <input
                   type="text"
                   required
-                  placeholder="Ej. Betacam SX, LTO 10, HDCAM..."
+                  placeholder="Ej. DVCPRO 126L, LTO 9, Betacam SP..."
                   value={formatNameInput}
                   onChange={(e) => setFormatNameInput(e.target.value)}
                   className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
@@ -1218,29 +1747,36 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
         </div>
       )}
 
-      {/* MODAL 3: ADD/EDIT PROGRAM */}
+      {/* MODAL 4: ADD/EDIT PROGRAM */}
       {showProgramModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-amber-500/30 rounded-2xl p-5 max-w-md w-full space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <Tv size={16} className="text-amber-400" />
-                <span>{editingProgram ? 'Editar Programa' : 'Nuevo Programa'}</span>
-              </h3>
-              <button onClick={() => setShowProgramModal(false)} className="text-slate-400 hover:text-white cursor-pointer">
-                <X size={16} />
-              </button>
+          <div className="bg-slate-900 border border-amber-500/30 rounded-2xl p-6 max-w-md w-full space-y-4 shadow-2xl relative">
+            <button
+              onClick={() => setShowProgramModal(false)}
+              className="absolute right-4 top-4 text-slate-400 hover:text-white cursor-pointer"
+            >
+              <X size={18} />
+            </button>
+
+            <div className="flex items-center gap-3 border-b border-white/10 pb-3">
+              <Tv size={22} className="text-amber-400" />
+              <div>
+                <h3 className="font-black text-white text-base">
+                  {editingProgram ? 'Editar Programa' : 'Nuevo Programa de Televisión'}
+                </h3>
+                <p className="text-xs text-slate-400">Producción asociada a los contenidos del archivo.</p>
+              </div>
             </div>
 
             <form onSubmit={handleSaveProgram} className="space-y-4">
               <div>
-                <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block mb-1">
-                  Nombre del Programa *:
+                <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                  Nombre del Programa *
                 </label>
                 <input
                   type="text"
                   required
-                  placeholder="Ej. Noticiero VTV, Al Trote..."
+                  placeholder="Ej. Noticiero VTV - Edición Central..."
                   value={programNameInput}
                   onChange={(e) => setProgramNameInput(e.target.value)}
                   className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
@@ -1248,8 +1784,8 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
               </div>
 
               <div>
-                <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block mb-1">
-                  Fecha de Estreno:
+                <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                  Fecha de Primera Emisión / Estreno
                 </label>
                 <input
                   type="date"
@@ -1279,24 +1815,31 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
         </div>
       )}
 
-      {/* MODAL 4: ADD/EDIT LOCATION */}
+      {/* MODAL 5: ADD/EDIT LOCATION */}
       {showLocationModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-amber-500/30 rounded-2xl p-5 max-w-md w-full space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <MapPin size={16} className="text-emerald-400" />
-                <span>{editingLocation ? 'Editar Localización' : 'Nueva Localización Física'}</span>
-              </h3>
-              <button onClick={() => setShowLocationModal(false)} className="text-slate-400 hover:text-white cursor-pointer">
-                <X size={16} />
-              </button>
+          <div className="bg-slate-900 border border-amber-500/30 rounded-2xl p-6 max-w-md w-full space-y-4 shadow-2xl relative">
+            <button
+              onClick={() => setShowLocationModal(false)}
+              className="absolute right-4 top-4 text-slate-400 hover:text-white cursor-pointer"
+            >
+              <X size={18} />
+            </button>
+
+            <div className="flex items-center gap-3 border-b border-white/10 pb-3">
+              <MapPin size={22} className="text-amber-400" />
+              <div>
+                <h3 className="font-black text-white text-base">
+                  {editingLocation ? 'Editar Ubicación' : 'Nueva Localización Física'}
+                </h3>
+                <p className="text-xs text-slate-400">Bóveda o depósito físico de resguardo.</p>
+              </div>
             </div>
 
             <form onSubmit={handleSaveLocation} className="space-y-4">
               <div>
-                <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block mb-1">
-                  Nombre de la Localización *:
+                <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                  Nombre de la Ubicación / Bóveda *
                 </label>
                 <input
                   type="text"
@@ -1328,7 +1871,7 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
         </div>
       )}
 
-      {/* MODAL 5: DETAILED TECH SPEC SHEET (FICHA TÉCNICA) */}
+      {/* MODAL 6: DETAILED TECH SPEC SHEET (FICHA TÉCNICA) */}
       {selectedDetailMaterial && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-amber-500/30 rounded-2xl p-6 max-w-xl w-full space-y-4 shadow-2xl relative">
@@ -1341,7 +1884,7 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
 
             <div className="flex items-center gap-3 border-b border-white/10 pb-4">
               <div className="w-12 h-12 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-300 font-mono font-black text-sm shadow-[0_0_12px_rgba(245,158,11,0.3)]">
-                AA-{String(selectedDetailMaterial.code).padStart(5, '0')}
+                AA-{String(selectedDetailMaterial.code).padStart(6, '0')}
               </div>
               <div>
                 <h3 className="font-black text-white text-base leading-tight">{selectedDetailMaterial.title}</h3>
@@ -1419,7 +1962,7 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
         </div>
       )}
 
-      {/* MODAL 6: CUSTOM DELETION CONFIRMATION DIALOG */}
+      {/* MODAL 7: CUSTOM DELETION CONFIRMATION DIALOG */}
       {itemToDelete && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-rose-500/40 rounded-2xl p-6 max-w-md w-full space-y-4 shadow-2xl animate-scaleIn">
@@ -1429,7 +1972,7 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
               </div>
               <div>
                 <h3 className="font-black text-white text-base">Confirmar Eliminación</h3>
-                <p className="text-xs text-slate-400">Esta acción removerá el registro del sistema.</p>
+                <p className="text-xs text-slate-400">Esta acción removerá el registro de la base de datos.</p>
               </div>
             </div>
 
