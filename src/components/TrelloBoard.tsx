@@ -743,7 +743,7 @@ function SingleDivisionBoard({
   );
 }
 
-export default function TrelloBoard({
+function TrelloBoard({
   currentDivisionId,
   divisions,
   workers,
@@ -829,3 +829,5 @@ export default function TrelloBoard({
     </div>
   );
 }
+
+export default React.memo(TrelloBoard);

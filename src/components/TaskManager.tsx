@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Kanban, Plus, Search, Filter, Calendar, CheckSquare, Users,
@@ -890,7 +890,7 @@ const formatForDatetimeLocal = (isoStr?: string) => {
   }
 };
 
-export default function TaskManager({
+function TaskManager({
   boards,
   cards,
   notifications,
@@ -1314,6 +1314,44 @@ export default function TaskManager({
     });
     return filterRootCardsOnly(list, cards);
   }, [sortedCardsDescending, searchQuery, dateFilter, isGerenciaUser, cards]);
+
+  // Pagination State for Task Management (30 items per page)
+  const TASKS_PER_PAGE = 30;
+  const [currentPageProduccion, setCurrentPageProduccion] = useState<number>(1);
+  const [currentPageSolicitudes, setCurrentPageSolicitudes] = useState<number>(1);
+  const [currentPageFinalizadas, setCurrentPageFinalizadas] = useState<number>(1);
+  const [currentPageDescartados, setCurrentPageDescartados] = useState<number>(1);
+
+  useEffect(() => {
+    setCurrentPageProduccion(1);
+    setCurrentPageSolicitudes(1);
+    setCurrentPageFinalizadas(1);
+    setCurrentPageDescartados(1);
+  }, [selectedBoardId, searchQuery, dateFilter, onlyMyTasks, activeMainTab]);
+
+  const totalPagesProduccion = useMemo(() => Math.ceil(productionCards.length / TASKS_PER_PAGE) || 1, [productionCards.length]);
+  const paginatedProductionCards = useMemo(() => {
+    const start = (currentPageProduccion - 1) * TASKS_PER_PAGE;
+    return productionCards.slice(start, start + TASKS_PER_PAGE);
+  }, [productionCards, currentPageProduccion]);
+
+  const totalPagesSolicitudes = useMemo(() => Math.ceil(otherRequestsCards.length / TASKS_PER_PAGE) || 1, [otherRequestsCards.length]);
+  const paginatedOtherRequestsCards = useMemo(() => {
+    const start = (currentPageSolicitudes - 1) * TASKS_PER_PAGE;
+    return otherRequestsCards.slice(start, start + TASKS_PER_PAGE);
+  }, [otherRequestsCards, currentPageSolicitudes]);
+
+  const totalPagesFinalizadas = useMemo(() => Math.ceil(finalizedCards.length / TASKS_PER_PAGE) || 1, [finalizedCards.length]);
+  const paginatedFinalizedCards = useMemo(() => {
+    const start = (currentPageFinalizadas - 1) * TASKS_PER_PAGE;
+    return finalizedCards.slice(start, start + TASKS_PER_PAGE);
+  }, [finalizedCards, currentPageFinalizadas]);
+
+  const totalPagesDescartados = useMemo(() => Math.ceil(discardedCards.length / TASKS_PER_PAGE) || 1, [discardedCards.length]);
+  const paginatedDiscardedCards = useMemo(() => {
+    const start = (currentPageDescartados - 1) * TASKS_PER_PAGE;
+    return discardedCards.slice(start, start + TASKS_PER_PAGE);
+  }, [discardedCards, currentPageDescartados]);
 
   // Helper to resolve documentation technician details for documented tasks
   const getDocumentedInfo = (card: TaskCard) => {
@@ -2928,7 +2966,7 @@ export default function TaskManager({
                 <p className="text-xs text-slate-500">Crea una tarea nueva en Ingesta o revisa el apartado de Tareas Finalizadas.</p>
               </div>
             ) : (
-              productionCards.map(card => {
+              paginatedProductionCards.map(card => {
                 const bObj = productionBoards.find(b => b.id === card.boardId);
                 const isSelfAssigned = currentWorkerId ? card.assignedWorkerIds.includes(currentWorkerId) : false;
 
@@ -3200,6 +3238,36 @@ export default function TaskManager({
               })
             )}
           </div>
+
+          {/* Pagination Controls for Producción (30 por página) */}
+          {productionCards.length > 0 && (
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-4 rounded-xl bg-slate-900/60 border border-white/10 text-xs">
+              <span className="text-slate-400">
+                Mostrando <strong className="text-white">{(currentPageProduccion - 1) * TASKS_PER_PAGE + 1}</strong> - <strong className="text-white">{Math.min(currentPageProduccion * TASKS_PER_PAGE, productionCards.length)}</strong> de <strong className="text-white">{productionCards.length}</strong> tareas
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={currentPageProduccion <= 1}
+                  onClick={() => setCurrentPageProduccion(prev => Math.max(1, prev - 1))}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold transition-all border border-white/10 cursor-pointer"
+                >
+                  Anterior
+                </button>
+                <span className="px-3 py-1.5 font-bold font-mono bg-slate-950 text-cyan-300 rounded-lg border border-cyan-500/30">
+                  {currentPageProduccion} / {totalPagesProduccion}
+                </span>
+                <button
+                  type="button"
+                  disabled={currentPageProduccion >= totalPagesProduccion}
+                  onClick={() => setCurrentPageProduccion(prev => Math.min(totalPagesProduccion, prev + 1))}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold transition-all border border-white/10 cursor-pointer"
+                >
+                  Siguiente
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -3269,7 +3337,7 @@ export default function TaskManager({
                 <p className="text-xs text-slate-500">Crea solicitudes generales o de gerencia usando el botón superior.</p>
               </div>
             ) : (
-              otherRequestsCards.map(card => {
+              paginatedOtherRequestsCards.map(card => {
                 const isSelfAssigned = currentWorkerId ? card.assignedWorkerIds.includes(currentWorkerId) : false;
                 const totalItems = card.checklist?.length || 0;
                 const completedItems = card.checklist?.filter(i => i.completed).length || 0;
@@ -3472,6 +3540,36 @@ export default function TaskManager({
               })
             )}
           </div>
+
+          {/* Pagination Controls for Solicitudes (30 por página) */}
+          {otherRequestsCards.length > 0 && (
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-4 rounded-xl bg-slate-900/60 border border-white/10 text-xs">
+              <span className="text-slate-400">
+                Mostrando <strong className="text-white">{(currentPageSolicitudes - 1) * TASKS_PER_PAGE + 1}</strong> - <strong className="text-white">{Math.min(currentPageSolicitudes * TASKS_PER_PAGE, otherRequestsCards.length)}</strong> de <strong className="text-white">{otherRequestsCards.length}</strong> solicitudes
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={currentPageSolicitudes <= 1}
+                  onClick={() => setCurrentPageSolicitudes(prev => Math.max(1, prev - 1))}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold transition-all border border-white/10 cursor-pointer"
+                >
+                  Anterior
+                </button>
+                <span className="px-3 py-1.5 font-bold font-mono bg-slate-950 text-amber-300 rounded-lg border border-amber-500/30">
+                  {currentPageSolicitudes} / {totalPagesSolicitudes}
+                </span>
+                <button
+                  type="button"
+                  disabled={currentPageSolicitudes >= totalPagesSolicitudes}
+                  onClick={() => setCurrentPageSolicitudes(prev => Math.min(totalPagesSolicitudes, prev + 1))}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold transition-all border border-white/10 cursor-pointer"
+                >
+                  Siguiente
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -3519,7 +3617,7 @@ export default function TaskManager({
                 <p className="text-xs text-slate-500">Cuando un Jefe o Coordinador apruebe una tarea, aparecerá en esta lista.</p>
               </div>
             ) : (
-              finalizedCards.map(card => {
+              paginatedFinalizedCards.map(card => {
                 const bObj = productionBoards.find(b => b.id === card.boardId);
 
                 return (
@@ -3585,6 +3683,36 @@ export default function TaskManager({
               })
             )}
           </div>
+
+          {/* Pagination Controls for Finalizadas (30 por página) */}
+          {finalizedCards.length > 0 && (
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-4 rounded-xl bg-slate-900/60 border border-white/10 text-xs">
+              <span className="text-slate-400">
+                Mostrando <strong className="text-white">{(currentPageFinalizadas - 1) * TASKS_PER_PAGE + 1}</strong> - <strong className="text-white">{Math.min(currentPageFinalizadas * TASKS_PER_PAGE, finalizedCards.length)}</strong> de <strong className="text-white">{finalizedCards.length}</strong> tareas finalizadas
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={currentPageFinalizadas <= 1}
+                  onClick={() => setCurrentPageFinalizadas(prev => Math.max(1, prev - 1))}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold transition-all border border-white/10 cursor-pointer"
+                >
+                  Anterior
+                </button>
+                <span className="px-3 py-1.5 font-bold font-mono bg-slate-950 text-emerald-300 rounded-lg border border-emerald-500/30">
+                  {currentPageFinalizadas} / {totalPagesFinalizadas}
+                </span>
+                <button
+                  type="button"
+                  disabled={currentPageFinalizadas >= totalPagesFinalizadas}
+                  onClick={() => setCurrentPageFinalizadas(prev => Math.min(totalPagesFinalizadas, prev + 1))}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold transition-all border border-white/10 cursor-pointer"
+                >
+                  Siguiente
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -3618,7 +3746,7 @@ export default function TaskManager({
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {discardedCards.map(card => {
+              {paginatedDiscardedCards.map(card => {
                 const bObj = productionBoards.find(b => b.id === card.boardId);
                 return (
                   <motion.div
@@ -3708,6 +3836,36 @@ export default function TaskManager({
                   </motion.div>
                 );
               })}
+            </div>
+          )}
+
+          {/* Pagination Controls for Descartados (30 por página) */}
+          {discardedCards.length > 0 && (
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-4 rounded-xl bg-slate-900/60 border border-white/10 text-xs">
+              <span className="text-slate-400">
+                Mostrando <strong className="text-white">{(currentPageDescartados - 1) * TASKS_PER_PAGE + 1}</strong> - <strong className="text-white">{Math.min(currentPageDescartados * TASKS_PER_PAGE, discardedCards.length)}</strong> de <strong className="text-white">{discardedCards.length}</strong> materiales descartados
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={currentPageDescartados <= 1}
+                  onClick={() => setCurrentPageDescartados(prev => Math.max(1, prev - 1))}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold transition-all border border-white/10 cursor-pointer"
+                >
+                  Anterior
+                </button>
+                <span className="px-3 py-1.5 font-bold font-mono bg-slate-950 text-rose-300 rounded-lg border border-rose-500/30">
+                  {currentPageDescartados} / {totalPagesDescartados}
+                </span>
+                <button
+                  type="button"
+                  disabled={currentPageDescartados >= totalPagesDescartados}
+                  onClick={() => setCurrentPageDescartados(prev => Math.min(totalPagesDescartados, prev + 1))}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold transition-all border border-white/10 cursor-pointer"
+                >
+                  Siguiente
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -5386,3 +5544,5 @@ export default function TaskManager({
     </div>
   );
 }
+
+export default React.memo(TaskManager);

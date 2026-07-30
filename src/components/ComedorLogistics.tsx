@@ -15,7 +15,7 @@ interface ComedorLogisticsProps {
   onUpdateMealsPreference: (workerId: string, prefs: { desayuno: boolean; almuerzo: boolean; cena: boolean }) => void;
 }
 
-export default function ComedorLogistics({ 
+function ComedorLogistics({ 
   divisions, 
   workers, 
   assignments,
@@ -555,3 +555,5 @@ export default function ComedorLogistics({
     </div>
   );
 }
+
+export default React.memo(ComedorLogistics);

@@ -12,7 +12,7 @@ interface AdminPanelProps {
   onOpenBlueprint?: () => void;
 }
 
-export default function AdminPanel({
+function AdminPanel({
   divisions,
   workers,
   onUpdateDivisions,
@@ -445,3 +445,5 @@ export default function AdminPanel({
     </div>
   );
 }
+
+export default React.memo(AdminPanel);

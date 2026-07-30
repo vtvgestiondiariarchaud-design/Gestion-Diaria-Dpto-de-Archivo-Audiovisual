@@ -156,7 +156,7 @@ export function computeWorkerFreeDays(
   };
 }
 
-export default function VacationControl({
+function VacationControl({
   divisions,
   workers,
   assignments,
@@ -1825,3 +1825,5 @@ export default function VacationControl({
     </div>
   );
 }
+
+export default React.memo(VacationControl);

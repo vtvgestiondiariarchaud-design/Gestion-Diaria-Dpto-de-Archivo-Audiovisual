@@ -855,6 +855,23 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
     }).sort((a, b) => a.code - b.code);
   }, [materials, searchTerm, filterFormat, filterLocation, filterProgram, formats, programs, locations]);
 
+  // Pagination State for Instant High Performance
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const ITEMS_PER_PAGE = 25;
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, filterFormat, filterLocation, filterProgram]);
+
+  const totalPages = useMemo(() => {
+    return Math.ceil(filteredMaterials.length / ITEMS_PER_PAGE) || 1;
+  }, [filteredMaterials.length]);
+
+  const paginatedMaterials = useMemo(() => {
+    const start = (currentPage - 1) * ITEMS_PER_PAGE;
+    return filteredMaterials.slice(start, start + ITEMS_PER_PAGE);
+  }, [filteredMaterials, currentPage]);
+
   return (
     <div className="space-y-6 animate-fadeIn pb-12">
       {/* Header Banner */}
@@ -1107,14 +1124,14 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5 text-xs text-slate-200">
-                  {filteredMaterials.length === 0 ? (
+                  {paginatedMaterials.length === 0 ? (
                     <tr>
                       <td colSpan={8} className="py-10 text-center text-slate-500 italic">
                         No se encontraron registros de material audiovisual en la base de datos con los criterios especificados.
                       </td>
                     </tr>
                   ) : (
-                    filteredMaterials.map(m => {
+                    paginatedMaterials.map(m => {
                       const fmt = formats.find(f => f.id === m.formatId);
                       const prg = programs.find(p => p.id === m.programId);
                       const loc = locations.find(l => l.id === m.locationId);
@@ -1199,6 +1216,34 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
                 </tbody>
               </table>
             </div>
+
+            {/* Pagination Controls */}
+            {totalPages > 1 && (
+              <div className="p-3 bg-slate-950/90 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-400">
+                <div>
+                  Mostrando <span className="text-white font-bold">{((currentPage - 1) * ITEMS_PER_PAGE) + 1}</span> - <span className="text-white font-bold">{Math.min(currentPage * ITEMS_PER_PAGE, filteredMaterials.length)}</span> de <span className="text-white font-bold">{filteredMaterials.length}</span> registros
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    disabled={currentPage === 1}
+                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                    className="px-3 py-1 rounded-lg bg-slate-900 border border-white/10 text-white font-bold hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-all"
+                  >
+                    Anterior
+                  </button>
+                  <span className="font-mono text-slate-300 px-2">
+                    Página {currentPage} de {totalPages}
+                  </span>
+                  <button
+                    disabled={currentPage >= totalPages}
+                    onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                    className="px-3 py-1 rounded-lg bg-slate-900 border border-white/10 text-white font-bold hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-all"
+                  >
+                    Siguiente
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -2094,4 +2139,4 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
   );
 };
 
-export default PhysicalArchive;
+export default React.memo(PhysicalArchive);

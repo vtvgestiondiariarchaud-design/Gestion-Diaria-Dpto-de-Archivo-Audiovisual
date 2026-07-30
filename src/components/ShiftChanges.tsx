@@ -16,7 +16,7 @@ interface ShiftChangesProps {
   onAddNotification: (title: string, desc: string, type: 'success' | 'info') => void;
 }
 
-export default function ShiftChanges({
+function ShiftChanges({
   workers,
   divisions,
   assignments,
@@ -445,3 +445,5 @@ export default function ShiftChanges({
     </div>
   );
 }
+
+export default React.memo(ShiftChanges);

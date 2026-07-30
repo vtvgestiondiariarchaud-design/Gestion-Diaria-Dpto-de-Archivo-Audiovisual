@@ -14,7 +14,7 @@ interface ReportGeneratorProps {
   onAddOperationalDate: (date: string) => void;
 }
 
-export default function ReportGenerator({ 
+function ReportGenerator({ 
   divisions, 
   workers, 
   assignments, 
@@ -333,3 +333,5 @@ Encargado/Coordinador de Guardia: ${coordinatorName}`;
     </div>
   );
 }
+
+export default React.memo(ReportGenerator);

@@ -601,22 +601,55 @@ export default function App() {
     }
   };
 
+  // Helper to compare object arrays structurally to prevent unnecessary React state re-renders
+  const areEqualJson = (a: any, b: any): boolean => {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    return JSON.stringify(a) === JSON.stringify(b);
+  };
+
   // Silent data refresh for real-time background sync across workers
   const syncDataSilent = async () => {
     try {
-      const fetchedTaskBoards = await db.fetchTaskBoards();
-      const fetchedTaskCards = await db.fetchTaskCards();
-      const fetchedTaskNotifs = await db.fetchTaskNotifications();
-      const fetchedWorkers = await db.fetchWorkers();
-      const fetchedAssignments = await db.fetchAssignments();
-      const fetchedRequests = await db.fetchRequests();
+      const [
+        fetchedTaskBoards,
+        fetchedTaskCards,
+        fetchedTaskNotifs,
+        fetchedWorkers,
+        fetchedAssignments,
+        fetchedRequests,
+        fetchedFreeDayRequests
+      ] = await Promise.all([
+        db.fetchTaskBoards(),
+        db.fetchTaskCards(),
+        db.fetchTaskNotifications(),
+        db.fetchWorkers(),
+        db.fetchAssignments(),
+        db.fetchRequests(),
+        db.fetchFreeDayRequests()
+      ]);
 
-      if (fetchedTaskBoards.length > 0) setTaskBoards(fetchedTaskBoards);
-      if (fetchedTaskCards.length > 0 || localStorage.getItem('vtv_initialized_defaults') === 'true') setTaskCards(fetchedTaskCards);
-      if (fetchedTaskNotifs.length > 0) setTaskNotifications(fetchedTaskNotifs);
-      if (fetchedWorkers.length > 0) setWorkers(fetchedWorkers);
-      if (fetchedAssignments.length > 0) setAssignments(fetchedAssignments);
-      if (fetchedRequests.length > 0) setRequests(fetchedRequests);
+      if (fetchedTaskBoards.length > 0) {
+        setTaskBoards(prev => areEqualJson(prev, fetchedTaskBoards) ? prev : fetchedTaskBoards);
+      }
+      if (fetchedTaskCards.length > 0 || localStorage.getItem('vtv_initialized_defaults') === 'true') {
+        setTaskCards(prev => areEqualJson(prev, fetchedTaskCards) ? prev : fetchedTaskCards);
+      }
+      if (fetchedTaskNotifs.length > 0) {
+        setTaskNotifications(prev => areEqualJson(prev, fetchedTaskNotifs) ? prev : fetchedTaskNotifs);
+      }
+      if (fetchedWorkers.length > 0) {
+        setWorkers(prev => areEqualJson(prev, fetchedWorkers) ? prev : fetchedWorkers);
+      }
+      if (fetchedAssignments.length > 0) {
+        setAssignments(prev => areEqualJson(prev, fetchedAssignments) ? prev : fetchedAssignments);
+      }
+      if (fetchedRequests.length > 0) {
+        setRequests(prev => areEqualJson(prev, fetchedRequests) ? prev : fetchedRequests);
+      }
+      if (fetchedFreeDayRequests.length > 0) {
+        setFreeDayRequests(prev => areEqualJson(prev, fetchedFreeDayRequests) ? prev : fetchedFreeDayRequests);
+      }
 
       setDbStatus(supabaseConnectionStatus);
       setDbError(lastSupabaseError);
@@ -629,25 +662,28 @@ export default function App() {
   useEffect(() => {
     syncData();
 
-    // Auto-polling interval (every 5 seconds) so all workers see task updates live
+    // Auto-polling interval (every 10 seconds) as a fallback so all workers see task updates live
     const pollInterval = setInterval(() => {
       syncDataSilent();
-    }, 5000);
+    }, 10000);
+
+    // Debouncer for Supabase Realtime channel events
+    let realtimeDebounceTimer: NodeJS.Timeout | null = null;
+    const handleRealtimeEvent = () => {
+      if (realtimeDebounceTimer) clearTimeout(realtimeDebounceTimer);
+      realtimeDebounceTimer = setTimeout(() => {
+        syncDataSilent();
+      }, 400);
+    };
 
     // Supabase Realtime channel subscription
     let channel: any = null;
     if (supabase) {
       try {
         channel = supabase.channel('vtv_realtime_channel')
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'task_cards' }, () => {
-            syncDataSilent();
-          })
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'task_boards' }, () => {
-            syncDataSilent();
-          })
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_assignments' }, () => {
-            syncDataSilent();
-          })
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'task_cards' }, handleRealtimeEvent)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'task_boards' }, handleRealtimeEvent)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_assignments' }, handleRealtimeEvent)
           .subscribe();
       } catch (err) {
         console.warn('Realtime subscription error:', err);
@@ -656,6 +692,7 @@ export default function App() {
 
     return () => {
       clearInterval(pollInterval);
+      if (realtimeDebounceTimer) clearTimeout(realtimeDebounceTimer);
       if (supabase && channel) {
         supabase.removeChannel(channel);
       }
