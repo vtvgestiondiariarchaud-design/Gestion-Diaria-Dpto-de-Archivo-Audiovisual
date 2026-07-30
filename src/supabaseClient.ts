@@ -1186,7 +1186,12 @@ export const db = {
     let supabaseCards: TaskCard[] = [];
     if (supabase) {
       try {
-        const { data, error } = await supabase.from('task_cards').select('*').order('created_at', { ascending: false });
+        let queryRes = await supabase.from('task_cards').select('*').order('created_at', { ascending: false });
+        if (queryRes.error) {
+          console.warn('Order by created_at failed, retrying plain select on task_cards...', queryRes.error);
+          queryRes = await supabase.from('task_cards').select('*');
+        }
+        const { data, error } = queryRes;
         if (!error && data) {
           supabaseCards = data.map(c => ({
             id: c.id,

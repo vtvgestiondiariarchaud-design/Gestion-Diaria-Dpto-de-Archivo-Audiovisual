@@ -1173,13 +1173,47 @@ function TaskManager({
     return userNotifications;
   }, [userNotifications, notificationTab]);
 
-  // Sorted cards by date descending (newest on top)
+  // Helper to extract numeric timestamp for strictly sorting cards newest-first
+  const getCardTimestamp = (card: TaskCard): number => {
+    if (card.createdAt) {
+      const t = new Date(card.createdAt).getTime();
+      if (!isNaN(t) && t > 0) return t;
+    }
+    const match = card.id ? card.id.match(/^task_(\d{10,13})/) : null;
+    if (match) {
+      const ts = parseInt(match[1], 10);
+      if (!isNaN(ts) && ts > 0) return ts;
+    }
+    if (card.ingestedAt) {
+      const t = new Date(card.ingestedAt).getTime();
+      if (!isNaN(t) && t > 0) return t;
+    }
+    if (card.editedAt) {
+      const t = new Date(card.editedAt).getTime();
+      if (!isNaN(t) && t > 0) return t;
+    }
+    if (card.documentedAt) {
+      const t = new Date(card.documentedAt).getTime();
+      if (!isNaN(t) && t > 0) return t;
+    }
+    if (card.finalizedAt) {
+      const t = new Date(card.finalizedAt).getTime();
+      if (!isNaN(t) && t > 0) return t;
+    }
+    if (card.discardedAt) {
+      const t = new Date(card.discardedAt).getTime();
+      if (!isNaN(t) && t > 0) return t;
+    }
+    if (card.startDate) {
+      const t = new Date(card.startDate).getTime();
+      if (!isNaN(t) && t > 0) return t;
+    }
+    return 0;
+  };
+
+  // Sorted cards by date descending (newest created tasks always on top)
   const sortedCardsDescending = useMemo(() => {
-    return [...cards].sort((a, b) => {
-      const timeA = new Date(a.createdAt || a.startDate || '1970-01-01').getTime();
-      const timeB = new Date(b.createdAt || b.startDate || '1970-01-01').getTime();
-      return timeB - timeA;
-    });
+    return [...cards].sort((a, b) => getCardTimestamp(b) - getCardTimestamp(a));
   }, [cards]);
 
   // Helper to match card dates against dateFilter (YYYY-MM-DD)
@@ -2016,7 +2050,17 @@ function TaskManager({
   const handleOpenCreateTask = (defaultBoardId?: string, isOtherReq: boolean = false) => {
     setEditingCard(null);
     const initialIsOtherReq = isOtherReq || defaultBoardId === 'board_otras_solicitudes' || defaultBoardId === 'board_administracion';
-    setTaskBoardId(defaultBoardId || (initialIsOtherReq ? 'board_otras_solicitudes' : 'board_ingesta'));
+    let targetBoard = defaultBoardId;
+    if (!targetBoard) {
+      if (initialIsOtherReq) {
+        targetBoard = 'board_otras_solicitudes';
+      } else if (selectedBoardId && selectedBoardId !== 'todos') {
+        targetBoard = selectedBoardId;
+      } else {
+        targetBoard = 'board_ingesta';
+      }
+    }
+    setTaskBoardId(targetBoard);
     setTaskDivisionId(currentSession?.divisionId || currentWorker?.divisionId || '');
     setTaskIsOtherRequest(initialIsOtherReq);
     setTaskIsGerenciaOnly(false);
@@ -2238,6 +2282,10 @@ function TaskManager({
       }
     });
     setShowTaskModal(false);
+    setCurrentPageProduccion(1);
+    setCurrentPageSolicitudes(1);
+    setCurrentPageFinalizadas(1);
+    setCurrentPageDescartados(1);
     onAddNotificationToast(
       editingCard ? 'Tarea Actualizada' : 'Tarea Creada',
       `Se ${editingCard ? 'modificó' : 'registró'} con éxito la tarea "${taskTitle}".`,
@@ -4218,6 +4266,7 @@ function TaskManager({
                         <th className="p-3">Duración Orig.</th>
                         <th className="p-3">Duración Edit.</th>
                         <th className="p-3">Tiempo Ahorrado</th>
+                        <th className="p-3 text-right">Acción</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/5 text-slate-300">
@@ -4251,7 +4300,16 @@ function TaskManager({
                                       {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                                     </span>
                                   )}
-                                  <span className="truncate" title={c.title}>{c.title}</span>
+                                  <span
+                                    className="truncate hover:text-cyan-300 hover:underline cursor-pointer"
+                                    title="Clic para ver/modificar esta tarea"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleOpenEditTask(c);
+                                    }}
+                                  >
+                                    {c.title}
+                                  </span>
                                 </div>
                                 {group.isLinkedGroup && (
                                   <div className="text-[10px] text-cyan-300 font-medium mt-1 flex items-center gap-1">
@@ -4293,6 +4351,20 @@ function TaskManager({
                               <td className="p-3 font-mono text-emerald-300 font-bold whitespace-nowrap">
                                 {diffSec > 0 ? formatSecondsToHHMMSS(diffSec) : '-'}
                               </td>
+                              <td className="p-3 text-right whitespace-nowrap">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleOpenEditTask(c);
+                                  }}
+                                  className="px-2.5 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/30 text-[11px] font-bold transition-all cursor-pointer inline-flex items-center gap-1.5 shadow-sm"
+                                  title="Ver / Modificar Tarea"
+                                >
+                                  <Edit3 className="w-3.5 h-3.5 text-cyan-400" />
+                                  <span>Editar</span>
+                                </button>
+                              </td>
                             </tr>
 
                             {/* Desglose de Subtareas Vinculadas de Lista 1 */}
@@ -4309,7 +4381,16 @@ function TaskManager({
                                     <td className="p-2.5 pl-8 text-xs font-medium text-slate-200">
                                       <div className="flex items-center gap-1.5">
                                         <span className="text-cyan-400 font-mono text-[10px] font-bold">↳ [{subIdx + 1}]</span>
-                                        <span>{subCard.title}</span>
+                                        <span
+                                          className="hover:text-cyan-300 hover:underline cursor-pointer"
+                                          title="Clic para ver/modificar esta subtarea"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleOpenEditTask(subCard);
+                                          }}
+                                        >
+                                          {subCard.title}
+                                        </span>
                                       </div>
                                     </td>
                                     <td className="p-2.5 text-[11px] text-cyan-300">
@@ -4326,6 +4407,20 @@ function TaskManager({
                                     </td>
                                     <td className="p-2.5 font-mono text-emerald-300 text-xs font-bold whitespace-nowrap">
                                       {subDiffSec > 0 ? formatSecondsToHHMMSS(subDiffSec) : '-'}
+                                    </td>
+                                    <td className="p-2.5 text-right whitespace-nowrap">
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleOpenEditTask(subCard);
+                                        }}
+                                        className="px-2 py-0.5 rounded-md bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/20 text-[10px] font-bold transition-all cursor-pointer inline-flex items-center gap-1"
+                                        title="Ver / Modificar Subtarea"
+                                      >
+                                        <Edit3 className="w-3 h-3 text-cyan-400" />
+                                        <span>Editar</span>
+                                      </button>
                                     </td>
                                   </tr>
                                 );
@@ -4371,6 +4466,7 @@ function TaskManager({
                         <th className="p-3">Personal Responsable</th>
                         <th className="p-3">Fecha y Hora Registro</th>
                         <th className="p-3">Duración</th>
+                        <th className="p-3 text-right">Acción</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/5 text-slate-300">
@@ -4397,7 +4493,16 @@ function TaskManager({
                                       {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                                     </span>
                                   )}
-                                  <span className="truncate" title={docCard.title}>{docCard.title}</span>
+                                  <span
+                                    className="truncate hover:text-amber-300 hover:underline cursor-pointer"
+                                    title="Clic para ver/modificar esta tarea"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleOpenEditTask(docCard);
+                                    }}
+                                  >
+                                    {docCard.title}
+                                  </span>
                                 </div>
                                 {group.isLinkedGroup ? (
                                   <div className="text-[10px] text-amber-300 font-medium mt-1 flex items-center gap-1">
@@ -4438,6 +4543,20 @@ function TaskManager({
                                   <span className="text-slate-200">{docCard.duration || '00:00:00'}</span>
                                 )}
                               </td>
+                              <td className="p-3 text-right whitespace-nowrap">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleOpenEditTask(docCard);
+                                  }}
+                                  className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-[11px] font-bold transition-all cursor-pointer inline-flex items-center gap-1.5 shadow-sm"
+                                  title="Ver / Modificar Tarea"
+                                >
+                                  <Edit3 className="w-3.5 h-3.5 text-amber-400" />
+                                  <span>Editar</span>
+                                </button>
+                              </td>
                             </tr>
 
                             {/* Desglose de Subtareas Vinculadas de Lista 2 */}
@@ -4449,7 +4568,16 @@ function TaskManager({
                                     <td className="p-2.5 pl-8 text-xs font-medium text-slate-200" colSpan={1}>
                                       <div className="flex items-center gap-1.5">
                                         <span className="text-amber-400 font-mono text-[10px] font-bold">↳ [{subIdx + 1}]</span>
-                                        <span>{subCard.title}</span>
+                                        <span
+                                          className="hover:text-amber-300 hover:underline cursor-pointer"
+                                          title="Clic para ver/modificar esta subtarea"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleOpenEditTask(subCard);
+                                          }}
+                                        >
+                                          {subCard.title}
+                                        </span>
                                       </div>
                                     </td>
                                     <td className="p-2.5 text-[11px] text-cyan-300">
@@ -4460,6 +4588,20 @@ function TaskManager({
                                     </td>
                                     <td className="p-2.5 font-mono text-cyan-300 text-xs font-bold whitespace-nowrap">
                                       {subCard.duration || '00:00:00'}
+                                    </td>
+                                    <td className="p-2.5 text-right whitespace-nowrap">
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleOpenEditTask(subCard);
+                                        }}
+                                        className="px-2 py-0.5 rounded-md bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/20 text-[10px] font-bold transition-all cursor-pointer inline-flex items-center gap-1"
+                                        title="Ver / Modificar Subtarea"
+                                      >
+                                        <Edit3 className="w-3 h-3 text-amber-400" />
+                                        <span>Editar</span>
+                                      </button>
                                     </td>
                                   </tr>
                                 );
