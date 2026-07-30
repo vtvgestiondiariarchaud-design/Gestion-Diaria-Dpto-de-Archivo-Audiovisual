@@ -4,7 +4,7 @@ import {
   Tv, Layers, Utensils, FileText, Calendar, 
   Database, Shield, AlertTriangle, Sparkles, 
   Bell, CheckCircle2, Info, ChevronDown, UserCircle, LogOut, Loader2, KeyRound, UserPlus, Edit2, Check, X, ChevronLeft, ChevronRight, Plus,
-  Umbrella, Kanban, CheckSquare, Zap, FolderArchive
+  Umbrella, Kanban, CheckSquare, Zap, FolderArchive, RotateCcw
 } from 'lucide-react';
 
 import { Division, Worker, ShiftAssignment, ShiftChangeRequest, UserRole, TaskBoard, TaskCard, TaskNotification, FreeDayRequest } from './types';
@@ -658,14 +658,29 @@ export default function App() {
     }
   };
 
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+
+  // Manual synchronization handler for user request
+  const handleManualSync = async () => {
+    setIsSyncing(true);
+    try {
+      await syncData();
+      addNotification('Sincronización Completa', 'Lista de tareas y datos sincronizados correctamente con la base de datos Supabase.', 'success');
+    } catch (e: any) {
+      addNotification('Error de Sincronización', e?.message || 'No se pudo actualizar los datos con la base de datos.', 'info');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   // Load data on mount and setup real-time background synchronization
   useEffect(() => {
     syncData();
 
-    // Auto-polling interval (every 10 seconds) as a fallback so all workers see task updates live
+    // Auto-polling interval (every 1 minute / 60000 ms) as requested
     const pollInterval = setInterval(() => {
       syncDataSilent();
-    }, 10000);
+    }, 60000);
 
     // Debouncer for Supabase Realtime channel events
     let realtimeDebounceTimer: NodeJS.Timeout | null = null;
@@ -1598,6 +1613,18 @@ export default function App() {
                   <span className="font-mono text-[11px]">{isLiteMode ? 'Modo Lite ⚡' : 'Modo Pro ✨'}</span>
                 </button>
 
+                {/* Botón de Sincronización Manual */}
+                <button
+                  type="button"
+                  onClick={handleManualSync}
+                  disabled={isSyncing}
+                  className="px-2.5 py-1.5 rounded-xl text-xs font-bold bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shrink-0 shadow-lg shadow-cyan-500/5"
+                  title="Forzar actualización manual con la base de datos Supabase"
+                >
+                  <RotateCcw size={13} className={`text-cyan-400 ${isSyncing ? 'animate-spin' : ''}`} />
+                  <span className="font-mono text-[11px]">{isSyncing ? 'Actualizando...' : 'Actualizar DB'}</span>
+                </button>
+
                 <div className="flex items-center gap-3.5 bg-slate-900/60 p-2 rounded-2xl border border-white/5">
                 <div className="flex items-center gap-2 px-1">
                   <UserCircle size={16} className="text-cyan-400 shrink-0" />
@@ -1978,6 +2005,8 @@ export default function App() {
                         onClearAllNotifications={handleClearAllNotifications}
                         onDeleteNotification={handleDeleteNotification}
                         onAddNotificationToast={addNotification}
+                        onManualSync={handleManualSync}
+                        isSyncing={isSyncing}
                       />
                     )}
 

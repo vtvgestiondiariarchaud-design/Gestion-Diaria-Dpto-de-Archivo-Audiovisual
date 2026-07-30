@@ -34,6 +34,8 @@ interface TaskManagerProps {
   onClearAllNotifications?: (workerId?: string) => void;
   onDeleteNotification?: (id: string) => void;
   onAddNotificationToast: (title: string, desc: string, type: 'success' | 'info') => void;
+  onManualSync?: () => Promise<void> | void;
+  isSyncing?: boolean;
 }
 
 // Helper para obtener YYYY-MM-DD local en zona horaria Venezuela (America/Caracas, UTC-4)
@@ -905,7 +907,9 @@ function TaskManager({
   onMarkAllNotificationsRead,
   onClearAllNotifications,
   onDeleteNotification,
-  onAddNotificationToast
+  onAddNotificationToast,
+  onManualSync,
+  isSyncing
 }: TaskManagerProps) {
   const currentWorker = useMemo(() => {
     return workers.find(w => w.id === currentSession?.userId) || null;
@@ -2744,6 +2748,19 @@ function TaskManager({
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
+            {/* Manual Sync Button */}
+            <button
+              onClick={() => {
+                if (onManualSync) onManualSync();
+              }}
+              disabled={isSyncing}
+              className="px-3 py-2.5 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 font-bold text-xs transition-all flex items-center gap-2 cursor-pointer shadow-lg shadow-cyan-500/5 disabled:opacity-50"
+              title="Forzar actualización manual con la base de datos Supabase"
+            >
+              <RotateCcw className={`w-4 h-4 text-cyan-400 ${isSyncing ? 'animate-spin' : ''}`} />
+              <span>{isSyncing ? 'Actualizando...' : 'Actualizar Datos'}</span>
+            </button>
+
             {/* Notification Center Trigger */}
             <button
               onClick={() => setShowNotificationCenter(true)}
