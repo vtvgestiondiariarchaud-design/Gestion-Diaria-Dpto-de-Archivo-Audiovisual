@@ -491,6 +491,16 @@ const buildCardTaskGroups = (listCards: TaskCard[], allCards: TaskCard[]): CardT
   const visitedIds = new Set<string>();
   const groups: CardTaskGroup[] = [];
 
+  // Mapear todas las sub-tareas hijas (tarjetas cuyos IDs están incluidos en linkedTaskIds de alguna otra tarjeta)
+  const childCardIds = new Set<string>();
+  allCards.forEach(c => {
+    (c.linkedTaskIds || []).forEach(childId => {
+      if (childId !== c.id) {
+        childCardIds.add(childId);
+      }
+    });
+  });
+
   listCards.forEach(card => {
     if (visitedIds.has(card.id)) return;
 
@@ -501,10 +511,10 @@ const buildCardTaskGroups = (listCards: TaskCard[], allCards: TaskCard[]): CardT
     while (queue.length > 0) {
       const current = queue.shift()!;
       const linkedIds = current.linkedTaskIds || [];
-      const pointingCards = allCards.filter(c => c.linkedTaskIds && c.linkedTaskIds.includes(current.id));
+      const parentCards = allCards.filter(c => (c.linkedTaskIds || []).includes(current.id));
       const neighbors = [
         ...linkedIds.map(id => allCards.find(c => c.id === id)).filter((c): c is TaskCard => Boolean(c)),
-        ...pointingCards
+        ...parentCards
       ];
 
       neighbors.forEach(neighbor => {
@@ -525,10 +535,15 @@ const buildCardTaskGroups = (listCards: TaskCard[], allCards: TaskCard[]): CardT
     const groupCardsInPeriod = clusterCards.filter(c => listCards.some(lc => lc.id === c.id));
     if (groupCardsInPeriod.length === 0) return;
 
-    // Designate Root Task (Tarea Raíz):
-    // 1. Prefer card in group that explicitly links to other tasks
-    // 2. Otherwise select earliest created task
-    let primaryCard = groupCardsInPeriod.find(c => c.linkedTaskIds && c.linkedTaskIds.length > 0);
+    // Designar Tarea Raíz (primaryCard):
+    // Prioridad 1: Tarjeta que NO sea sub-tarea de otra y posea vinculaciones explicitas
+    let primaryCard = groupCardsInPeriod.find(c => !childCardIds.has(c.id) && (c.linkedTaskIds || []).length > 0);
+    if (!primaryCard) {
+      primaryCard = groupCardsInPeriod.find(c => (c.linkedTaskIds || []).length > 0);
+    }
+    if (!primaryCard) {
+      primaryCard = groupCardsInPeriod.find(c => !childCardIds.has(c.id));
+    }
     if (!primaryCard) {
       groupCardsInPeriod.sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
       primaryCard = groupCardsInPeriod[0];
@@ -559,56 +574,19 @@ const buildCardTaskGroups = (listCards: TaskCard[], allCards: TaskCard[]): CardT
 
 // Helper to filter card list so ONLY root tasks (Tarea Raíz) are returned in task views
 const filterRootCardsOnly = (cardList: TaskCard[], allCards: TaskCard[]): TaskCard[] => {
-  const visitedIds = new Set<string>();
-  const rootCardIds = new Set<string>();
+  // Una tarjeta es sub-tarea (hija) si su ID está contenido dentro del linkedTaskIds de OTRA tarjeta
+  const childCardIds = new Set<string>();
 
-  const sortedAll = [...allCards].sort((a, b) => {
-    const aHasLinks = (a.linkedTaskIds && a.linkedTaskIds.length > 0) ? 1 : 0;
-    const bHasLinks = (b.linkedTaskIds && b.linkedTaskIds.length > 0) ? 1 : 0;
-    if (aHasLinks !== bHasLinks) return bHasLinks - aHasLinks;
-    return new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime();
-  });
-
-  sortedAll.forEach(card => {
-    if (visitedIds.has(card.id)) return;
-
-    const clusterMap = new Map<string, TaskCard>();
-    const queue = [card];
-    clusterMap.set(card.id, card);
-
-    while (queue.length > 0) {
-      const current = queue.shift()!;
-      const linkedIds = current.linkedTaskIds || [];
-      const pointingCards = allCards.filter(c => c.linkedTaskIds && c.linkedTaskIds.includes(current.id));
-      const neighbors = [
-        ...linkedIds.map(id => allCards.find(c => c.id === id)).filter((c): c is TaskCard => Boolean(c)),
-        ...pointingCards
-      ];
-
-      neighbors.forEach(neighbor => {
-        if (!clusterMap.has(neighbor.id)) {
-          clusterMap.set(neighbor.id, neighbor);
-          queue.push(neighbor);
-        }
-      });
-    }
-
-    const clusterCards = Array.from(clusterMap.values());
-    clusterCards.forEach(c => visitedIds.add(c.id));
-
-    if (clusterCards.length === 1) {
-      rootCardIds.add(clusterCards[0].id);
-    } else {
-      let root = clusterCards.find(c => c.linkedTaskIds && c.linkedTaskIds.length > 0);
-      if (!root) {
-        clusterCards.sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
-        root = clusterCards[0];
+  allCards.forEach(parentCard => {
+    (parentCard.linkedTaskIds || []).forEach(childId => {
+      if (childId !== parentCard.id) {
+        childCardIds.add(childId);
       }
-      rootCardIds.add(root.id);
-    }
+    });
   });
 
-  return cardList.filter(card => rootCardIds.has(card.id));
+  // Retornar en las vistas principales únicamente las Tareas Raíz
+  return cardList.filter(card => !childCardIds.has(card.id));
 };
 
 // Custom Mini Calendar DatePicker Popover
@@ -2403,27 +2381,53 @@ function TaskManager({
     onSaveCard(cardData);
 
     // Sync linked tasks
+    // 1. Limpiar referencias en tareas que fueron desvinculadas durante la edición
+    const previousLinkedIds = editingCard?.linkedTaskIds || [];
+    const removedLinkedIds = previousLinkedIds.filter(id => !taskLinkedTaskIds.includes(id));
+    removedLinkedIds.forEach(remId => {
+      const remCard = cards.find(c => c.id === remId);
+      if (remCard && remCard.linkedTaskIds && remCard.linkedTaskIds.includes(cardId)) {
+        onSaveCard({
+          ...remCard,
+          linkedTaskIds: remCard.linkedTaskIds.filter(id => id !== cardId)
+        });
+      }
+    });
+
+    // 2. Sincronizar sub-tareas vinculadas a esta Tarea Raíz
     taskLinkedTaskIds.forEach(linkedId => {
       const linkedCard = cards.find(c => c.id === linkedId);
       if (linkedCard) {
-        const existingLinks = linkedCard.linkedTaskIds || [];
-        const updatedLinks = Array.from(new Set([...existingLinks, cardId]));
+        // Limpiar cardId de la sub-tarea para mantener jerarquía unilateral Tarea Raíz -> Sub-tarea
+        const cleanedLinks = (linkedCard.linkedTaskIds || []).filter(id => id !== cardId);
         const updatedLinkedCard: TaskCard = {
           ...linkedCard,
-          linkedTaskIds: updatedLinks
+          linkedTaskIds: cleanedLinks
         };
         if (currentWorkerId && !updatedLinkedCard.assignedWorkerIds.includes(currentWorkerId)) {
           updatedLinkedCard.assignedWorkerIds = [...updatedLinkedCard.assignedWorkerIds, currentWorkerId];
         }
+        if (cardData.isIngested) {
+          updatedLinkedCard.isIngested = true;
+          updatedLinkedCard.ingestedAt = updatedLinkedCard.ingestedAt || cardData.ingestedAt || nowIso;
+        }
+        if (cardData.isEdited) {
+          updatedLinkedCard.isEdited = true;
+          updatedLinkedCard.editedAt = updatedLinkedCard.editedAt || cardData.editedAt || nowIso;
+        }
         if (cardData.isDocumented) {
           updatedLinkedCard.isDocumented = true;
-          updatedLinkedCard.documentedAt = cardData.documentedAt || nowIso;
+          updatedLinkedCard.documentedAt = updatedLinkedCard.documentedAt || cardData.documentedAt || nowIso;
           updatedLinkedCard.status = 'Archivando' as any;
         }
         if (cardData.isFinalized) {
           updatedLinkedCard.isFinalized = true;
-          updatedLinkedCard.finalizedAt = cardData.finalizedAt || nowIso;
+          updatedLinkedCard.finalizedAt = updatedLinkedCard.finalizedAt || cardData.finalizedAt || nowIso;
           updatedLinkedCard.status = 'Finalizado';
+        }
+        if (cardData.isDiscarded) {
+          updatedLinkedCard.isDiscarded = true;
+          updatedLinkedCard.discardedAt = updatedLinkedCard.discardedAt || cardData.discardedAt || nowIso;
         }
         onSaveCard(updatedLinkedCard);
       }
@@ -5310,15 +5314,15 @@ function TaskManager({
                   </div>
                 )}
 
-                {/* TARES VINCULADAS (LINKED TASKS) */}
+                {/* TAREAS VINCULADAS (LINKED TASKS - TAREA RAÍZ) */}
                 <div className="space-y-3 p-3.5 rounded-xl bg-slate-950 border border-white/10">
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <div className="text-xs font-bold text-cyan-300 uppercase flex items-center gap-1.5">
                       <Link2 className="w-3.5 h-3.5 text-cyan-400" />
-                      <span>Vinculación de Tareas (Archivado & Finalización Conjunta)</span>
+                      <span>Vinculación de Tareas (Esta será la Tarea Raíz)</span>
                     </div>
                     <span className="text-[10px] text-slate-400">
-                      * Si están vinculadas se marcan juntas en Por Archivar y Finalizar.
+                      * Las tareas seleccionadas quedarán vinculadas como sub-tareas debajo de esta.
                     </span>
                   </div>
 
@@ -5344,7 +5348,7 @@ function TaskManager({
                       }}
                       className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
                     >
-                      <option value="">-- Seleccionar tarea a vincular --</option>
+                      <option value="">-- Seleccionar tarea para vincular debajo de esta --</option>
                       {cards
                         .filter(c => c.id !== editingCard?.id && !taskLinkedTaskIds.includes(c.id))
                         .filter(c => !linkSearchQuery || c.title.toLowerCase().includes(linkSearchQuery.toLowerCase()) || (c.description && c.description.toLowerCase().includes(linkSearchQuery.toLowerCase())))
@@ -5365,12 +5369,12 @@ function TaskManager({
                         return (
                           <span key={linkedId} className="px-2.5 py-1 rounded-lg text-xs font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 flex items-center gap-2">
                             <Link2 className="w-3 h-3 text-cyan-400" />
-                            <span>{lCard?.title || linkedId}</span>
+                            <span>Sub-tarea: {lCard?.title || linkedId}</span>
                             <button
                               type="button"
                               onClick={() => setTaskLinkedTaskIds(taskLinkedTaskIds.filter(id => id !== linkedId))}
                               className="text-slate-400 hover:text-rose-400 font-bold ml-1 cursor-pointer"
-                              title="Desvincular"
+                              title="Desvincular sub-tarea"
                             >
                               ✕
                             </button>
@@ -5379,7 +5383,7 @@ function TaskManager({
                       })}
                     </div>
                   ) : (
-                    <p className="text-[11px] text-slate-500 italic">No hay tareas vinculadas a este registro.</p>
+                    <p className="text-[11px] text-slate-500 italic">No hay sub-tareas vinculadas a esta tarea raíz.</p>
                   )}
                 </div>
 
