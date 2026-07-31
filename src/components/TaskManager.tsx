@@ -950,6 +950,12 @@ function TaskManager({
   const [dateFilter, setDateFilter] = useState<string>('');
   const [onlyMyTasks, setOnlyMyTasks] = useState<boolean>(false);
 
+  // Stage Filter States ('Ingestado', 'Editado', 'Por Archivar')
+  const [stageFilterIngested, setStageFilterIngested] = useState<boolean>(false);
+  const [stageFilterEdited, setStageFilterEdited] = useState<boolean>(false);
+  const [stageFilterDocumented, setStageFilterDocumented] = useState<boolean>(false);
+  const [stageFilterLogic, setStageFilterLogic] = useState<'AND' | 'ONLY'>('AND');
+
   // Modals state
   const [showNotificationCenter, setShowNotificationCenter] = useState<boolean>(false);
   const [showBoardModal, setShowBoardModal] = useState<boolean>(false);
@@ -1123,6 +1129,111 @@ function TaskManager({
     );
   };
 
+  // Renderizador de Filtro por Etapas de Trabajo (Ingestado, Editado, Por Archivar) con selector "Y (AND)" / "SÓLO (ONLY)"
+  const renderStageFilter = () => {
+    const isAnyStageActive = stageFilterIngested || stageFilterEdited || stageFilterDocumented;
+
+    return (
+      <div className="flex items-center gap-1.5 bg-slate-950/90 p-1.5 rounded-xl border border-white/10 shadow-inner flex-wrap">
+        <div className="flex items-center gap-1 px-1.5 text-[10px] font-mono text-slate-400 uppercase font-bold">
+          <Sliders className="w-3.5 h-3.5 text-cyan-400" />
+          <span className="hidden sm:inline">Etapa:</span>
+        </div>
+
+        {/* Ingestado */}
+        <button
+          type="button"
+          onClick={() => setStageFilterIngested(!stageFilterIngested)}
+          className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer border flex items-center gap-1.5 ${
+            stageFilterIngested
+              ? 'bg-cyan-500/25 text-cyan-200 border-cyan-400/50 shadow-[0_0_8px_rgba(6,182,212,0.3)]'
+              : 'bg-slate-900/80 text-slate-400 border-white/5 hover:text-slate-200 hover:border-white/20'
+          }`}
+          title="Filtrar por material Ingestado"
+        >
+          <span className={`w-1.5 h-1.5 rounded-full ${stageFilterIngested ? 'bg-cyan-400 animate-pulse' : 'bg-slate-600'}`} />
+          Ingestado
+        </button>
+
+        {/* Editado */}
+        <button
+          type="button"
+          onClick={() => setStageFilterEdited(!stageFilterEdited)}
+          className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer border flex items-center gap-1.5 ${
+            stageFilterEdited
+              ? 'bg-blue-500/25 text-blue-200 border-blue-400/50 shadow-[0_0_8px_rgba(59,130,246,0.3)]'
+              : 'bg-slate-900/80 text-slate-400 border-white/5 hover:text-slate-200 hover:border-white/20'
+          }`}
+          title="Filtrar por material Editado"
+        >
+          <span className={`w-1.5 h-1.5 rounded-full ${stageFilterEdited ? 'bg-blue-400 animate-pulse' : 'bg-slate-600'}`} />
+          Editado
+        </button>
+
+        {/* Por Archivar */}
+        <button
+          type="button"
+          onClick={() => setStageFilterDocumented(!stageFilterDocumented)}
+          className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer border flex items-center gap-1.5 ${
+            stageFilterDocumented
+              ? 'bg-amber-500/25 text-amber-200 border-amber-400/50 shadow-[0_0_8px_rgba(245,158,11,0.3)]'
+              : 'bg-slate-900/80 text-slate-400 border-white/5 hover:text-slate-200 hover:border-white/20'
+          }`}
+          title="Filtrar por material Por Archivar (Documentado)"
+        >
+          <span className={`w-1.5 h-1.5 rounded-full ${stageFilterDocumented ? 'bg-amber-400 animate-pulse' : 'bg-slate-600'}`} />
+          Por Archivar
+        </button>
+
+        {/* Selector de Lógica: AND vs ONLY */}
+        {isAnyStageActive && (
+          <div className="flex items-center gap-0.5 bg-slate-900 p-0.5 rounded-lg border border-white/10 ml-0.5">
+            <button
+              type="button"
+              onClick={() => setStageFilterLogic('AND')}
+              className={`px-2 py-0.5 rounded text-[10px] font-mono font-black transition-all cursor-pointer ${
+                stageFilterLogic === 'AND'
+                  ? 'bg-cyan-500 text-slate-950 shadow-sm'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="Modo Y (AND): Muestra tareas que contengan TODAS las etapas seleccionadas"
+            >
+              Y (AND)
+            </button>
+            <button
+              type="button"
+              onClick={() => setStageFilterLogic('ONLY')}
+              className={`px-2 py-0.5 rounded text-[10px] font-mono font-black transition-all cursor-pointer ${
+                stageFilterLogic === 'ONLY'
+                  ? 'bg-amber-400 text-slate-950 shadow-sm'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="Modo SÓLO (ONLY): Muestra tareas que estén EXCLUSIVAMENTE en las etapas seleccionadas"
+            >
+              SÓLO (ONLY)
+            </button>
+          </div>
+        )}
+
+        {/* Botón de Limpieza */}
+        {isAnyStageActive && (
+          <button
+            type="button"
+            onClick={() => {
+              setStageFilterIngested(false);
+              setStageFilterEdited(false);
+              setStageFilterDocumented(false);
+            }}
+            className="p-1 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-all cursor-pointer"
+            title="Limpiar filtro de etapas"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+    );
+  };
+
   // Resolved list of production boards (Excludes "Otras Solicitudes" & "Administración")
   const productionBoards = useMemo(() => {
     const defaults: TaskBoard[] = [
@@ -1229,6 +1340,30 @@ function TaskManager({
     return dates.some(d => normalizeToYMD(d) === filterDate);
   };
 
+  // Helper para filtrar tarjetas según las etapas de proceso seleccionadas (Ingestado, Editado, Por Archivar)
+  const cardMatchesStageFilter = (card: TaskCard) => {
+    if (!stageFilterIngested && !stageFilterEdited && !stageFilterDocumented) {
+      return true;
+    }
+
+    const hasIngested = Boolean(card.isIngested);
+    const hasEdited = Boolean(card.isEdited);
+    const hasDocumented = Boolean(card.isDocumented);
+
+    if (stageFilterLogic === 'AND') {
+      if (stageFilterIngested && !hasIngested) return false;
+      if (stageFilterEdited && !hasEdited) return false;
+      if (stageFilterDocumented && !hasDocumented) return false;
+      return true;
+    } else {
+      // Modo 'ONLY': Coincidencia exacta de booleanos de etapa
+      if (hasIngested !== stageFilterIngested) return false;
+      if (hasEdited !== stageFilterEdited) return false;
+      if (hasDocumented !== stageFilterDocumented) return false;
+      return true;
+    }
+  };
+
   // Filtered cards for active Production Tab (Ingesta, Prensa, Programación)
   const productionCards = useMemo(() => {
     const list = sortedCardsDescending.filter(card => {
@@ -1265,10 +1400,13 @@ function TaskManager({
       // 7. Date filter
       if (dateFilter && !cardMatchesDateFilter(card, dateFilter)) return false;
 
+      // 8. Stage filter (Ingestado, Editado, Por Archivar)
+      if (!cardMatchesStageFilter(card)) return false;
+
       return true;
     });
     return filterRootCardsOnly(list, cards);
-  }, [sortedCardsDescending, selectedBoardId, onlyMyTasks, searchQuery, dateFilter, currentWorkerId, isGerenciaUser, workers, cards]);
+  }, [sortedCardsDescending, selectedBoardId, onlyMyTasks, searchQuery, dateFilter, currentWorkerId, isGerenciaUser, workers, cards, stageFilterIngested, stageFilterEdited, stageFilterDocumented, stageFilterLogic]);
 
   // Filtered cards for "Otras Solicitudes" Tab (Includes Administración and general requests)
   const otherRequestsCards = useMemo(() => {
@@ -1299,10 +1437,13 @@ function TaskManager({
       // 6. Date filter
       if (dateFilter && !cardMatchesDateFilter(card, dateFilter)) return false;
 
+      // 7. Stage filter (Ingestado, Editado, Por Archivar)
+      if (!cardMatchesStageFilter(card)) return false;
+
       return true;
     });
     return filterRootCardsOnly(list, cards);
-  }, [sortedCardsDescending, onlyMyTasks, searchQuery, dateFilter, currentWorkerId, isGerenciaUser, cards]);
+  }, [sortedCardsDescending, onlyMyTasks, searchQuery, dateFilter, currentWorkerId, isGerenciaUser, cards, stageFilterIngested, stageFilterEdited, stageFilterDocumented, stageFilterLogic]);
 
   // Filtered cards for "Tareas Finalizadas" Tab (Hidden section / Apartado)
   const finalizedCards = useMemo(() => {
@@ -1325,10 +1466,13 @@ function TaskManager({
       // Date filter
       if (dateFilter && !cardMatchesDateFilter(card, dateFilter)) return false;
 
+      // Stage filter (Ingestado, Editado, Por Archivar)
+      if (!cardMatchesStageFilter(card)) return false;
+
       return true;
     });
     return filterRootCardsOnly(list, cards);
-  }, [sortedCardsDescending, searchQuery, dateFilter, isGerenciaUser, cards]);
+  }, [sortedCardsDescending, searchQuery, dateFilter, isGerenciaUser, cards, stageFilterIngested, stageFilterEdited, stageFilterDocumented, stageFilterLogic]);
 
   // Filtered cards for "Material Descartado" Tab
   const discardedCards = useMemo(() => {
@@ -1348,10 +1492,13 @@ function TaskManager({
       // Date filter
       if (dateFilter && !cardMatchesDateFilter(card, dateFilter)) return false;
 
+      // Stage filter (Ingestado, Editado, Por Archivar)
+      if (!cardMatchesStageFilter(card)) return false;
+
       return true;
     });
     return filterRootCardsOnly(list, cards);
-  }, [sortedCardsDescending, searchQuery, dateFilter, isGerenciaUser, cards]);
+  }, [sortedCardsDescending, searchQuery, dateFilter, isGerenciaUser, cards, stageFilterIngested, stageFilterEdited, stageFilterDocumented, stageFilterLogic]);
 
   // Pagination State for Task Management (30 items per page)
   const TASKS_PER_PAGE = 30;
@@ -1365,7 +1512,7 @@ function TaskManager({
     setCurrentPageSolicitudes(1);
     setCurrentPageFinalizadas(1);
     setCurrentPageDescartados(1);
-  }, [selectedBoardId, searchQuery, dateFilter, onlyMyTasks, activeMainTab]);
+  }, [selectedBoardId, searchQuery, dateFilter, onlyMyTasks, activeMainTab, stageFilterIngested, stageFilterEdited, stageFilterDocumented, stageFilterLogic]);
 
   const totalPagesProduccion = useMemo(() => Math.ceil(productionCards.length / TASKS_PER_PAGE) || 1, [productionCards.length]);
   const paginatedProductionCards = useMemo(() => {
@@ -2984,7 +3131,7 @@ function TaskManager({
               )}
             </div>
 
-            {/* Search, Date Filter & My Tasks */}
+            {/* Search, Date Filter, Stage Filter & My Tasks */}
             <div className="flex items-center gap-2 flex-wrap">
               <div className="relative w-full sm:w-48">
                 <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
@@ -3005,6 +3152,9 @@ function TaskManager({
                 accentColor="cyan"
                 clearable
               />
+
+              {/* Stage Filter (Ingestado, Editado, Por Archivar) with AND / ONLY logic */}
+              {renderStageFilter()}
 
               {currentWorkerId && (
                 <button
@@ -3370,6 +3520,9 @@ function TaskManager({
                 clearable
               />
 
+              {/* Stage Filter (Ingestado, Editado, Por Archivar) with AND / ONLY logic */}
+              {renderStageFilter()}
+
               {currentWorkerId && (
                 <button
                   onClick={() => setOnlyMyTasks(!onlyMyTasks)}
@@ -3671,6 +3824,9 @@ function TaskManager({
                 accentColor="emerald"
                 clearable
               />
+
+              {/* Stage Filter (Ingestado, Editado, Por Archivar) with AND / ONLY logic */}
+              {renderStageFilter()}
             </div>
           </div>
 
@@ -3794,10 +3950,32 @@ function TaskManager({
                 Materiales que fueron marcados como descartados. Siguen sumando en las horas ingestadas totales pero no en archivados.
               </p>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="px-3 py-1 rounded-lg text-xs font-mono font-bold bg-red-500/10 text-red-300 border border-red-500/30">
                 Total: {discardedCards.length} descartados
               </span>
+
+              <div className="relative w-full sm:w-48">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  placeholder="Buscar descartados..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  className="w-full bg-slate-950 border border-white/10 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-red-500"
+                />
+              </div>
+
+              <CustomDatePicker
+                value={dateFilter}
+                onChange={setDateFilter}
+                placeholder="Filtrar fecha..."
+                accentColor="red"
+                clearable
+              />
+
+              {/* Stage Filter (Ingestado, Editado, Por Archivar) with AND / ONLY logic */}
+              {renderStageFilter()}
             </div>
           </div>
 
