@@ -590,6 +590,80 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
     onAddNotification?.('Plantilla CSV descargada con éxito. Rellena los datos y vuelve a subirla.', 'success');
   };
 
+  // EXPORT CURRENT LOAD / INVENTORY CSV GENERATOR
+  const downloadCurrentArchiveCSV = () => {
+    const itemsToExport = filteredMaterials;
+
+    if (itemsToExport.length === 0) {
+      alert('No hay registros de la carga actual del archivo físico para exportar.');
+      return;
+    }
+
+    const headers = [
+      'Codigo',
+      'CodigoTexto',
+      'Titulo',
+      'Formato',
+      'Programa',
+      'Localizacion',
+      'FechaGrabacion',
+      'FechaAire',
+      'NumeroSegmento',
+      'Duracion',
+      'Sinopsis',
+      'Observaciones',
+      'FechaRegistro'
+    ];
+
+    const rows = itemsToExport.map(item => {
+      const formatName = formats.find(f => f.id === item.formatId)?.name || 'Sin formato';
+      const programName = programs.find(p => p.id === item.programId)?.name || 'Sin programa';
+      const locationName = locations.find(l => l.id === item.locationId)?.name || 'Sin localización';
+      const formattedCode = `AA-${String(item.code || 0).padStart(6, '0')}`;
+      const recDate = item.recordingDate || '';
+      const airDate = item.airDate || '';
+      const seg = item.segmentNumber || 1;
+      const dur = item.totalTime || '00:00:00';
+      const synopsis = item.synopsis || '';
+      const obs = item.observations || '';
+      const created = item.createdAt ? new Date(item.createdAt).toLocaleDateString('es-VE') : '';
+
+      return [
+        String(item.code || ''),
+        formattedCode,
+        item.title || '',
+        formatName,
+        programName,
+        locationName,
+        recDate,
+        airDate,
+        String(seg),
+        dur,
+        synopsis,
+        obs,
+        created
+      ];
+    });
+
+    const csvContent = '\uFEFF' + [
+      headers.join(','),
+      ...rows.map(row => row.map(val => `"${String(val).replace(/"/g, '""')}"`).join(','))
+    ].join('\r\n');
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `archivo_fisico_carga_actual_vtv_${todayStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    onAddNotification?.(`Reporte CSV de la carga actual del archivo físico exportado (${itemsToExport.length} registros).`, 'success');
+  };
+
   // CSV FILE PARSER LOGIC
   const handleCsvFileUpload = (file: File) => {
     setCsvErrorMsg(null);
@@ -935,6 +1009,15 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
             </button>
 
             <button
+              onClick={downloadCurrentArchiveCSV}
+              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-950/80 text-emerald-300 hover:bg-emerald-900/90 border border-emerald-500/40 transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
+              title="Descargar reporte CSV con la carga/inventario actual del archivo físico"
+            >
+              <Download size={15} className="text-emerald-400" />
+              <span>Descargar CSV Carga Actual</span>
+            </button>
+
+            <button
               onClick={handleOpenAddMaterial}
               className="px-4 py-2 rounded-xl text-xs font-bold bg-amber-500 text-slate-950 hover:bg-amber-400 transition-all flex items-center gap-1.5 shadow-[0_0_15px_rgba(245,158,11,0.3)] cursor-pointer"
             >
@@ -1104,6 +1187,15 @@ export const PhysicalArchive: React.FC<PhysicalArchiveProps> = ({
                   ))}
                 </select>
               </div>
+
+              <button
+                onClick={downloadCurrentArchiveCSV}
+                className="px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 border border-emerald-500/40 transition-all flex items-center gap-1.5 cursor-pointer"
+                title="Descargar CSV con los items mostrados actualmente"
+              >
+                <Download size={13} className="text-emerald-400" />
+                <span>Exportar Filtrados ({filteredMaterials.length})</span>
+              </button>
             </div>
           </div>
 

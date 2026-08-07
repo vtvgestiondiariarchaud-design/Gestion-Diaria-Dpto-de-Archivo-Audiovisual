@@ -595,7 +595,7 @@ interface CustomDatePickerProps {
   onChange: (val: string) => void;
   label?: string;
   placeholder?: string;
-  accentColor?: 'cyan' | 'purple' | 'amber' | 'emerald';
+  accentColor?: 'cyan' | 'purple' | 'amber' | 'emerald' | 'red' | 'rose' | 'blue' | 'indigo' | 'violet' | string;
   clearable?: boolean;
   className?: string;
 }
@@ -702,7 +702,7 @@ const CustomDatePicker: React.FC<CustomDatePickerProps> = ({
     return value;
   }, [value, placeholder]);
 
-  const colorStyles = {
+  const colorStylesMap = {
     cyan: {
       border: 'border-cyan-500/40',
       text: 'text-cyan-300',
@@ -730,8 +730,45 @@ const CustomDatePicker: React.FC<CustomDatePickerProps> = ({
       hover: 'hover:border-emerald-500/50 hover:bg-emerald-500/10',
       bgActive: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50',
       icon: 'text-emerald-400'
+    },
+    red: {
+      border: 'border-rose-500/40',
+      text: 'text-rose-300',
+      hover: 'hover:border-rose-500/50 hover:bg-rose-500/10',
+      bgActive: 'bg-rose-500/20 text-rose-300 border-rose-500/50',
+      icon: 'text-rose-400'
+    },
+    rose: {
+      border: 'border-rose-500/40',
+      text: 'text-rose-300',
+      hover: 'hover:border-rose-500/50 hover:bg-rose-500/10',
+      bgActive: 'bg-rose-500/20 text-rose-300 border-rose-500/50',
+      icon: 'text-rose-400'
+    },
+    blue: {
+      border: 'border-blue-500/40',
+      text: 'text-blue-300',
+      hover: 'hover:border-blue-500/50 hover:bg-blue-500/10',
+      bgActive: 'bg-blue-500/20 text-blue-300 border-blue-500/50',
+      icon: 'text-blue-400'
+    },
+    indigo: {
+      border: 'border-indigo-500/40',
+      text: 'text-indigo-300',
+      hover: 'hover:border-indigo-500/50 hover:bg-indigo-500/10',
+      bgActive: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/50',
+      icon: 'text-indigo-400'
+    },
+    violet: {
+      border: 'border-violet-500/40',
+      text: 'text-violet-300',
+      hover: 'hover:border-violet-500/50 hover:bg-violet-500/10',
+      bgActive: 'bg-violet-500/20 text-violet-300 border-violet-500/50',
+      icon: 'text-violet-400'
     }
-  }[accentColor];
+  };
+
+  const colorStyles = colorStylesMap[accentColor as keyof typeof colorStylesMap] || colorStylesMap.cyan;
 
   return (
     <div className={`relative inline-block ${className}`}>
