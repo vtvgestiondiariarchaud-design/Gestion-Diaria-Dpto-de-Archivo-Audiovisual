@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Kanban, Plus, Search, Filter, Calendar, CheckSquare, Users,
@@ -610,6 +611,46 @@ const CustomDatePicker: React.FC<CustomDatePickerProps> = ({
   className = ''
 }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const buttonRef = React.useRef<HTMLButtonElement>(null);
+  const [popoverPos, setPopoverPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+
+  const updatePosition = React.useCallback(() => {
+    if (buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      const popoverWidth = 260;
+      const popoverHeight = 310;
+      
+      let top = rect.bottom + 6;
+      if (top + popoverHeight > window.innerHeight) {
+        top = Math.max(10, rect.top - popoverHeight - 6);
+      }
+      let left = rect.left;
+      if (left + popoverWidth > window.innerWidth) {
+        left = Math.max(10, window.innerWidth - popoverWidth - 16);
+      }
+      setPopoverPos({ top, left });
+    }
+  }, []);
+
+  const handleToggle = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!isOpen) {
+      updatePosition();
+    }
+    setIsOpen(!isOpen);
+  };
+
+  React.useEffect(() => {
+    if (isOpen) {
+      updatePosition();
+      window.addEventListener('scroll', updatePosition, true);
+      window.addEventListener('resize', updatePosition);
+      return () => {
+        window.removeEventListener('scroll', updatePosition, true);
+        window.removeEventListener('resize', updatePosition);
+      };
+    }
+  }, [isOpen, updatePosition]);
 
   const initialYearMonth = useMemo(() => {
     if (value && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
@@ -776,8 +817,9 @@ const CustomDatePicker: React.FC<CustomDatePickerProps> = ({
 
       <div className="flex items-center gap-1">
         <button
+          ref={buttonRef}
           type="button"
-          onClick={() => setIsOpen(!isOpen)}
+          onClick={handleToggle}
           className={`w-full bg-slate-950 border ${isOpen ? colorStyles.border : 'border-white/10'} rounded-xl px-3 py-2 text-xs font-mono text-slate-200 flex items-center justify-between gap-2 cursor-pointer transition-all ${colorStyles.hover}`}
         >
           <div className="flex items-center gap-2 overflow-hidden">
@@ -804,10 +846,13 @@ const CustomDatePicker: React.FC<CustomDatePickerProps> = ({
         )}
       </div>
 
-      {isOpen && (
+      {isOpen && createPortal(
         <>
-          <div className="fixed inset-0 z-[9000]" onClick={() => setIsOpen(false)} />
-          <div className="absolute right-0 sm:right-auto sm:left-0 mt-2 z-[9999] w-64 bg-slate-900 border border-cyan-500/50 rounded-2xl p-3 shadow-[0_0_30px_rgba(0,0,0,0.8)] backdrop-blur-2xl space-y-2">
+          <div className="fixed inset-0 z-[999998]" onClick={() => setIsOpen(false)} />
+          <div
+            style={{ top: `${popoverPos.top}px`, left: `${popoverPos.left}px` }}
+            className="fixed z-[999999] w-64 bg-slate-900 border border-cyan-500/50 rounded-2xl p-3 shadow-[0_0_30px_rgba(0,0,0,0.95)] backdrop-blur-2xl space-y-2 text-slate-100"
+          >
             <div className="flex items-center justify-between pb-2 border-b border-white/10">
               <button
                 type="button"
@@ -888,7 +933,8 @@ const CustomDatePicker: React.FC<CustomDatePickerProps> = ({
               )}
             </div>
           </div>
-        </>
+        </>,
+        document.body
       )}
     </div>
   );
@@ -1429,36 +1475,47 @@ function TaskManager({
       // 0. Hide discarded tasks
       if (card.isDiscarded) return false;
 
-      // 1. Hide finalized tasks
-      if (card.isFinalized) return false;
+      // 1. Hide finalized tasks (they belong to Tareas Finalizadas tab)
+      if (card.isFinalized || card.status === 'Finalizado') return false;
 
-      // 2. Must be "Otras Solicitudes" OR "Administración"
-      if (!card.isOtherRequest && card.boardId !== 'board_otras_solicitudes' && card.boardId !== 'board_administracion') return false;
+      // 2. Must be "Otras Solicitudes", "Administración", flagged isOtherRequest, or NOT in standard production boards
+      const isOther = Boolean(
+        card.isOtherRequest ||
+        card.boardId === 'board_otras_solicitudes' ||
+        card.boardId === 'board_administracion' ||
+        !productionBoards.some(pb => pb.id === card.boardId)
+      );
+      if (!isOther) return false;
 
       // 3. Privacy: Gerencia Exclusive tasks remain hidden except for Gerente & Adjunta
       if (card.isGerenciaOnly && !isGerenciaUser) return false;
 
-      // 4. Only my tasks filter
-      if (onlyMyTasks && currentWorkerId && !card.assignedWorkerIds.includes(currentWorkerId)) return false;
+      // 4. Only my tasks filter (matches assigned workers OR creator)
+      if (onlyMyTasks && currentWorkerId) {
+        const isAssigned = card.assignedWorkerIds && card.assignedWorkerIds.includes(currentWorkerId);
+        const isCreator = card.createdByWorkerId === currentWorkerId;
+        if (!isAssigned && !isCreator) return false;
+      }
 
       // 5. Search query
       if (searchQuery.trim() !== '') {
         const q = searchQuery.toLowerCase();
         const matchesTitle = card.title.toLowerCase().includes(q);
         const matchesDesc = card.description.toLowerCase().includes(q);
-        if (!matchesTitle && !matchesDesc) return false;
+        const matchesAssignee = (card.assignedWorkerIds || []).some(id => {
+          const w = workers.find(work => work.id === id);
+          return w && w.name.toLowerCase().includes(q);
+        });
+        if (!matchesTitle && !matchesDesc && !matchesAssignee) return false;
       }
 
       // 6. Date filter
       if (dateFilter && !cardMatchesDateFilter(card, dateFilter)) return false;
 
-      // 7. Stage filter (Ingestado, Editado, Por Archivar)
-      if (!cardMatchesStageFilter(card)) return false;
-
       return true;
     });
     return filterRootCardsOnly(list, cards);
-  }, [sortedCardsDescending, onlyMyTasks, searchQuery, dateFilter, currentWorkerId, isGerenciaUser, cards, stageFilterIngested, stageFilterEdited, stageFilterDocumented, stageFilterLogic]);
+  }, [sortedCardsDescending, onlyMyTasks, searchQuery, dateFilter, currentWorkerId, isGerenciaUser, cards, workers, productionBoards]);
 
   // Filtered cards for "Tareas Finalizadas" Tab (Hidden section / Apartado)
   const finalizedCards = useMemo(() => {
@@ -1660,6 +1717,7 @@ function TaskManager({
 
     // 1. LISTA 1: Material Ingestado y Editado en el período
     // Regla estricta: Todo material que NO esté marcado como ingestado NO puede ser contado para el total de horas ingestadas
+    // Si fue descartado PERO está ingestado, aparece en la lista de ingesta
     const ingestadosEnPeriodo = baseCards.filter(c => {
       if (!c.isIngested) return false;
       const ingStr = c.ingestedAt || c.startDate || c.createdAt;
@@ -1669,8 +1727,8 @@ function TaskManager({
     // Horas de Ingesta: se suman TODAS las tareas marcadas como ingestadas en el período
     const totalIngestaSeconds = ingestadosEnPeriodo.reduce((sum, c) => sum + parseDurationToSeconds(c.duration), 0);
 
-    // Editados en el período
-    const editadosEnPeriodo = baseCards.filter(c => c.isEdited && matchesPeriod(c.editedAt || c.startDate || c.createdAt));
+    // Editados en el período (excluyendo descartados)
+    const editadosEnPeriodo = baseCards.filter(c => c.isEdited && !c.isDiscarded && matchesPeriod(c.editedAt || c.startDate || c.createdAt));
     
     // Tiempo Ahorrado por Filtro de Ingesta: resta de (tiempo material original - tiempo material editado)
     const tiempoAhorradoSeconds = editadosEnPeriodo.reduce((sum, c) => {
@@ -1691,25 +1749,36 @@ function TaskManager({
     const ingestedAndEditedGroups = buildCardTaskGroups(ingestedAndEditedList, cards);
 
     // 2. LISTA 2: Material Archivado ("Para Archivar" / Documentados / Finalizados) y Logros de Otras Solicitudes
+    // Regla 1: El material descartado NO aparece en Material Archivado ni en Logros (solo en Ingesta si fue ingestado).
+    // Regla 2: Solo va a salir el material en Lista 2 (Material Archivado y Logros) si está marcado como FINALIZADO.
+    // Regla 3: Aparecen en la lista si fueron marcados en el rango de fecha solicitado del reporte.
+    // Regla 4: En material archivado y logros se cuenta como 1 logro por familia de tareas (si tiene sub-tareas vinculadas cuenta como 1 solo).
     const documentadosEnPeriodo = baseCards.filter(c => {
+      if (c.isDiscarded) return false;
+      const isFin = Boolean(c.isFinalized || c.status === 'Finalizado');
+      if (!isFin) return false; // Requisito estricto: estar marcado como finalizado
       const isArch = Boolean(c.isDocumented || c.isFinalized || c.status === 'Finalizado');
-      if (!isArch || c.isDiscarded) return false;
-      const archDateStr = c.documentedAt || c.finalizedAt || c.startDate || c.createdAt;
+      if (!isArch) return false;
+      const archDateStr = c.finalizedAt || c.documentedAt || c.startDate || c.createdAt;
       return matchesPeriod(archDateStr);
     });
 
     // Materiales Descartados en el período
     const descartadosEnPeriodo = baseCards.filter(c => c.isDiscarded && matchesPeriod(c.discardedAt || c.startDate || c.createdAt));
 
-    // Finalizados en el período
-    const finalizadosEnPeriodo = baseCards.filter(c => c.isFinalized && matchesPeriod(c.finalizedAt || c.startDate || c.createdAt));
+    // Finalizados en el período (excluyendo descartados)
+    const finalizadosEnPeriodo = baseCards.filter(c => (c.isFinalized || c.status === 'Finalizado') && !c.isDiscarded && matchesPeriod(c.finalizedAt || c.startDate || c.createdAt));
 
-    // Logros de solicitudes (no administrativas ni gerenciales)
+    // Logros de solicitudes (no administrativas ni gerenciales, excluyendo descartados, requiriendo estar finalizados)
     const departmentAchievements = baseCards.filter(c => {
       if (c.boardId === 'board_administracion') return false;
       if (c.isGerenciaOnly) return false;
-      if (!matchesPeriod(c.finalizedAt || c.startDate || c.createdAt)) return false;
-      return Boolean(c.isDepartmentAchievement || (c.isOtherRequest && c.isFinalized));
+      if (c.isDiscarded) return false;
+      const isFin = Boolean(c.isFinalized || c.status === 'Finalizado');
+      if (!isFin) return false; // Requisito estricto: estar marcado como finalizado
+      const achDateStr = c.finalizedAt || c.documentedAt || c.startDate || c.createdAt;
+      if (!matchesPeriod(achDateStr)) return false;
+      return Boolean(c.isDepartmentAchievement || c.isOtherRequest);
     });
 
     // Combinar para Lista 2: Material Archivado + Logros
@@ -1722,6 +1791,7 @@ function TaskManager({
     // Conteo para Lista 2: SOLO 1 POR FAMILIA/CLUSTER DE TAREAS VINCULADAS
     const materialArchivadoCount = buildCardTaskGroups(documentadosEnPeriodo, cards).length;
     const materialArchivadoYLogrosCount = archivadosAndLogrosGroups.length;
+    const logrosOtrasSolicitudesCount = buildCardTaskGroups(departmentAchievements, cards).length;
 
     // 6. Cálculo de días del Calendario Mensual (para informe mensual)
     const [mY, mM] = reportMonth.split('-').map(Number);
@@ -1865,7 +1935,7 @@ function TaskManager({
       }
 
       // 2. Editado
-      if (c.isEdited && matchesPeriod(c.editedAt || c.startDate || c.createdAt)) {
+      if (c.isEdited && !c.isDiscarded && matchesPeriod(c.editedAt || c.startDate || c.createdAt)) {
         const ts = c.editedAt || c.startDate || c.createdAt;
         dailyActivityEvents.push({
           id: `edit_${c.id}_${ts}`,
@@ -1903,7 +1973,7 @@ function TaskManager({
       }
 
       // 4. Finalizado
-      if (c.isFinalized && matchesPeriod(c.finalizedAt || c.startDate || c.createdAt)) {
+      if (c.isFinalized && !c.isDiscarded && matchesPeriod(c.finalizedAt || c.startDate || c.createdAt)) {
         const ts = c.finalizedAt || c.startDate || c.createdAt;
         dailyActivityEvents.push({
           id: `fin_${c.id}_${ts}`,
@@ -3037,7 +3107,7 @@ function TaskManager({
           <Layers className="w-4 h-4 text-cyan-400" />
           <span>Producción Audiovisual</span>
           <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-cyan-500/10 text-cyan-300 font-mono font-bold">
-            {cards.filter(c => !c.isDiscarded && !c.isFinalized && !c.isOtherRequest && c.boardId !== 'board_otras_solicitudes' && c.boardId !== 'board_administracion').length}
+            {productionCards.length}
           </span>
         </button>
 
@@ -3052,7 +3122,7 @@ function TaskManager({
           <Award className="w-4 h-4 text-amber-400" />
           <span>Otras Solicitudes</span>
           <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-amber-500/10 text-amber-300 font-mono font-bold">
-            {cards.filter(c => !c.isDiscarded && !c.isFinalized && (c.isOtherRequest || c.boardId === 'board_otras_solicitudes' || c.boardId === 'board_administracion')).length}
+            {otherRequestsCards.length}
           </span>
         </button>
 
@@ -3560,9 +3630,6 @@ function TaskManager({
                 accentColor="amber"
                 clearable
               />
-
-              {/* Stage Filter (Ingestado, Editado, Por Archivar) with AND / ONLY logic */}
-              {renderStageFilter()}
 
               {currentWorkerId && (
                 <button

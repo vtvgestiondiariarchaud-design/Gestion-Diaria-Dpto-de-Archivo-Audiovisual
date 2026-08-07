@@ -524,6 +524,25 @@ export default function App() {
             ],
             createdAt: new Date().toISOString(),
             createdByName: 'Archivo Audiovisual'
+          },
+          {
+            id: 'task_default_solicitud_1',
+            boardId: 'board_otras_solicitudes',
+            title: 'Solicitud Especial: Mantenimiento Preventivo de Servidores SAN',
+            description: 'Revisión técnica de unidades de almacenamiento e indexación del archivo matriz.',
+            status: 'Pendiente',
+            priority: 'alta',
+            isOtherRequest: true,
+            isDepartmentAchievement: true,
+            startDate: today,
+            dueDate: nextWeek,
+            assignedWorkerIds: [],
+            checklist: [
+              { id: 's1', text: 'Inspección de discos en arreglo RAID', completed: false },
+              { id: 's2', text: 'Informe de respaldo técnico', completed: false }
+            ],
+            createdAt: new Date().toISOString(),
+            createdByName: 'Gerencia Audiovisual'
           }
         ];
         localStorage.setItem('vtv_task_cards', JSON.stringify(finalCards));
