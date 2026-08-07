@@ -3893,6 +3893,51 @@ function TaskManager({
                       )}
                     </div>
 
+                    {/* Muestrario de Tareas Vinculadas / Sub-tareas si existen */}
+                    {(() => {
+                      const linkedSubCards = cards.filter(c => (card.linkedTaskIds || []).includes(c.id));
+                      if (linkedSubCards.length === 0) return null;
+
+                      return (
+                        <div className="p-2.5 rounded-xl bg-cyan-950/40 border border-cyan-500/25 space-y-2">
+                          <div className="flex items-center justify-between text-xs">
+                            <div className="font-bold text-cyan-300 flex items-center gap-1.5 uppercase text-[10px]">
+                              <Link2 className="w-3.5 h-3.5 text-cyan-400" />
+                              <span>Tareas Vinculadas ({linkedSubCards.length})</span>
+                            </div>
+                            <span className="text-[10px] font-mono text-cyan-400/80 font-bold">Sub-tareas</span>
+                          </div>
+                          <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                            {linkedSubCards.map((lCard, idx) => {
+                              const subBoard = productionBoards.find(b => b.id === lCard.boardId);
+                              return (
+                                <div key={lCard.id} className="p-2 rounded-lg bg-slate-950/90 border border-white/5 space-y-1 text-xs">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="font-bold text-white text-[11px] truncate">
+                                      <strong className="text-cyan-400 mr-1">#{idx + 1}</strong>
+                                      {lCard.title}
+                                    </span>
+                                    <span className="text-[10px] font-mono text-cyan-300 shrink-0 bg-cyan-500/15 px-1.5 py-0.5 rounded border border-cyan-500/30">
+                                      {lCard.editedDuration || lCard.duration || '00:00:00'}
+                                    </span>
+                                  </div>
+                                  {lCard.description && (
+                                    <p className="text-[10px] text-slate-400 line-clamp-1">
+                                      {lCard.description}
+                                    </p>
+                                  )}
+                                  <div className="flex items-center justify-between text-[9px] text-slate-500 font-mono">
+                                    <span>Área: {subBoard?.name || 'VTV'}</span>
+                                    <span className="text-emerald-400 font-bold">✓ Vinculada</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
                     {/* Unlock / Re-open action for Jefes */}
                     {canManageTasks && (
                       <button

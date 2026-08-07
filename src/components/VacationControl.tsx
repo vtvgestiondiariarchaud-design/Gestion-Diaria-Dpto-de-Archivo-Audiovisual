@@ -87,6 +87,9 @@ export function computeWorkerFreeDays(
   // Sort assignments chronologically
   const sortedAsgs = [...workerAssignments].sort((a, b) => a.date.localeCompare(b.date));
 
+  // Set para asegurar que el doble turno en una misma fecha/guardia no genere un doble día libre
+  const processedEarnedDates = new Set<string>();
+
   sortedAsgs.forEach(asg => {
     if (asg.shiftType === 'libre') {
       libreDates.push(asg.date);
@@ -94,10 +97,13 @@ export function computeWorkerFreeDays(
       const isWk = isWeekend(asg.date);
       const isHol = isHoliday(asg.date);
       if (isWk || isHol) {
-        earnedEvents.push({
-          date: asg.date,
-          type: isHol ? 'holiday' : 'weekend'
-        });
+        if (!processedEarnedDates.has(asg.date)) {
+          processedEarnedDates.add(asg.date);
+          earnedEvents.push({
+            date: asg.date,
+            type: isHol ? 'holiday' : 'weekend'
+          });
+        }
       }
     }
   });
