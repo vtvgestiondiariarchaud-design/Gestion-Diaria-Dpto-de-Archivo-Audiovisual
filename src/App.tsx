@@ -8,7 +8,7 @@ import {
 
 import { Division, Worker, ShiftAssignment, UserRole, TaskBoard, TaskCard, TaskNotification, FreeDayRequest } from './types';
 import { db, getLocalDb, DEFAULT_DIVISIONS } from './supabaseClient';
-import { pullLatestFromGoogleSheets, pushLatestToGoogleSheets, getCachedAccessToken } from './googleSheetsService';
+import { pullLatestFromGoogleSheets, pushLatestToGoogleSheets, getCachedAccessToken, extractSpreadsheetId, getGoogleAppsScriptUrl } from './googleSheetsService';
 
 import TaskManager from './components/TaskManager';
 import VacationControl from './components/VacationControl';
@@ -45,6 +45,12 @@ export default function App() {
   const [loading, setLoading] = useState<boolean>(true);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [spreadsheetId, setSpreadsheetId] = useState<string | null>(() => localStorage.getItem('vtv_google_spreadsheet_id'));
+
+  // Mandatory Connection Guard State
+  const [isConnectedToSheet, setIsConnectedToSheet] = useState<boolean | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [reconnectUrlInput, setReconnectUrlInput] = useState(() => localStorage.getItem('vtv_google_spreadsheet_id') || '');
+  const [reconnectAppsScriptUrlInput, setReconnectAppsScriptUrlInput] = useState(() => getGoogleAppsScriptUrl() || '');
 
   // Authentication & User Session
   const [currentSession, setCurrentSession] = useState<{
@@ -88,12 +94,26 @@ export default function App() {
     }, 4500);
   };
 
-  // Sync data function
-  const syncData = async () => {
+  // Sync data function with connection verification
+  const initConnectionAndLoadData = async (forcedId?: string) => {
     setLoading(true);
+    setConnectionError(null);
+
+    const sheetIdToUse = forcedId || extractSpreadsheetId(localStorage.getItem('vtv_google_spreadsheet_id') || '');
+
+    if (!sheetIdToUse) {
+      setIsConnectedToSheet(false);
+      setConnectionError('Debe ingresar la URL o ID de su Hoja de Google Spreadsheet para conectar la aplicación.');
+      setLoading(false);
+      return false;
+    }
+
     try {
-      // Pull latest from Google Sheets if configured
-      await pullLatestFromGoogleSheets().catch(() => null);
+      localStorage.setItem('vtv_google_spreadsheet_id', sheetIdToUse);
+      setSpreadsheetId(sheetIdToUse);
+
+      // Mandatory pull from Google Sheets
+      await pullLatestFromGoogleSheets();
 
       const [
         fetchedDivisions,
@@ -113,7 +133,6 @@ export default function App() {
         db.fetchTaskNotifications()
       ]);
 
-      // Ensure default initial task boards exist if empty
       let finalBoards = fetchedTaskBoards;
       if (finalBoards.length === 0) {
         finalBoards = [
@@ -173,19 +192,41 @@ export default function App() {
       setTaskBoards(finalBoards);
       setTaskCards(fetchedTaskCards);
       setTaskNotifications(fetchedTaskNotifs);
-    } catch (err) {
-      console.error('Error al sincronizar datos:', err);
+
+      setIsConnectedToSheet(true);
+      return true;
+    } catch (err: any) {
+      console.error('Error al conectar con Google Sheets:', err);
+      setIsConnectedToSheet(false);
+      setConnectionError(`No se pudo conectar a la Hoja de Google Sheet (${err?.message || 'Error de acceso'}). Verifica que la Hoja existe y es accesible.`);
+      return false;
     } finally {
       setLoading(false);
     }
   };
 
+  const handleReconnectSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const extractedId = extractSpreadsheetId(reconnectUrlInput);
+    if (!extractedId) {
+      setConnectionError('Ingresa una URL o ID de Google Spreadsheet válido.');
+      return;
+    }
+
+    if (reconnectAppsScriptUrlInput.trim()) {
+      localStorage.setItem('vtv_google_apps_script_url', reconnectAppsScriptUrlInput.trim());
+    } else {
+      localStorage.removeItem('vtv_google_apps_script_url');
+    }
+
+    await initConnectionAndLoadData(extractedId);
+  };
+
   useEffect(() => {
-    syncData();
+    initConnectionAndLoadData();
     const interval = setInterval(() => {
       const sheetId = localStorage.getItem('vtv_google_spreadsheet_id');
-      setSpreadsheetId(sheetId);
-      if (sheetId) {
+      if (sheetId && isConnectedToSheet) {
         pullLatestFromGoogleSheets().catch(() => null);
       }
     }, 15000);
@@ -353,9 +394,7 @@ export default function App() {
   const handleManualSync = async () => {
     setIsSyncing(true);
     try {
-      await pullLatestFromGoogleSheets();
-      await pushLatestToGoogleSheets();
-      await syncData();
+      await initConnectionAndLoadData();
       addNotification('Sincronización Completa', 'Datos actualizados desde Google Sheets.', 'success');
     } catch (err) {
       addNotification('Sincronización Interrumpida', 'Verifica tu conexión a Google Sheets.', 'info');
@@ -381,6 +420,113 @@ export default function App() {
     localStorage.setItem('vtv_assignments', JSON.stringify(updated));
     pushLatestToGoogleSheets().catch(() => null);
   };
+
+  // 1. Initial Loading Screen
+  if (loading && isConnectedToSheet === null) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4">
+        <Loader2 size={40} className="text-cyan-400 animate-spin mb-4" />
+        <h2 className="text-base font-black text-white">Conectando con Google Sheets</h2>
+        <p className="text-xs text-slate-400 mt-1">Cargando registros centralizados de VTV...</p>
+      </div>
+    );
+  }
+
+  // 2. Mandatory Blocking Connection Guard Screen if Connection Fails or Not Set
+  if (isConnectedToSheet === false) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4 relative overflow-hidden font-sans">
+        <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-red-600/10 rounded-full blur-[140px] pointer-events-none" />
+        <div className="absolute bottom-10 right-10 w-72 h-72 bg-amber-500/10 rounded-full blur-[120px] pointer-events-none" />
+
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="w-full max-w-xl bg-slate-900/90 border border-white/10 backdrop-blur-2xl p-6 sm:p-8 rounded-3xl shadow-[0_0_50px_rgba(0,0,0,0.8)] space-y-6 relative z-10"
+        >
+          <div className="flex items-center gap-4">
+            <div className="p-3.5 bg-red-500/20 text-red-400 border border-red-500/30 rounded-2xl shrink-0">
+              <FileSpreadsheet size={32} />
+            </div>
+            <div>
+              <h1 className="text-xl font-black text-white tracking-tight">Conexión a Google Sheets Requerida</h1>
+              <p className="text-xs text-slate-400 font-medium">Canal Venezolana de Televisión • Sistema Integrado</p>
+            </div>
+          </div>
+
+          <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-2xl text-amber-200/90 text-xs leading-relaxed flex items-start gap-3">
+            <AlertTriangle className="text-amber-400 shrink-0 mt-0.5" size={18} />
+            <div>
+              <strong className="font-bold text-amber-300 block mb-0.5">La aplicación opera en vivo con tu Hoja de Google Sheet</strong>
+              No es posible iniciar la plataforma sin una conexión activa a Google Sheets. Si la conexión falla, debes reconectar la Hoja para asegurar que cada cambio se guarde directamente.
+            </div>
+          </div>
+
+          {connectionError && (
+            <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-2xl text-red-300 text-xs leading-relaxed font-mono">
+              <strong className="text-red-400 block mb-1">Estado de Conexión:</strong>
+              {connectionError}
+            </div>
+          )}
+
+          <form onSubmit={handleReconnectSubmit} className="space-y-4 pt-1">
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-200 block">
+                1. URL o ID de la Hoja de Google Spreadsheet (Obligatorio) *
+              </label>
+              <input
+                type="text"
+                required
+                value={reconnectUrlInput}
+                onChange={(e) => setReconnectUrlInput(e.target.value)}
+                placeholder="https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit"
+                className="w-full px-4 py-3 bg-slate-950 border border-white/10 rounded-2xl text-xs text-white placeholder-slate-600 focus:outline-none focus:border-red-500/50 font-mono"
+              />
+              <p className="text-[11px] text-slate-400">
+                Pega el enlace completo de tu Hoja de Cálculo. Debe tener permisos de lectura ("Cualquier persona con el enlace").
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-200 block">
+                2. URL de Google Apps Script Web App (Recomendado para Escritura en Tiempo Real)
+              </label>
+              <input
+                type="text"
+                value={reconnectAppsScriptUrlInput}
+                onChange={(e) => setReconnectAppsScriptUrlInput(e.target.value)}
+                placeholder="https://script.google.com/macros/s/.../exec"
+                className="w-full px-4 py-3 bg-slate-950 border border-white/10 rounded-2xl text-xs text-white placeholder-slate-600 focus:outline-none focus:border-red-500/50 font-mono"
+              />
+              <p className="text-[11px] text-slate-400">
+                Opcional. Habilita el guardado de vuelta directo a Google Sheets sin cuentas ni ventanas emergentes.
+              </p>
+            </div>
+
+            <div className="pt-2 flex flex-col sm:flex-row gap-3">
+              <button
+                type="submit"
+                disabled={loading}
+                className="flex-1 py-3.5 px-5 bg-gradient-to-r from-red-600 to-rose-500 hover:from-red-500 hover:to-rose-400 text-white font-bold text-xs rounded-2xl transition-all shadow-lg shadow-red-900/30 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="animate-spin" size={16} />
+                    <span>Verificando Conexión a Google Sheets...</span>
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw size={16} />
+                    <span>Probar y Reconectar a Google Sheet</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
+        </motion.div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-cyan-500 selection:text-slate-950 pb-20 md:pb-8">

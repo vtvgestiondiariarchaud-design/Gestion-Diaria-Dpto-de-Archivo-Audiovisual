@@ -1,17 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Database, Code, Check, Copy, Link2, Sparkles, X, Download, FileSpreadsheet, RefreshCw, ExternalLink, ShieldCheck, CheckCircle2, CloudDownload, CloudUpload } from 'lucide-react';
+import { Database, Code, Check, Copy, Link2, Sparkles, X, Download, FileSpreadsheet, RefreshCw, ExternalLink, ShieldCheck, CheckCircle2, CloudDownload, CloudUpload, Key, Send, HelpCircle } from 'lucide-react';
 import { downloadLocalStorageCsvDump, downloadSpecificTableCSV, getLocalDb, db } from '../supabaseClient';
-import { createGoogleSpreadsheet, populateAllSheets, syncLocalDbWithGoogleSheets, FullAppData, getCachedAccessToken } from '../googleSheetsService';
+import { createGoogleSpreadsheet, populateAllSheets, syncLocalDbWithGoogleSheets, FullAppData, getCachedAccessToken, getGoogleAppsScriptUrl } from '../googleSheetsService';
 
 export default function DatabaseSchema({ onClose }: { onClose?: () => void }) {
-  const [activeTab, setActiveTab] = useState<'google_sheets' | 'csv_export' | 'algorithm'>('google_sheets');
+  const [activeTab, setActiveTab] = useState<'google_sheets' | 'write_config' | 'csv_export' | 'algorithm'>('google_sheets');
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
   const [spreadsheetUrl, setSpreadsheetUrl] = useState<string | null>(() => localStorage.getItem('vtv_google_spreadsheet_url'));
   const [spreadsheetId, setSpreadsheetId] = useState<string | null>(() => localStorage.getItem('vtv_google_spreadsheet_id'));
   const [customInputUrl, setCustomInputUrl] = useState('');
   const [copiedCsv, setCopiedCsv] = useState(false);
+  const [showScriptHelp, setShowScriptHelp] = useState(false);
+
+  const [accessTokenInput, setAccessTokenInput] = useState(() => getCachedAccessToken() || '');
+  const [appsScriptUrlInput, setAppsScriptUrlInput] = useState(() => getGoogleAppsScriptUrl() || '');
 
   useEffect(() => {
     const url = localStorage.getItem('vtv_google_spreadsheet_url');
@@ -19,6 +23,22 @@ export default function DatabaseSchema({ onClose }: { onClose?: () => void }) {
     if (url) setSpreadsheetUrl(url);
     if (id) setSpreadsheetId(id);
   }, []);
+
+  const handleSaveWriteConfig = () => {
+    if (accessTokenInput.trim()) {
+      localStorage.setItem('vtv_google_access_token', accessTokenInput.trim());
+    } else {
+      localStorage.removeItem('vtv_google_access_token');
+    }
+
+    if (appsScriptUrlInput.trim()) {
+      localStorage.setItem('vtv_google_apps_script_url', appsScriptUrlInput.trim());
+    } else {
+      localStorage.removeItem('vtv_google_apps_script_url');
+    }
+
+    setSyncStatus('Configuración de escritura guardada correctamente.');
+  };
 
   const collectCurrentAppData = async (): Promise<FullAppData> => {
     const workers = getLocalDb.getWorkers();
@@ -51,38 +71,30 @@ export default function DatabaseSchema({ onClose }: { onClose?: () => void }) {
     };
   };
 
-  const [accessTokenInput, setAccessTokenInput] = useState(() => getCachedAccessToken() || '');
-
-  const handleSaveAccessToken = () => {
-    if (accessTokenInput.trim()) {
-      localStorage.setItem('vtv_google_access_token', accessTokenInput.trim());
-      setSyncStatus('Token de acceso guardado correctamente.');
-    } else {
-      localStorage.removeItem('vtv_google_access_token');
-      setSyncStatus('Token de acceso removido.');
-    }
-  };
-
   const handleCreateAndMigrateSheets = async () => {
     try {
       setIsSyncing(true);
       const token = accessTokenInput.trim() || getCachedAccessToken();
-      if (!token) {
-        throw new Error('Ingresa un Token de Acceso de Google o clave de API para crear la hoja en Google Drive.');
+      const scriptUrl = appsScriptUrlInput.trim() || getGoogleAppsScriptUrl();
+      const authOrUrl = token || scriptUrl;
+
+      if (!authOrUrl) {
+        setSyncStatus('Para crear o modificar la Hoja de Google se requiere configurar la URL de Apps Script Web App o un Token de Acceso.');
+        return;
       }
 
       setSyncStatus('Recopilando registros de la aplicación...');
       const fullData = await collectCurrentAppData();
 
       setSyncStatus('Creando Hoja de Cálculo en Google Drive con las pestañas estructuradas...');
-      const sheetRes = await createGoogleSpreadsheet(token, fullData);
+      const sheetRes = await createGoogleSpreadsheet(authOrUrl, fullData);
 
       setSpreadsheetUrl(sheetRes.spreadsheetUrl);
       setSpreadsheetId(sheetRes.spreadsheetId);
       setSyncStatus('¡Hoja de cálculo creada e inicializada en Google Sheets con éxito!');
     } catch (err: any) {
       console.error('Error al crear Google Sheet:', err);
-      setSyncStatus(`Error: ${err?.message || 'Fallo al crear la hoja en Google Sheets'}`);
+      setSyncStatus(`Nota: ${err?.message || 'Fallo al crear la hoja en Google Sheets'}`);
     } finally {
       setIsSyncing(false);
     }
@@ -93,18 +105,22 @@ export default function DatabaseSchema({ onClose }: { onClose?: () => void }) {
     try {
       setIsSyncing(true);
       const token = accessTokenInput.trim() || getCachedAccessToken();
-      if (!token) {
-        throw new Error('Para guardar datos hacia Google Sheets se requiere un Token de Acceso en la configuración.');
+      const scriptUrl = appsScriptUrlInput.trim() || getGoogleAppsScriptUrl();
+      const authOrUrl = token || scriptUrl;
+
+      if (!authOrUrl) {
+        setSyncStatus('Para guardar datos de vuelta en Google Sheets se requiere configurar una URL de Google Apps Script Web App o un Token de Acceso en la pestaña "Escritura". La lectura/carga de datos funciona automáticamente sin tokens.');
+        return;
       }
 
       setSyncStatus('Actualizando pestañas en la Hoja de Cálculo de Google...');
       const fullData = await collectCurrentAppData();
-      await populateAllSheets(token, spreadsheetId, fullData);
+      await populateAllSheets(authOrUrl, spreadsheetId, fullData);
 
       setSyncStatus('¡Datos guardados correctamente en Google Sheets!');
     } catch (err: any) {
       console.error('Error al sincronizar con Google Sheets:', err);
-      setSyncStatus(`Error: ${err?.message || 'Fallo la actualización'}`);
+      setSyncStatus(`Nota: ${err?.message || 'Fallo la actualización a Google Sheets'}`);
     } finally {
       setIsSyncing(false);
     }
@@ -121,7 +137,7 @@ export default function DatabaseSchema({ onClose }: { onClose?: () => void }) {
       setSyncStatus('¡Datos de usuarios, tareas y vacaciones sincronizados desde Google Sheets a la aplicación!');
     } catch (err: any) {
       console.error('Error al cargar de Google Sheets:', err);
-      setSyncStatus(`Error: ${err?.message || 'Fallo al descargar datos de Google Sheets'}`);
+      setSyncStatus(`Nota: ${err?.message || 'Fallo al descargar datos de Google Sheets'}`);
     } finally {
       setIsSyncing(false);
     }
@@ -212,39 +228,15 @@ export function calcularLogisticaComedor(workers: Worker[], todayAssignments: Sh
         </div>
 
         <div className="flex flex-col sm:flex-row items-center gap-2 w-full md:w-auto shrink-0">
-          {spreadsheetId && (
-            <>
-              <button
-                onClick={handlePullFromSheets}
-                disabled={isSyncing}
-                className="w-full sm:w-auto px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-emerald-300 font-bold text-xs rounded-xl flex items-center justify-center gap-2 border border-emerald-500/30 transition-all cursor-pointer"
-                title="Cargar y sincronizar datos actualizados desde la Hoja de Google"
-              >
-                <CloudDownload size={16} className={isSyncing ? 'animate-spin' : ''} />
-                <span>Cargar de Google Sheets</span>
-              </button>
-
-              <button
-                onClick={handleSyncToExistingSheets}
-                disabled={isSyncing}
-                className="w-full sm:w-auto px-3.5 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 disabled:opacity-50 text-slate-950 font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all cursor-pointer"
-                title="Publicar estado actual a la Hoja de Google"
-              >
-                <CloudUpload size={16} className={isSyncing ? 'animate-spin' : ''} />
-                <span>Guardar en Google Sheets</span>
-              </button>
-            </>
-          )}
-
-          {spreadsheetUrl ? (
+          {spreadsheetId ? (
             <a
-              href={spreadsheetUrl}
+              href={`https://docs.google.com/spreadsheets/d/${spreadsheetId}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="w-full sm:w-auto px-3 py-2.5 bg-white/10 hover:bg-white/20 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 border border-white/10 transition-all cursor-pointer"
+              className="w-full sm:w-auto px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all cursor-pointer"
             >
-              <ExternalLink size={15} />
-              <span>Abrir Hoja</span>
+              <ExternalLink size={16} />
+              <span>Abrir Hoja en Google Drive</span>
             </a>
           ) : (
             <button
@@ -308,13 +300,23 @@ export function calcularLogisticaComedor(workers: Worker[], todayAssignments: Sh
         </button>
 
         <button
+          onClick={() => setActiveTab('write_config')}
+          className={`flex-1 min-w-[140px] py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+            activeTab === 'write_config' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold' : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <Send size={14} />
+          <span>Escritura / Web App</span>
+        </button>
+
+        <button
           onClick={() => setActiveTab('csv_export')}
           className={`flex-1 min-w-[140px] py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
             activeTab === 'csv_export' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold' : 'text-slate-400 hover:text-slate-200'
           }`}
         >
           <Download size={14} />
-          <span>Exportación .CSV por Tablas</span>
+          <span>Exportación .CSV</span>
         </button>
 
         <button
@@ -338,12 +340,12 @@ export function calcularLogisticaComedor(workers: Worker[], todayAssignments: Sh
                 Estructura de la Hoja de Cálculo Migrada
               </h4>
               <p className="text-xs text-slate-400">
-                La base de datos se organiza automáticamente en las siguientes pestañas dentro de tu Google Spreadsheet:
+                La lectura de datos desde tu Google Spreadsheet funciona automáticamente mediante la URL compartida. La base de datos contiene estas pestañas:
               </p>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 pt-2">
                 {[
-                  { title: 'Personal_y_Usuarios', desc: 'IDs, Nombres, Cédula, Email, Cargo, Rol y estado de Clave (12345678).' },
+                  { title: 'Personal_y_Usuarios', desc: 'IDs, Nombres, Cédula, Email, Cargo, Rol y Contraseña.' },
                   { title: 'Divisiones', desc: 'Estructura de departamentos VTV y coordinadores asignados.' },
                   { title: 'Turnos_y_Guardias', desc: 'Historial de turnos Mañana, Tarde, Noche y Libres por fecha.' },
                   { title: 'Tareas_y_Pautas', desc: 'Pautas de trabajo, ingesta, edición, tiempos y estados.' },
@@ -372,6 +374,58 @@ export function calcularLogisticaComedor(workers: Worker[], todayAssignments: Sh
                   </button>
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'write_config' && (
+          <div className="p-5 glass rounded-2xl space-y-4">
+            <div className="space-y-1">
+              <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                <Send className="text-emerald-400" size={16} />
+                Configuración de Escritura hacia Google Sheets
+              </h4>
+              <p className="text-xs text-slate-400">
+                La <b>lectura</b> de datos desde Google Sheets no requiere logins ni tokens. Para habilitar la <b>escritura bidireccional</b> en tiempo real hacia tu Hoja de Cálculo, puedes configurar una URL de Google Apps Script Web App o un Token de Acceso.
+              </p>
+            </div>
+
+            <div className="space-y-4 pt-2">
+              <div className="p-4 bg-slate-900/80 border border-white/10 rounded-2xl space-y-2">
+                <label className="text-xs font-bold text-white block">
+                  1. URL de Google Apps Script Web App (Recomendado sin login)
+                </label>
+                <input
+                  type="text"
+                  value={appsScriptUrlInput}
+                  onChange={(e) => setAppsScriptUrlInput(e.target.value)}
+                  placeholder="https://script.google.com/macros/s/.../exec"
+                  className="w-full px-3 py-2 bg-slate-950 border border-white/10 rounded-xl text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500/50 font-mono"
+                />
+                <p className="text-[11px] text-slate-400">
+                  Crea un Web App en tu Hoja de Google (Extensiones &gt; Apps Script) para permitir publicar datos sin contraseñas.
+                </p>
+              </div>
+
+              <div className="p-4 bg-slate-900/80 border border-white/10 rounded-2xl space-y-2">
+                <label className="text-xs font-bold text-white block">
+                  2. Token de Acceso de Google OAuth (Opcional)
+                </label>
+                <input
+                  type="password"
+                  value={accessTokenInput}
+                  onChange={(e) => setAccessTokenInput(e.target.value)}
+                  placeholder="ya29.a0A..."
+                  className="w-full px-3 py-2 bg-slate-950 border border-white/10 rounded-xl text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500/50 font-mono"
+                />
+              </div>
+
+              <button
+                onClick={handleSaveWriteConfig}
+                className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl transition-all cursor-pointer"
+              >
+                Guardar Configuración
+              </button>
             </div>
           </div>
         )}

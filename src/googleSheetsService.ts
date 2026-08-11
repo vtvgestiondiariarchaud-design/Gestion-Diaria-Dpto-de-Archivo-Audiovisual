@@ -29,9 +29,26 @@ export const getCachedAccessToken = (): string | null => {
   return localStorage.getItem('vtv_google_access_token') || sessionStorage.getItem('vtv_google_access_token');
 };
 
+export const getGoogleAppsScriptUrl = (): string | null => {
+  return localStorage.getItem('vtv_google_apps_script_url');
+};
+
 export const getGoogleSpreadsheetId = (): string | null => {
   return localStorage.getItem('vtv_google_spreadsheet_id');
 };
+
+/**
+ * Extracts pure Spreadsheet ID from raw input or full Google Sheets URL
+ */
+export function extractSpreadsheetId(input: string): string {
+  if (!input) return '';
+  const trimmed = input.trim();
+  const match = trimmed.match(/\/d\/([a-zA-Z0-9-_]+)/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  return trimmed;
+}
 
 // Simple CSV line parser
 function parseCSV(text: string): string[][] {
@@ -307,13 +324,15 @@ export async function syncLocalDbWithGoogleSheets(
 
 export async function pullLatestFromGoogleSheets(): Promise<boolean> {
   const spreadsheetId = getGoogleSpreadsheetId();
-  if (!spreadsheetId) return false;
+  if (!spreadsheetId) {
+    throw new Error('No se ha configurado el ID o URL de la Hoja de Google Sheet.');
+  }
   try {
-    await syncLocalDbWithGoogleSheets(getCachedAccessToken(), spreadsheetId);
+    const data = await syncLocalDbWithGoogleSheets(getCachedAccessToken(), spreadsheetId);
     return true;
-  } catch (err) {
-    console.warn('Auto-pull Google Sheets attempt failed:', err);
-    return false;
+  } catch (err: any) {
+    console.warn('Conexión con Google Sheets falló:', err);
+    throw err;
   }
 }
 
@@ -510,6 +529,32 @@ export async function populateAllSheets(
     }
   ];
 
+  const scriptUrl = getGoogleAppsScriptUrl();
+  const targetTokenOrUrl = accessToken || scriptUrl;
+
+  if (targetTokenOrUrl && (targetTokenOrUrl.startsWith('http://') || targetTokenOrUrl.startsWith('https://'))) {
+    // Send to Google Apps Script Web App Endpoint
+    const res = await fetch(targetTokenOrUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain;charset=utf-8'
+      },
+      body: JSON.stringify({
+        spreadsheetId,
+        dataValueRanges
+      })
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Error al enviar datos a Google Apps Script Web App (${res.status}): ${errText}`);
+    }
+    return;
+  }
+
+  if (!accessToken) {
+    throw new Error('Para guardar cambios de vuelta en Google Sheets se requiere configurar una URL de Google Apps Script Web App o un Token de Acceso.');
+  }
+
   const res = await fetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`,
     {
@@ -534,7 +579,10 @@ export async function populateAllSheets(
 export async function pushLatestToGoogleSheets(): Promise<boolean> {
   const spreadsheetId = getGoogleSpreadsheetId();
   const token = getCachedAccessToken();
-  if (!spreadsheetId || !token) return false;
+  const scriptUrl = getGoogleAppsScriptUrl();
+  const authKey = token || scriptUrl;
+
+  if (!spreadsheetId || !authKey) return false;
   try {
     const workers = getLocalDb.getWorkers();
     const divisions = getLocalDb.getDivisions();
@@ -562,7 +610,7 @@ export async function pushLatestToGoogleSheets(): Promise<boolean> {
     });
     return true;
   } catch (err) {
-    console.warn('Auto-push Google Sheets attempt failed:', err);
+    console.warn('Auto-push Google Sheets attempt skipped:', err);
     return false;
   }
 }
