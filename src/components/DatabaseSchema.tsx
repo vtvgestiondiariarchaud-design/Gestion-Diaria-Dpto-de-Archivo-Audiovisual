@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Database, Code, Check, Copy, Link2, Sparkles, X, Download, FileSpreadsheet, RefreshCw, ExternalLink, ShieldCheck, CheckCircle2 } from 'lucide-react';
+import { Database, Code, Check, Copy, Link2, Sparkles, X, Download, FileSpreadsheet, RefreshCw, ExternalLink, ShieldCheck, CheckCircle2, CloudDownload, CloudUpload } from 'lucide-react';
 import { downloadLocalStorageCsvDump, downloadSpecificTableCSV, getLocalDb, db } from '../supabaseClient';
-import { signInWithGoogle, createGoogleSpreadsheet, populateAllSheets, FullAppData, auth } from '../googleSheetsService';
+import { signInWithGoogle, createGoogleSpreadsheet, populateAllSheets, syncLocalDbWithGoogleSheets, FullAppData, auth } from '../googleSheetsService';
 
 export default function DatabaseSchema({ onClose }: { onClose?: () => void }) {
   const [activeTab, setActiveTab] = useState<'google_sheets' | 'csv_export' | 'algorithm'>('google_sheets');
@@ -10,6 +10,7 @@ export default function DatabaseSchema({ onClose }: { onClose?: () => void }) {
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
   const [spreadsheetUrl, setSpreadsheetUrl] = useState<string | null>(() => localStorage.getItem('vtv_google_spreadsheet_url'));
   const [spreadsheetId, setSpreadsheetId] = useState<string | null>(() => localStorage.getItem('vtv_google_spreadsheet_id'));
+  const [customInputUrl, setCustomInputUrl] = useState('');
   const [copiedCsv, setCopiedCsv] = useState(false);
 
   useEffect(() => {
@@ -26,22 +27,6 @@ export default function DatabaseSchema({ onClose }: { onClose?: () => void }) {
     const requests = getLocalDb.getRequests();
     const freeDayRequests = getLocalDb.getFreeDayRequests();
     const physicalMaterials = getLocalDb.getPhysicalMaterials([]);
-    const defaultFormats = [
-      { id: 'fmt_betacam', name: 'Betacam SP / Digital' },
-      { id: 'fmt_dvcpro', name: 'DVCPRO 50 / HD' },
-      { id: 'fmt_umatic', name: 'U-matic 3/4"' },
-      { id: 'fmt_lto', name: 'Cinta LTO Backup' }
-    ];
-    const defaultLocations = [
-      { id: 'loc_boveda_1', name: 'Bóveda Principal A - Estante 1' },
-      { id: 'loc_boveda_2', name: 'Bóveda Principal B - Cintas Históricas' },
-      { id: 'loc_ingesta', name: 'Rack de Ingesta Inmediata' }
-    ];
-    const defaultPrograms = [
-      { id: 'prog_noticias', name: 'La Noticia VTV' },
-      { id: 'prog_conelmazodando', name: 'Con el Mazo Dando' },
-      { id: 'prog_reportajes', name: 'Reportajes Especiales VTV' }
-    ];
     
     // Read task cards and task boards from LocalStorage
     const taskCardsRaw = localStorage.getItem('vtv_task_cards');
@@ -105,7 +90,7 @@ export default function DatabaseSchema({ onClose }: { onClose?: () => void }) {
       const fullData = await collectCurrentAppData();
       await populateAllSheets(authRes.accessToken, spreadsheetId, fullData);
 
-      setSyncStatus('¡Datos sincronizados correctamente en Google Sheets!');
+      setSyncStatus('¡Datos guardados correctamente en Google Sheets!');
     } catch (err: any) {
       console.error('Error al sincronizar con Google Sheets:', err);
       setSyncStatus(`Error: ${err?.message || 'Fallo la actualización'}`);
@@ -113,6 +98,43 @@ export default function DatabaseSchema({ onClose }: { onClose?: () => void }) {
       setIsSyncing(false);
     }
   };
+
+  const handlePullFromSheets = async () => {
+    if (!spreadsheetId) return;
+    try {
+      setIsSyncing(true);
+      setSyncStatus('Obteniendo datos de Google Sheets...');
+      const authRes = await signInWithGoogle();
+      if (!authRes?.accessToken) throw new Error('Acceso a Google requerido.');
+
+      await syncLocalDbWithGoogleSheets(authRes.accessToken, spreadsheetId);
+      setSyncStatus('¡Datos cargados correctamente desde Google Sheets a la aplicación!');
+    } catch (err: any) {
+      console.error('Error al cargar de Google Sheets:', err);
+      setSyncStatus(`Error: ${err?.message || 'Fallo la descarga'}`);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleLinkCustomSheet = () => {
+    if (!customInputUrl.trim()) return;
+    let extractedId = customInputUrl.trim();
+    if (extractedId.includes('/d/')) {
+      const parts = extractedId.split('/d/');
+      if (parts[1]) {
+        extractedId = parts[1].split('/')[0];
+      }
+    }
+    const cleanUrl = `https://docs.google.com/spreadsheets/d/${extractedId}`;
+    localStorage.setItem('vtv_google_spreadsheet_id', extractedId);
+    localStorage.setItem('vtv_google_spreadsheet_url', cleanUrl);
+    setSpreadsheetId(extractedId);
+    setSpreadsheetUrl(cleanUrl);
+    setCustomInputUrl('');
+    setSyncStatus(`¡Vinculado con éxito a la hoja ID: ${extractedId}!`);
+  };
+
 
   const algorithmCode = `
 /**
@@ -170,33 +192,49 @@ export function calcularLogisticaComedor(workers: Worker[], todayAssignments: Sh
             <h4 className="text-base font-bold text-white flex items-center gap-2">
               Google Drive / Google Sheets Integration
               <span className="px-2 py-0.5 text-[10px] font-bold uppercase rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                Oficial VTV
+                Base Centralizada Real Time
               </span>
             </h4>
             <p className="text-xs text-slate-300 mt-1 max-w-xl">
-              Crea una Hoja de Cálculo en tu Google Drive con pestañas estructuradas para <b>Personal, Divisiones, Turnos, Tareas, Archivo Físico y Solicitudes</b>.
+              Toda la información del sistema se sincroniza en vivo con tu Hoja de Cálculo de Google Drive.
             </p>
           </div>
         </div>
 
         <div className="flex flex-col sm:flex-row items-center gap-2 w-full md:w-auto shrink-0">
-          <button
-            onClick={downloadLocalStorageCsvDump}
-            className="w-full sm:w-auto px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-100 font-bold text-xs rounded-xl flex items-center justify-center gap-2 border border-white/10 transition-all cursor-pointer"
-          >
-            <Download size={16} />
-            <span>Descargar .CSV Todo</span>
-          </button>
+          {spreadsheetId && (
+            <>
+              <button
+                onClick={handlePullFromSheets}
+                disabled={isSyncing}
+                className="w-full sm:w-auto px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-emerald-300 font-bold text-xs rounded-xl flex items-center justify-center gap-2 border border-emerald-500/30 transition-all cursor-pointer"
+                title="Cargar y sincronizar datos actualizados desde la Hoja de Google"
+              >
+                <CloudDownload size={16} className={isSyncing ? 'animate-spin' : ''} />
+                <span>Cargar de Google Sheets</span>
+              </button>
+
+              <button
+                onClick={handleSyncToExistingSheets}
+                disabled={isSyncing}
+                className="w-full sm:w-auto px-3.5 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 disabled:opacity-50 text-slate-950 font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all cursor-pointer"
+                title="Publicar estado actual a la Hoja de Google"
+              >
+                <CloudUpload size={16} className={isSyncing ? 'animate-spin' : ''} />
+                <span>Guardar en Google Sheets</span>
+              </button>
+            </>
+          )}
 
           {spreadsheetUrl ? (
             <a
               href={spreadsheetUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="w-full sm:w-auto px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all cursor-pointer"
+              className="w-full sm:w-auto px-3 py-2.5 bg-white/10 hover:bg-white/20 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 border border-white/10 transition-all cursor-pointer"
             >
-              <ExternalLink size={16} />
-              <span>Abrir Hoja en Google Drive</span>
+              <ExternalLink size={15} />
+              <span>Abrir Hoja</span>
             </a>
           ) : (
             <button
@@ -205,9 +243,38 @@ export function calcularLogisticaComedor(workers: Worker[], todayAssignments: Sh
               className="w-full sm:w-auto px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 disabled:opacity-50 text-slate-950 font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all cursor-pointer"
             >
               <RefreshCw size={16} className={isSyncing ? 'animate-spin' : ''} />
-              <span>{isSyncing ? 'Migrando...' : 'Crear y Migrar a Google Sheets'}</span>
+              <span>{isSyncing ? 'Creando...' : 'Crear Nueva Hoja en Google Drive'}</span>
             </button>
           )}
+        </div>
+      </div>
+
+      {/* Shared Google Sheet Linker input */}
+      <div className="p-4 bg-slate-900/80 border border-white/10 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-3">
+        <div className="space-y-1 w-full sm:w-auto">
+          <label className="text-xs font-bold text-white flex items-center gap-2">
+            <Link2 size={14} className="text-emerald-400" />
+            Vincular Hoja Compartida de Google Sheets (ID o URL)
+          </label>
+          <p className="text-[11px] text-slate-400">
+            Ingresa el enlace o ID de la hoja central para que todos los usuarios se conecten a la misma base de datos.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 w-full sm:w-auto shrink-0">
+          <input
+            type="text"
+            value={customInputUrl}
+            onChange={(e) => setCustomInputUrl(e.target.value)}
+            placeholder="Pegar URL o ID de Google Spreadsheet..."
+            className="px-3 py-2 bg-slate-950 border border-white/10 rounded-xl text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500/50 w-full sm:w-64 font-mono"
+          />
+          <button
+            onClick={handleLinkCustomSheet}
+            className="px-3.5 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shrink-0 transition-all cursor-pointer"
+          >
+            Vincular
+          </button>
         </div>
       </div>
 

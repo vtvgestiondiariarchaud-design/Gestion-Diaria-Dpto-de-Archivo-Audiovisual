@@ -2,6 +2,7 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User } from 'firebase/auth';
 import firebaseConfig from '../firebase-applet-config.json';
 import { Worker, Division, ShiftAssignment, TaskCard, TaskBoard, ShiftChangeRequest, FreeDayRequest, PhysicalAudiovisualMaterial, TaskNotification } from './types';
+import { getLocalDb } from './supabaseClient';
 
 // Initialize Firebase App
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
@@ -13,7 +14,7 @@ provider.addScope('https://www.googleapis.com/auth/spreadsheets');
 provider.addScope('https://www.googleapis.com/auth/drive.file');
 
 let isSigningIn = false;
-let cachedAccessToken: string | null = null;
+let cachedAccessToken: string | null = sessionStorage.getItem('vtv_google_access_token');
 
 export const initGoogleAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
@@ -28,6 +29,7 @@ export const initGoogleAuth = (
       }
     } else {
       cachedAccessToken = null;
+      sessionStorage.removeItem('vtv_google_access_token');
       if (onAuthFailure) onAuthFailure();
     }
   });
@@ -42,6 +44,7 @@ export const signInWithGoogle = async (): Promise<{ user: User; accessToken: str
       throw new Error('No se obtuvo token de acceso de Google');
     }
     cachedAccessToken = credential.accessToken;
+    sessionStorage.setItem('vtv_google_access_token', cachedAccessToken);
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: any) {
     console.error('Error al iniciar sesión con Google:', error);
@@ -52,8 +55,58 @@ export const signInWithGoogle = async (): Promise<{ user: User; accessToken: str
 };
 
 export const getCachedAccessToken = (): string | null => {
-  return cachedAccessToken;
+  return cachedAccessToken || sessionStorage.getItem('vtv_google_access_token');
 };
+
+export async function pullLatestFromGoogleSheets(): Promise<boolean> {
+  const spreadsheetId = localStorage.getItem('vtv_google_spreadsheet_id');
+  const token = getCachedAccessToken();
+  if (!spreadsheetId || !token) return false;
+  try {
+    await syncLocalDbWithGoogleSheets(token, spreadsheetId);
+    return true;
+  } catch (err) {
+    console.warn('Auto-pull Google Sheets attempt failed:', err);
+    return false;
+  }
+}
+
+export async function pushLatestToGoogleSheets(): Promise<boolean> {
+  const spreadsheetId = localStorage.getItem('vtv_google_spreadsheet_id');
+  const token = getCachedAccessToken();
+  if (!spreadsheetId || !token) return false;
+  try {
+    const workers = getLocalDb.getWorkers();
+    const divisions = getLocalDb.getDivisions();
+    const assignments = getLocalDb.getAssignments();
+    const requests = getLocalDb.getRequests();
+    const freeDayRequests = getLocalDb.getFreeDayRequests();
+    const physicalMaterials = getLocalDb.getPhysicalMaterials([]);
+    const taskCardsRaw = localStorage.getItem('vtv_task_cards');
+    const taskCards = taskCardsRaw ? JSON.parse(taskCardsRaw) : [];
+    const taskBoardsRaw = localStorage.getItem('vtv_task_boards');
+    const taskBoards = taskBoardsRaw ? JSON.parse(taskBoardsRaw) : [];
+    const notificationsRaw = localStorage.getItem('vtv_task_notifications');
+    const notifications = notificationsRaw ? JSON.parse(notificationsRaw) : [];
+
+    await populateAllSheets(token, spreadsheetId, {
+      workers,
+      divisions,
+      assignments,
+      taskCards,
+      taskBoards,
+      requests,
+      freeDayRequests,
+      physicalMaterials,
+      notifications
+    });
+    return true;
+  } catch (err) {
+    console.warn('Auto-push Google Sheets attempt failed:', err);
+    return false;
+  }
+}
+
 
 // Spreadsheet metadata and sync functions
 export interface FullAppData {
@@ -356,14 +409,118 @@ export async function fetchFromGoogleSpreadsheet(
       }));
     } else if (rangeName.startsWith('Turnos_y_Guardias')) {
       parsedData.assignments = rows.map((r: any) => ({
-        id: r[0],
+        id: r[0] || `asg_${Date.now()}_${Math.random()}`,
         workerId: r[1],
         divisionId: r[2],
         date: r[3],
         shiftType: r[4]
+      }));
+    } else if (rangeName.startsWith('Tareas_y_Pautas')) {
+      parsedData.taskCards = rows.map((r: any) => ({
+        id: r[0],
+        boardId: r[1],
+        title: r[2],
+        description: r[3] || '',
+        status: r[4] || 'Pendiente',
+        priority: r[5] || 'media',
+        duration: r[6] || '00:00:00',
+        editedDuration: r[7] || '00:00:00',
+        isIngested: r[8] === 'SI',
+        isEdited: r[9] === 'SI',
+        isDocumented: r[10] === 'SI',
+        isFinalized: r[11] === 'SI',
+        createdAt: r[12] || new Date().toISOString()
+      }));
+    } else if (rangeName.startsWith('Tableros_de_Trabajo')) {
+      parsedData.taskBoards = rows.map((r: any) => ({
+        id: r[0],
+        name: r[1],
+        description: r[2] || '',
+        color: r[3] || 'blue',
+        createdAt: r[4] || new Date().toISOString()
+      }));
+    } else if (rangeName.startsWith('Cambios_de_Guardia')) {
+      parsedData.requests = rows.map((r: any) => ({
+        id: r[0],
+        requesterName: r[1],
+        targetWorkerName: r[2],
+        date: r[3],
+        reason: r[4],
+        status: r[5],
+        createdAt: r[6]
+      }));
+    } else if (rangeName.startsWith('Dias_Libres_Solicitados')) {
+      parsedData.freeDayRequests = rows.map((r: any) => ({
+        id: r[0],
+        workerName: r[1],
+        requestedDate: r[2],
+        reason: r[3] || '',
+        status: r[4],
+        createdAt: r[5]
+      }));
+    } else if (rangeName.startsWith('Archivo_Fisico_Audiovisual')) {
+      parsedData.physicalMaterials = rows.map((r: any) => ({
+        code: r[0],
+        formatId: r[1],
+        programId: r[2] || '',
+        title: r[3],
+        recordingDate: r[4] || '',
+        locationId: r[5],
+        synopsis: r[6] || ''
+      }));
+    } else if (rangeName.startsWith('Notificaciones')) {
+      parsedData.notifications = rows.map((r: any) => ({
+        id: r[0],
+        workerId: r[1],
+        taskTitle: r[2],
+        boardName: r[3],
+        message: r[4],
+        read: r[5] === 'SI',
+        createdAt: r[6]
       }));
     }
   });
 
   return parsedData;
 }
+
+/**
+ * Downloads data from Google Spreadsheet and saves it locally
+ */
+export async function syncLocalDbWithGoogleSheets(
+  accessToken: string,
+  spreadsheetId: string
+): Promise<Partial<FullAppData>> {
+  const remoteData = await fetchFromGoogleSpreadsheet(accessToken, spreadsheetId);
+
+  if (remoteData.workers && remoteData.workers.length > 0) {
+    localStorage.setItem('vtv_workers', JSON.stringify(remoteData.workers));
+  }
+  if (remoteData.divisions && remoteData.divisions.length > 0) {
+    localStorage.setItem('vtv_divisions', JSON.stringify(remoteData.divisions));
+  }
+  if (remoteData.assignments) {
+    localStorage.setItem('vtv_assignments', JSON.stringify(remoteData.assignments));
+  }
+  if (remoteData.taskCards) {
+    localStorage.setItem('vtv_task_cards', JSON.stringify(remoteData.taskCards));
+  }
+  if (remoteData.taskBoards) {
+    localStorage.setItem('vtv_task_boards', JSON.stringify(remoteData.taskBoards));
+  }
+  if (remoteData.requests) {
+    localStorage.setItem('vtv_requests', JSON.stringify(remoteData.requests));
+  }
+  if (remoteData.freeDayRequests) {
+    localStorage.setItem('vtv_free_day_requests', JSON.stringify(remoteData.freeDayRequests));
+  }
+  if (remoteData.physicalMaterials) {
+    localStorage.setItem('vtv_physical_materials', JSON.stringify(remoteData.physicalMaterials));
+  }
+  if (remoteData.notifications) {
+    localStorage.setItem('vtv_task_notifications', JSON.stringify(remoteData.notifications));
+  }
+
+  return remoteData;
+}
+

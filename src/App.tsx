@@ -9,6 +9,7 @@ import {
 
 import { Division, Worker, ShiftAssignment, ShiftChangeRequest, UserRole, TaskBoard, TaskCard, TaskNotification, FreeDayRequest } from './types';
 import { db, getLocalDb, DEFAULT_DIVISIONS, isSupabaseConfigured, supabaseConnectionStatus, lastSupabaseError, supabase } from './supabaseClient';
+import { pullLatestFromGoogleSheets, pushLatestToGoogleSheets } from './googleSheetsService';
 
 import TaskManager from './components/TaskManager';
 import TrelloBoard from './components/TrelloBoard';
@@ -383,6 +384,9 @@ export default function App() {
   const syncData = async () => {
     setLoading(true);
     try {
+      // Auto-pull latest records from Google Sheets if configured
+      await pullLatestFromGoogleSheets().catch(() => null);
+
       // Intentar obtener configuración en caliente del backend (Render, etc.) para evitar re-compilaciones (con timeout de 1.5s)
       try {
         const controller = new AbortController();
@@ -656,6 +660,8 @@ export default function App() {
   // Silent data refresh for real-time background sync across workers
   const syncDataSilent = async () => {
     try {
+      await pullLatestFromGoogleSheets().catch(() => null);
+
       const [
         fetchedTaskBoards,
         fetchedTaskCards,
@@ -710,9 +716,9 @@ export default function App() {
     setIsSyncing(true);
     try {
       await syncData();
-      addNotification('Sincronización Completa', 'Lista de tareas y datos sincronizados correctamente con la base de datos Supabase.', 'success');
+      addNotification('Sincronización Completa', 'Datos sincronizados en tiempo real con Google Sheets.', 'success');
     } catch (e: any) {
-      addNotification('Error de Sincronización', e?.message || 'No se pudo actualizar los datos con la base de datos.', 'info');
+      addNotification('Error de Sincronización', e?.message || 'No se pudo actualizar los datos con Google Sheets.', 'info');
     } finally {
       setIsSyncing(false);
     }
