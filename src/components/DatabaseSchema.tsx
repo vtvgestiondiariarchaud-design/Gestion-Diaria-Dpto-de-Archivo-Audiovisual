@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Database, Code, Check, Copy, Link2, Sparkles, X, Download, FileSpreadsheet, RefreshCw, ExternalLink, ShieldCheck, CheckCircle2, CloudDownload, CloudUpload } from 'lucide-react';
 import { downloadLocalStorageCsvDump, downloadSpecificTableCSV, getLocalDb, db } from '../supabaseClient';
-import { signInWithGoogle, createGoogleSpreadsheet, populateAllSheets, syncLocalDbWithGoogleSheets, FullAppData, auth } from '../googleSheetsService';
+import { createGoogleSpreadsheet, populateAllSheets, syncLocalDbWithGoogleSheets, FullAppData, getCachedAccessToken } from '../googleSheetsService';
 
 export default function DatabaseSchema({ onClose }: { onClose?: () => void }) {
   const [activeTab, setActiveTab] = useState<'google_sheets' | 'csv_export' | 'algorithm'>('google_sheets');
@@ -51,32 +51,38 @@ export default function DatabaseSchema({ onClose }: { onClose?: () => void }) {
     };
   };
 
+  const [accessTokenInput, setAccessTokenInput] = useState(() => getCachedAccessToken() || '');
+
+  const handleSaveAccessToken = () => {
+    if (accessTokenInput.trim()) {
+      localStorage.setItem('vtv_google_access_token', accessTokenInput.trim());
+      setSyncStatus('Token de acceso guardado correctamente.');
+    } else {
+      localStorage.removeItem('vtv_google_access_token');
+      setSyncStatus('Token de acceso removido.');
+    }
+  };
+
   const handleCreateAndMigrateSheets = async () => {
     try {
       setIsSyncing(true);
-      setSyncStatus('Iniciando autenticación Google OAuth...');
-
-      const authRes = await signInWithGoogle();
-      if (!authRes?.accessToken) {
-        throw new Error('No se pudo verificar el acceso de Google.');
+      const token = accessTokenInput.trim() || getCachedAccessToken();
+      if (!token) {
+        throw new Error('Ingresa un Token de Acceso de Google o clave de API para crear la hoja en Google Drive.');
       }
 
       setSyncStatus('Recopilando registros de la aplicación...');
       const fullData = await collectCurrentAppData();
 
-      setSyncStatus('Creando Hoja de Cálculo en Google Drive con 9 pestañas...');
-      const sheetRes = await createGoogleSpreadsheet(authRes.accessToken, fullData);
+      setSyncStatus('Creando Hoja de Cálculo en Google Drive con las pestañas estructuradas...');
+      const sheetRes = await createGoogleSpreadsheet(token, fullData);
 
       setSpreadsheetUrl(sheetRes.spreadsheetUrl);
       setSpreadsheetId(sheetRes.spreadsheetId);
-      setSyncStatus('¡Migración exitosa a Google Sheets!');
+      setSyncStatus('¡Hoja de cálculo creada e inicializada en Google Sheets con éxito!');
     } catch (err: any) {
-      if (err?.message?.includes('cancelado') || err?.code === 'auth/popup-closed-by-user') {
-        setSyncStatus('Inicio de sesión cancelado. Haz clic en el botón para conectar tu cuenta de Google.');
-      } else {
-        console.error('Error al crear Google Sheet:', err);
-        setSyncStatus(`Error: ${err?.message || 'Fallo la migración a Google Sheets'}`);
-      }
+      console.error('Error al crear Google Sheet:', err);
+      setSyncStatus(`Error: ${err?.message || 'Fallo al crear la hoja en Google Sheets'}`);
     } finally {
       setIsSyncing(false);
     }
@@ -86,22 +92,19 @@ export default function DatabaseSchema({ onClose }: { onClose?: () => void }) {
     if (!spreadsheetId) return;
     try {
       setIsSyncing(true);
-      setSyncStatus('Conectando con Google Drive...');
-      const authRes = await signInWithGoogle();
-      if (!authRes?.accessToken) throw new Error('Acceso a Google requerido.');
+      const token = accessTokenInput.trim() || getCachedAccessToken();
+      if (!token) {
+        throw new Error('Para guardar datos hacia Google Sheets se requiere un Token de Acceso en la configuración.');
+      }
 
       setSyncStatus('Actualizando pestañas en la Hoja de Cálculo de Google...');
       const fullData = await collectCurrentAppData();
-      await populateAllSheets(authRes.accessToken, spreadsheetId, fullData);
+      await populateAllSheets(token, spreadsheetId, fullData);
 
       setSyncStatus('¡Datos guardados correctamente en Google Sheets!');
     } catch (err: any) {
-      if (err?.message?.includes('cancelado') || err?.code === 'auth/popup-closed-by-user') {
-        setSyncStatus('Inicio de sesión cancelado. Por favor completa la autenticación con Google.');
-      } else {
-        console.error('Error al sincronizar con Google Sheets:', err);
-        setSyncStatus(`Error: ${err?.message || 'Fallo la actualización'}`);
-      }
+      console.error('Error al sincronizar con Google Sheets:', err);
+      setSyncStatus(`Error: ${err?.message || 'Fallo la actualización'}`);
     } finally {
       setIsSyncing(false);
     }
@@ -112,18 +115,13 @@ export default function DatabaseSchema({ onClose }: { onClose?: () => void }) {
     try {
       setIsSyncing(true);
       setSyncStatus('Obteniendo datos de Google Sheets...');
-      const authRes = await signInWithGoogle();
-      if (!authRes?.accessToken) throw new Error('Acceso a Google requerido.');
+      const token = accessTokenInput.trim() || getCachedAccessToken();
 
-      await syncLocalDbWithGoogleSheets(authRes.accessToken, spreadsheetId);
-      setSyncStatus('¡Datos cargados correctamente desde Google Sheets a la aplicación!');
+      await syncLocalDbWithGoogleSheets(token, spreadsheetId);
+      setSyncStatus('¡Datos de usuarios, tareas y vacaciones sincronizados desde Google Sheets a la aplicación!');
     } catch (err: any) {
-      if (err?.message?.includes('cancelado') || err?.code === 'auth/popup-closed-by-user') {
-        setSyncStatus('Inicio de sesión cancelado. Por favor completa la autenticación con Google.');
-      } else {
-        console.error('Error al cargar de Google Sheets:', err);
-        setSyncStatus(`Error: ${err?.message || 'Fallo la descarga'}`);
-      }
+      console.error('Error al cargar de Google Sheets:', err);
+      setSyncStatus(`Error: ${err?.message || 'Fallo al descargar datos de Google Sheets'}`);
     } finally {
       setIsSyncing(false);
     }

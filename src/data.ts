@@ -32,6 +32,9 @@ export const INITIAL_DIVISIONS: Division[] = [
 ];
 
 export const INITIAL_WORKERS: Worker[] = [
+  // Superadmin / Administrador Principal
+  { id: 'work_admin_1', name: 'Administrador VTV', email: 'vtvgestiondiariarchaud@gmail.com', cargo: 'Gerente de Operaciones y Producción', divisionId: 'div_archivo', role: 'superadmin', password: '12345678', mustChangePassword: false },
+
   // Archivo Audiovisual
   { id: 'work_1', name: 'Carlos Mendoza', email: 'carlos.m@vtv.gob.ve', cargo: 'Archivista de cintas LTO', divisionId: 'div_archivo', role: 'worker', password: '12345678', mustChangePassword: true },
   { id: 'work_2', name: 'Adriana Silva', email: 'adriana.s@vtv.gob.ve', cargo: 'Digitalizadora Betacam/U-matic', divisionId: 'div_archivo', role: 'worker', password: '12345678', mustChangePassword: true },
