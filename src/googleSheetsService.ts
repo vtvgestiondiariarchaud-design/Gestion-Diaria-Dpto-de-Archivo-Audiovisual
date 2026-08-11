@@ -35,7 +35,12 @@ export const initGoogleAuth = (
   });
 };
 
-export const signInWithGoogle = async (): Promise<{ user: User; accessToken: string } | null> => {
+export const signInWithGoogle = async (forcePopup = false): Promise<{ user: User | null; accessToken: string } | null> => {
+  const existingToken = getCachedAccessToken();
+  if (!forcePopup && existingToken) {
+    return { user: auth.currentUser, accessToken: existingToken };
+  }
+
   try {
     isSigningIn = true;
     const result = await signInWithPopup(auth, provider);
@@ -47,6 +52,10 @@ export const signInWithGoogle = async (): Promise<{ user: User; accessToken: str
     sessionStorage.setItem('vtv_google_access_token', cachedAccessToken);
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: any) {
+    if (error?.code === 'auth/popup-closed-by-user' || error?.code === 'auth/cancelled-popup-request') {
+      console.warn('El usuario cerró la ventana emergente de autenticación de Google.');
+      throw new Error('Inicio de sesión cancelado. Por favor completa la autenticación en la ventana emergente de Google.');
+    }
     console.error('Error al iniciar sesión con Google:', error);
     throw error;
   } finally {

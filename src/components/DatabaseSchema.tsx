@@ -71,8 +71,12 @@ export default function DatabaseSchema({ onClose }: { onClose?: () => void }) {
       setSpreadsheetId(sheetRes.spreadsheetId);
       setSyncStatus('¡Migración exitosa a Google Sheets!');
     } catch (err: any) {
-      console.error('Error al crear Google Sheet:', err);
-      setSyncStatus(`Error: ${err?.message || 'Fallo la migración a Google Sheets'}`);
+      if (err?.message?.includes('cancelado') || err?.code === 'auth/popup-closed-by-user') {
+        setSyncStatus('Inicio de sesión cancelado. Haz clic en el botón para conectar tu cuenta de Google.');
+      } else {
+        console.error('Error al crear Google Sheet:', err);
+        setSyncStatus(`Error: ${err?.message || 'Fallo la migración a Google Sheets'}`);
+      }
     } finally {
       setIsSyncing(false);
     }
@@ -92,8 +96,12 @@ export default function DatabaseSchema({ onClose }: { onClose?: () => void }) {
 
       setSyncStatus('¡Datos guardados correctamente en Google Sheets!');
     } catch (err: any) {
-      console.error('Error al sincronizar con Google Sheets:', err);
-      setSyncStatus(`Error: ${err?.message || 'Fallo la actualización'}`);
+      if (err?.message?.includes('cancelado') || err?.code === 'auth/popup-closed-by-user') {
+        setSyncStatus('Inicio de sesión cancelado. Por favor completa la autenticación con Google.');
+      } else {
+        console.error('Error al sincronizar con Google Sheets:', err);
+        setSyncStatus(`Error: ${err?.message || 'Fallo la actualización'}`);
+      }
     } finally {
       setIsSyncing(false);
     }
@@ -110,8 +118,12 @@ export default function DatabaseSchema({ onClose }: { onClose?: () => void }) {
       await syncLocalDbWithGoogleSheets(authRes.accessToken, spreadsheetId);
       setSyncStatus('¡Datos cargados correctamente desde Google Sheets a la aplicación!');
     } catch (err: any) {
-      console.error('Error al cargar de Google Sheets:', err);
-      setSyncStatus(`Error: ${err?.message || 'Fallo la descarga'}`);
+      if (err?.message?.includes('cancelado') || err?.code === 'auth/popup-closed-by-user') {
+        setSyncStatus('Inicio de sesión cancelado. Por favor completa la autenticación con Google.');
+      } else {
+        console.error('Error al cargar de Google Sheets:', err);
+        setSyncStatus(`Error: ${err?.message || 'Fallo la descarga'}`);
+      }
     } finally {
       setIsSyncing(false);
     }

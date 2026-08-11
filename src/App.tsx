@@ -1,25 +1,19 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
-  Tv, Layers, Utensils, FileText, Calendar, 
-  Database, Shield, AlertTriangle, Sparkles, 
-  Bell, CheckCircle2, Info, ChevronDown, UserCircle, LogOut, Loader2, KeyRound, UserPlus, Edit2, Check, X, ChevronLeft, ChevronRight, Plus,
-  Umbrella, Kanban, CheckSquare, Zap, FolderArchive, RotateCcw
+  CheckSquare, Calendar, Database, Shield, AlertTriangle, Sparkles, 
+  Bell, CheckCircle2, Info, UserCircle, LogOut, Loader2, KeyRound, UserPlus, 
+  Plus, Umbrella, RefreshCw, FileSpreadsheet, ExternalLink, Sliders
 } from 'lucide-react';
 
-import { Division, Worker, ShiftAssignment, ShiftChangeRequest, UserRole, TaskBoard, TaskCard, TaskNotification, FreeDayRequest } from './types';
-import { db, getLocalDb, DEFAULT_DIVISIONS, isSupabaseConfigured, supabaseConnectionStatus, lastSupabaseError, supabase } from './supabaseClient';
-import { pullLatestFromGoogleSheets, pushLatestToGoogleSheets } from './googleSheetsService';
+import { Division, Worker, ShiftAssignment, UserRole, TaskBoard, TaskCard, TaskNotification, FreeDayRequest } from './types';
+import { db, getLocalDb, DEFAULT_DIVISIONS } from './supabaseClient';
+import { pullLatestFromGoogleSheets, pushLatestToGoogleSheets, signInWithGoogle, getCachedAccessToken } from './googleSheetsService';
 
 import TaskManager from './components/TaskManager';
-import TrelloBoard from './components/TrelloBoard';
-import ComedorLogistics from './components/ComedorLogistics';
-import ReportGenerator from './components/ReportGenerator';
+import VacationControl from './components/VacationControl';
 import DatabaseSchema from './components/DatabaseSchema';
 import AdminPanel from './components/AdminPanel';
-import ShiftChanges from './components/ShiftChanges';
-import VacationControl from './components/VacationControl';
-import PhysicalArchive from './components/PhysicalArchive';
 
 interface NotificationToast {
   id: string;
@@ -37,194 +31,22 @@ export default function App() {
     return `${y}-${m}-${d}`;
   };
 
-  // Operational Days list with default initial values and local storage persistence
-  const [operationalDates, setOperationalDates] = useState<string[]>(() => {
-    const saved = localStorage.getItem('vtv_operational_dates');
-    return saved ? JSON.parse(saved) : ['2026-07-02', '2026-07-03', '2026-07-04', '2026-07-05'];
-  });
-  const [selectedDateStr, setSelectedDateStr] = useState<string>(getTodayDateStr);
-
-  const handleAddOperationalDate = async (newDateStr: string) => {
-    if (!newDateStr) return;
-    const matched = newDateStr.match(/^\d{4}-\d{2}-\d{2}$/);
-    if (!matched) {
-      addNotification('Formato Inválido', 'Por favor usa el formato AAAA-MM-DD.', 'info');
-      return;
-    }
-    if (operationalDates.includes(newDateStr)) {
-      addNotification('Día Existente', `El día ${newDateStr} ya está registrado.`, 'info');
-      setSelectedDateStr(newDateStr);
-      return;
-    }
-    const updated = [...operationalDates, newDateStr].sort();
-    setOperationalDates(updated);
-    localStorage.setItem('vtv_operational_dates', JSON.stringify(updated));
-    setSelectedDateStr(newDateStr);
-
-    // Determinar si es de lunes a viernes (1 a 5)
-    const [year, month, day] = newDateStr.split('-').map(Number);
-    const date = new Date(year, month - 1, day);
-    const dayOfWeek = date.getDay(); // 0 = Domingo, 1 = Lunes, ..., 6 = Sábado
-    const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
-
-    if (isWeekday) {
-      const newAssignments: ShiftAssignment[] = [];
-      workers.forEach(w => {
-        // Exclude worker from auto-scheduling if they are on vacation on this date
-        const isOnVacation = w.vacationStart && w.vacationEnd &&
-                             newDateStr >= w.vacationStart && newDateStr <= w.vacationEnd;
-        if (isOnVacation) return;
-
-        // Exclude worker if they have a programmed 'libre' (free day) shift on this date
-        const hasFreeDay = assignments.some(a => a.workerId === w.id && a.date === newDateStr && a.shiftType === 'libre');
-        if (hasFreeDay) return;
-
-        if (w.fixedShift && w.fixedShift !== 'pool') {
-          newAssignments.push({
-            id: `as_${w.id}_${w.fixedShift}_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-            workerId: w.id,
-            divisionId: w.divisionId,
-            date: newDateStr,
-            shiftType: w.fixedShift
-          });
-        }
-      });
-
-      if (newAssignments.length > 0) {
-        setAssignments(prev => [...prev, ...newAssignments]);
-        try {
-          for (const asg of newAssignments) {
-            await db.upsertAssignment(asg);
-          }
-          addNotification(
-            'Día Habilitado y Conformado',
-            `Se habilitó el día ${newDateStr} y se preestablecieron automáticamente ${newAssignments.length} turnos fijos de lunes a viernes.`,
-            'success'
-          );
-        } catch (err) {
-          console.error("Error al guardar las asignaciones automáticas:", err);
-          addNotification('Día Habilitado', `Se habilitó el día ${newDateStr}, pero hubo un detalle al persistir los turnos preestablecidos.`, 'info');
-        }
-      } else {
-        addNotification('Día Habilitado', `Se habilitó el día ${newDateStr} (L-V), sin turnos fijos cargados.`, 'success');
-      }
-    } else {
-      addNotification(
-        'Día Habilitado',
-        `Se habilitó el día ${newDateStr}. Al ser fin de semana, el tablero se creará vacío para conformación manual.`,
-        'success'
-      );
-    }
-  };
-
-  useEffect(() => {
-    const todayStr = getTodayDateStr();
-    if (!operationalDates.includes(todayStr)) {
-      handleAddOperationalDate(todayStr);
-    } else {
-      setSelectedDateStr(todayStr);
-    }
-  }, []);
-
-  const getPrevDateStr = (dateStr: string) => {
-    const [year, month, day] = dateStr.split('-').map(Number);
-    const date = new Date(year, month - 1, day);
-    date.setDate(date.getDate() - 1);
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    const d = String(date.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
-  };
-
-  const getNextDateStr = (dateStr: string) => {
-    const [year, month, day] = dateStr.split('-').map(Number);
-    const date = new Date(year, month - 1, day);
-    date.setDate(date.getDate() + 1);
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    const d = String(date.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
-  };
-
-  const getRelativeDateDetails = (dateStr: string) => {
-    const todayStr = getTodayDateStr();
-    
-    const [y, m, d] = dateStr.split('-').map(Number);
-    const targetDate = new Date(y, m - 1, d);
-    
-    const [ty, tm, td] = todayStr.split('-').map(Number);
-    const todayDate = new Date(ty, tm - 1, td);
-    
-    const diffTime = targetDate.getTime() - todayDate.getTime();
-    const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-    
-    let label = '';
-    if (diffDays === 0) {
-      label = 'Hoy';
-    } else if (diffDays === -1) {
-      label = 'Ayer';
-    } else if (diffDays < -1) {
-      label = `Hace ${Math.abs(diffDays)} días`;
-    } else if (diffDays === 1) {
-      label = 'Mañana';
-    } else {
-      label = `En ${diffDays} días`;
-    }
-    
-    const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
-    const months = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
-    
-    const dayName = dayNames[targetDate.getDay()];
-    const formattedDateDisplay = `${d} de ${months[m - 1]} de ${y}`;
-    
-    return {
-      label,
-      dayName,
-      formattedDateDisplay
-    };
-  };
-
-  const formattedSelectedDate = useMemo(() => {
-    const days = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
-    const months = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
-    const [year, month, day] = selectedDateStr.split('-').map(Number);
-    const date = new Date(year, month - 1, day);
-    return `${days[date.getDay()]}, ${String(day).padStart(2, '0')} de ${months[date.getMonth()]} ${year}`;
-  }, [selectedDateStr]);
-
-  // Core Sync States
+  // State Management
   const [divisions, setDivisions] = useState<Division[]>([]);
   const [workers, setWorkers] = useState<Worker[]>([]);
-
-  // Memoized workers sorted by division name, then alphabetically by worker name
-  const sortedWorkers = useMemo(() => {
-    return [...workers].sort((a, b) => {
-      const divA = divisions.find(d => d.id === a.divisionId);
-      const divB = divisions.find(d => d.id === b.divisionId);
-      const nameA = divA ? divA.name : 'Sin división';
-      const nameB = divB ? divB.name : 'Sin división';
-      
-      const divCompare = nameA.localeCompare(nameB);
-      if (divCompare !== 0) return divCompare;
-      return a.name.localeCompare(b.name);
-    });
-  }, [workers, divisions]);
   const [assignments, setAssignments] = useState<ShiftAssignment[]>([]);
-  const [requests, setRequests] = useState<ShiftChangeRequest[]>([]);
   const [freeDayRequests, setFreeDayRequests] = useState<FreeDayRequest[]>([]);
 
-  // Task System States
+  // Task Management States
   const [taskBoards, setTaskBoards] = useState<TaskBoard[]>([]);
   const [taskCards, setTaskCards] = useState<TaskCard[]>([]);
   const [taskNotifications, setTaskNotifications] = useState<TaskNotification[]>([]);
 
   const [loading, setLoading] = useState<boolean>(true);
-  const [dbStatus, setDbStatus] = useState<'connected' | 'error' | 'not_configured'>(
-    isSupabaseConfigured ? 'connected' : 'not_configured'
-  );
-  const [dbError, setDbError] = useState<string | null>(null);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [spreadsheetId, setSpreadsheetId] = useState<string | null>(() => localStorage.getItem('vtv_google_spreadsheet_id'));
 
-  // Authentication & Session
+  // Authentication & User Session
   const [currentSession, setCurrentSession] = useState<{
     userId: string;
     name: string;
@@ -237,14 +59,11 @@ export default function App() {
     return saved ? JSON.parse(saved) : null;
   });
 
-  // Active Navigation Tab ('tareas' as primary default)
-  const [activeTab, setActiveTab] = useState<'tareas' | 'tablero' | 'comedor' | 'reportes' | 'solicitudes' | 'admin' | 'vacaciones' | 'archivo_fisico'>('tareas');
-  const [showBlueprintModal, setShowBlueprintModal] = useState(false);
+  // Navigation Tab ('tareas' | 'vacaciones' | 'perfil')
+  const [activeTab, setActiveTab] = useState<'tareas' | 'vacaciones' | 'perfil'>('tareas');
+  const [showBlueprintModal, setShowBlueprintModal] = useState<boolean>(false);
 
-  // Currently Selected Division in Trello Board view
-  const [selectedDivisionId, setSelectedDivisionId] = useState<string>('todos');
-
-  // Auth form states
+  // Auth Form States
   const [authTab, setAuthTab] = useState<'login' | 'register'>('login');
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -255,125 +74,14 @@ export default function App() {
   const [regCedula, setRegCedula] = useState('');
   const [regDivisionId, setRegDivisionId] = useState('div_archivo_prensa');
   const [regRole, setRegRole] = useState<UserRole>('worker');
+  const [authError, setAuthError] = useState<string | null>(null);
 
-  // Username change editing state
-  const [isEditingUsername, setIsEditingUsername] = useState(false);
-  const [newUsername, setNewUsername] = useState('');
-  const [newCedula, setNewCedula] = useState('');
-
-  // Modo Lite (Rendimiento Ligero para dispositivos/teléfonos)
-  const [isLiteMode, setIsLiteMode] = useState<boolean>(() => {
-    const saved = localStorage.getItem('vtv_is_lite_mode');
-    return saved === 'true';
-  });
-
-  useEffect(() => {
-    localStorage.setItem('vtv_is_lite_mode', String(isLiteMode));
-    if (isLiteMode) {
-      document.body.classList.add('mode-lite');
-      document.documentElement.classList.add('mode-lite');
-    } else {
-      document.body.classList.remove('mode-lite');
-      document.documentElement.classList.remove('mode-lite');
-    }
-  }, [isLiteMode]);
-
-  // Forced password change state
-  const [forceNewPassword, setForceNewPassword] = useState('');
-  const [forceConfirmPassword, setForceConfirmPassword] = useState('');
-
-  // Count of pending free day requests visible only to jefes/coordinadores of the same division
-  const visiblePendingFreeDayRequestsCount = useMemo(() => {
-    if (!currentSession) return 0;
-    const { role, divisionId } = currentSession;
-    
-    // Notification visible ONLY for jefes ('deputy'), coordinadores ('coordinator'), or superadmin ('superadmin')
-    const isLeader = role === 'coordinator' || role === 'deputy' || role === 'superadmin';
-    if (!isLeader) return 0;
-
-    return freeDayRequests.filter(r => {
-      if (r.status !== 'pending') return false;
-      // Superadmin sees all pending requests
-      if (role === 'superadmin') return true;
-      // Boss (deputy) or coordinator: must belong to the exact same division as the applicant
-      const applicantWorker = workers.find(w => w.id === r.workerId);
-      const reqDivId = r.divisionId || applicantWorker?.divisionId;
-      return divisionId && reqDivId === divisionId;
-    }).length;
-  }, [freeDayRequests, currentSession, workers]);
-
-  // Individual food preference states derived dynamically from workers' profiles
-  const mealsPreferences = useMemo(() => {
-    const prefs: Record<string, { desayuno: boolean; almuerzo: boolean; cena: boolean }> = {};
-    
-    // 1. Load preferences stored on each worker in the DB
-    workers.forEach(w => {
-      if (w.mealsPreference) {
-        prefs[w.id] = w.mealsPreference;
-      }
-    });
-
-    // 2. Overlay / merge local storage as fallback for instant reactivity
-    try {
-      const saved = localStorage.getItem('vtv_meals_preferences');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        Object.keys(parsed).forEach(id => {
-          if (!prefs[id]) {
-            prefs[id] = parsed[id];
-          }
-        });
-      }
-    } catch (e) {
-      console.error('Error parsing local meals preferences:', e);
-    }
-
-    return prefs;
-  }, [workers]);
-
-  const handleUpdateMealsPreference = async (workerId: string, prefs: { desayuno: boolean; almuerzo: boolean; cena: boolean }) => {
-    // Save to local storage for local persistence & fast feedback
-    try {
-      const saved = localStorage.getItem('vtv_meals_preferences');
-      const parsed = saved ? JSON.parse(saved) : {};
-      parsed[workerId] = prefs;
-      localStorage.setItem('vtv_meals_preferences', JSON.stringify(parsed));
-    } catch (e) {
-      console.error(e);
-    }
-
-    // Instantly update workers state so the UI updates without a network round-trip delay
-    const updatedWorkers = workers.map(w => {
-      if (w.id === workerId) {
-        return { ...w, mealsPreference: prefs };
-      }
-      return w;
-    });
-    setWorkers(updatedWorkers);
-
-    // Save to the database (Supabase or localDB fallback)
-    const targetWorker = updatedWorkers.find(w => w.id === workerId);
-    if (targetWorker) {
-      try {
-        await db.updateWorker(targetWorker);
-      } catch (err) {
-        console.error('Error persisting meal preference updates to database:', err);
-      }
-    }
-  };
-
-  // Toast Notification State
+  // Toast Notifications State
   const [notifications, setNotifications] = useState<NotificationToast[]>([]);
 
-  // Push notifications helper
   const addNotification = (title: string, desc: string, type: 'success' | 'info' = 'info') => {
-    const uniqueId = `notif_${Date.now()}_${Math.random().toString(36).substring(2, 9)}_${Math.floor(Math.random() * 10000)}`;
-    const newNotif: NotificationToast = {
-      id: uniqueId,
-      title,
-      desc,
-      type
-    };
+    const uniqueId = `notif_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const newNotif: NotificationToast = { id: uniqueId, title, desc, type };
     setNotifications(prev => [newNotif, ...prev]);
     setTimeout(() => {
       setNotifications(prev => prev.filter(n => n.id !== newNotif.id));
@@ -384,32 +92,13 @@ export default function App() {
   const syncData = async () => {
     setLoading(true);
     try {
-      // Auto-pull latest records from Google Sheets if configured
+      // Pull latest from Google Sheets if configured
       await pullLatestFromGoogleSheets().catch(() => null);
 
-      // Intentar obtener configuración en caliente del backend (Render, etc.) para evitar re-compilaciones (con timeout de 1.5s)
-      try {
-        const controller = new AbortController();
-        const configTimeout = setTimeout(() => controller.abort(), 1500);
-        const configRes = await fetch('/api/config', { signal: controller.signal });
-        clearTimeout(configTimeout);
-        if (configRes.ok) {
-          const configData = await configRes.json();
-          if (configData.supabaseUrl && configData.supabaseAnonKey) {
-            const { initSupabaseClient } = await import('./supabaseClient');
-            initSupabaseClient(configData.supabaseUrl, configData.supabaseAnonKey);
-          }
-        }
-      } catch (err) {
-        console.warn('Configuración dinámica no disponible, usando variables de entorno estáticas:', err);
-      }
-
-      // Parallel fetch all data sources concurrently for maximum speed
       const [
         fetchedDivisions,
         fetchedWorkers,
         fetchedAssignments,
-        fetchedRequests,
         fetchedFreeDayRequests,
         fetchedTaskBoards,
         fetchedTaskCards,
@@ -418,19 +107,11 @@ export default function App() {
         db.fetchDivisions(),
         db.fetchWorkers(),
         db.fetchAssignments(),
-        db.fetchRequests(),
         db.fetchFreeDayRequests(),
         db.fetchTaskBoards(),
         db.fetchTaskCards(),
         db.fetchTaskNotifications()
       ]);
-
-      if (currentSession) {
-        const activeW = fetchedWorkers.find(w => w.id === currentSession.userId);
-        if (activeW && activeW.isLiteMode !== undefined) {
-          setIsLiteMode(activeW.isLiteMode);
-        }
-      }
 
       // Ensure default initial task boards exist if empty
       let finalBoards = fetchedTaskBoards;
@@ -485,590 +166,149 @@ export default function App() {
         }
       }
 
-      // Ensure default initial task cards exist if empty on first initialization
-      let finalCards = fetchedTaskCards;
-      const hasInitializedDefaults = localStorage.getItem('vtv_initialized_defaults') === 'true';
-      if (finalCards.length === 0 && !hasInitializedDefaults) {
-        const today = getTodayDateStr();
-        const nextWeek = getNextDateStr(today);
-        finalCards = [
-          {
-            id: 'task_default_1',
-            boardId: 'board_ingesta',
-            title: 'Ingesta de Señal Internacional en Vivo',
-            description: 'Sincronización y captura en servidor de almacenamiento central para notas de prensa.',
-            status: 'Ingestado',
-            priority: 'alta',
-            startDate: today,
-            dueDate: nextWeek,
-            assignedWorkerIds: [],
-            checklist: [
-              { id: 'c1', text: 'Verificación de audio e imagen', completed: true },
-              { id: 'c2', text: 'Etiquetado con palabras clave', completed: true }
-            ],
-            createdAt: new Date().toISOString(),
-            createdByName: 'Jefatura de Operaciones'
-          },
-          {
-            id: 'task_default_2',
-            boardId: 'board_prensa',
-            title: 'Edición de Avance Informativo del Mediodía',
-            description: 'Ensamblaje y titulación de reportajes especiales para emisión en vivo.',
-            status: 'Editado',
-            priority: 'urgente',
-            startDate: today,
-            dueDate: nextWeek,
-            assignedWorkerIds: [],
-            checklist: [
-              { id: 'm1', text: 'Revisión de generador de caracteres', completed: true },
-              { id: 'm2', text: 'Exportación a máster de emisión', completed: false }
-            ],
-            createdAt: new Date().toISOString(),
-            createdByName: 'Coordinación de Prensa'
-          },
-          {
-            id: 'task_default_3',
-            boardId: 'board_digitalizacion',
-            title: 'Archivado y Catalogación de Cinta Histórica',
-            description: 'Indexación en base de datos documental para preservación permanente.',
-            status: 'Archivando',
-            priority: 'media',
-            startDate: today,
-            dueDate: nextWeek,
-            assignedWorkerIds: [],
-            checklist: [
-              { id: 'e1', text: 'Limpieza de cabezales y formato', completed: true },
-              { id: 'e2', text: 'Verificación de metadatos', completed: false }
-            ],
-            createdAt: new Date().toISOString(),
-            createdByName: 'Archivo Audiovisual'
-          },
-          {
-            id: 'task_default_solicitud_1',
-            boardId: 'board_otras_solicitudes',
-            title: 'Solicitud Especial: Mantenimiento Preventivo de Servidores SAN',
-            description: 'Revisión técnica de unidades de almacenamiento e indexación del archivo matriz.',
-            status: 'Pendiente',
-            priority: 'alta',
-            isOtherRequest: true,
-            isDepartmentAchievement: true,
-            startDate: today,
-            dueDate: nextWeek,
-            assignedWorkerIds: [],
-            checklist: [
-              { id: 's1', text: 'Inspección de discos en arreglo RAID', completed: false },
-              { id: 's2', text: 'Informe de respaldo técnico', completed: false }
-            ],
-            createdAt: new Date().toISOString(),
-            createdByName: 'Gerencia Audiovisual'
-          }
-        ];
-        localStorage.setItem('vtv_task_cards', JSON.stringify(finalCards));
-        localStorage.setItem('vtv_initialized_defaults', 'true');
-        for (const c of finalCards) {
-          db.upsertTaskCard(c);
-        }
-      }
-
-      setTaskBoards(finalBoards);
-      setTaskCards(finalCards);
-      setTaskNotifications(fetchedTaskNotifs);
-
-      // Robust local storage fallback for worker preestablished fixed shifts, vacations, and free days adjustment
-      let mergedWorkers = fetchedWorkers;
-      try {
-        const localFixedShiftsRaw = localStorage.getItem('vtv_worker_fixed_shifts');
-        const localFixedShifts = localFixedShiftsRaw ? JSON.parse(localFixedShiftsRaw) : {};
-
-        const localVacStartRaw = localStorage.getItem('vtv_worker_vacation_start');
-        const localVacStart = localVacStartRaw ? JSON.parse(localVacStartRaw) : {};
-
-        const localVacEndRaw = localStorage.getItem('vtv_worker_vacation_end');
-        const localVacEnd = localVacEndRaw ? JSON.parse(localVacEndRaw) : {};
-
-        const localManualFreeDaysRaw = localStorage.getItem('vtv_worker_manual_free_days');
-        const localManualFreeDays = localManualFreeDaysRaw ? JSON.parse(localManualFreeDaysRaw) : {};
-        
-        // Feed DB values to local storage fallback if they are present
-        fetchedWorkers.forEach(w => {
-          if (w.fixedShift && w.fixedShift !== 'pool') {
-            localFixedShifts[w.id] = w.fixedShift;
-          }
-          if (w.vacationStart) {
-            localVacStart[w.id] = w.vacationStart;
-          }
-          if (w.vacationEnd) {
-            localVacEnd[w.id] = w.vacationEnd;
-          }
-          if (w.manualFreeDaysAdjustment !== undefined) {
-            localManualFreeDays[w.id] = w.manualFreeDaysAdjustment;
-          }
-        });
-        localStorage.setItem('vtv_worker_fixed_shifts', JSON.stringify(localFixedShifts));
-        localStorage.setItem('vtv_worker_vacation_start', JSON.stringify(localVacStart));
-        localStorage.setItem('vtv_worker_vacation_end', JSON.stringify(localVacEnd));
-        localStorage.setItem('vtv_worker_manual_free_days', JSON.stringify(localManualFreeDays));
-
-        mergedWorkers = fetchedWorkers.map(w => ({
-          ...w,
-          fixedShift: localFixedShifts[w.id] || w.fixedShift || 'pool',
-          vacationStart: localVacStart[w.id] || w.vacationStart,
-          vacationEnd: localVacEnd[w.id] || w.vacationEnd,
-          manualFreeDaysAdjustment: localManualFreeDays[w.id] !== undefined ? localManualFreeDays[w.id] : (w.manualFreeDaysAdjustment || 0)
-        }));
-      } catch (err) {
-        console.warn('Error applying localStorage fallback for workers:', err);
-      }
-
       setDivisions(fetchedDivisions.length > 0 ? fetchedDivisions : DEFAULT_DIVISIONS);
-      setWorkers(mergedWorkers);
+      setWorkers(fetchedWorkers);
       setAssignments(fetchedAssignments);
-      setRequests(fetchedRequests);
       setFreeDayRequests(fetchedFreeDayRequests);
-
-      setDbStatus(supabaseConnectionStatus);
-      setDbError(lastSupabaseError);
-    } catch (e: any) {
-      console.error('Error synchronizing database data:', e);
-      addNotification('Error de Conexión', 'No se pudo sincronizar con la base de datos.', 'info');
-      setDbStatus('error');
-      setDbError(e?.message || String(e));
+      setTaskBoards(finalBoards);
+      setTaskCards(fetchedTaskCards);
+      setTaskNotifications(fetchedTaskNotifs);
+    } catch (err) {
+      console.error('Error al sincronizar datos:', err);
     } finally {
       setLoading(false);
     }
   };
 
-  // Helper to compare object arrays structurally to prevent unnecessary React state re-renders
-  const areEqualJson = (a: any, b: any): boolean => {
-    if (a === b) return true;
-    if (!a || !b) return false;
-    if (Array.isArray(a) && Array.isArray(b)) {
-      if (a.length !== b.length) return false;
-      if (a.length === 0) return true;
-      // Fast identity/timestamp comparison for first and last elements before stringifying
-      const firstA = a[0];
-      const firstB = b[0];
-      const lastA = a[a.length - 1];
-      const lastB = b[b.length - 1];
-      if (firstA?.id !== firstB?.id || lastA?.id !== lastB?.id) return false;
-      if ((firstA?.updatedAt || firstA?.updated_at) !== (firstB?.updatedAt || firstB?.updated_at)) return false;
-      if ((lastA?.updatedAt || lastA?.updated_at) !== (lastB?.updatedAt || lastB?.updated_at)) return false;
-    }
-    return JSON.stringify(a) === JSON.stringify(b);
-  };
-
-  // Silent data refresh for real-time background sync across workers
-  const syncDataSilent = async () => {
-    try {
-      await pullLatestFromGoogleSheets().catch(() => null);
-
-      const [
-        fetchedTaskBoards,
-        fetchedTaskCards,
-        fetchedTaskNotifs,
-        fetchedWorkers,
-        fetchedAssignments,
-        fetchedRequests,
-        fetchedFreeDayRequests
-      ] = await Promise.all([
-        db.fetchTaskBoards(),
-        db.fetchTaskCards(),
-        db.fetchTaskNotifications(),
-        db.fetchWorkers(),
-        db.fetchAssignments(),
-        db.fetchRequests(),
-        db.fetchFreeDayRequests()
-      ]);
-
-      if (fetchedTaskBoards.length > 0) {
-        setTaskBoards(prev => areEqualJson(prev, fetchedTaskBoards) ? prev : fetchedTaskBoards);
-      }
-      if (fetchedTaskCards.length > 0 || localStorage.getItem('vtv_initialized_defaults') === 'true') {
-        setTaskCards(prev => areEqualJson(prev, fetchedTaskCards) ? prev : fetchedTaskCards);
-      }
-      if (fetchedTaskNotifs.length > 0) {
-        setTaskNotifications(prev => areEqualJson(prev, fetchedTaskNotifs) ? prev : fetchedTaskNotifs);
-      }
-      if (fetchedWorkers.length > 0) {
-        setWorkers(prev => areEqualJson(prev, fetchedWorkers) ? prev : fetchedWorkers);
-      }
-      if (fetchedAssignments.length > 0) {
-        setAssignments(prev => areEqualJson(prev, fetchedAssignments) ? prev : fetchedAssignments);
-      }
-      if (fetchedRequests.length > 0) {
-        setRequests(prev => areEqualJson(prev, fetchedRequests) ? prev : fetchedRequests);
-      }
-      if (fetchedFreeDayRequests.length > 0) {
-        setFreeDayRequests(prev => areEqualJson(prev, fetchedFreeDayRequests) ? prev : fetchedFreeDayRequests);
-      }
-
-      setDbStatus(supabaseConnectionStatus);
-      setDbError(lastSupabaseError);
-    } catch (e) {
-      console.warn('Silent sync warning:', e);
-    }
-  };
-
-  const [isSyncing, setIsSyncing] = useState<boolean>(false);
-
-  // Manual synchronization handler for user request
-  const handleManualSync = async () => {
-    setIsSyncing(true);
-    try {
-      await syncData();
-      addNotification('Sincronización Completa', 'Datos sincronizados en tiempo real con Google Sheets.', 'success');
-    } catch (e: any) {
-      addNotification('Error de Sincronización', e?.message || 'No se pudo actualizar los datos con Google Sheets.', 'info');
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
-  // Load data on mount and setup real-time background synchronization
   useEffect(() => {
     syncData();
-
-    // Smart background polling interval (every 15 seconds when tab is active)
-    const pollInterval = setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        syncDataSilent();
+    const interval = setInterval(() => {
+      const sheetId = localStorage.getItem('vtv_google_spreadsheet_id');
+      setSpreadsheetId(sheetId);
+      if (sheetId) {
+        pullLatestFromGoogleSheets().catch(() => null);
       }
     }, 15000);
-
-    // Debouncer for Supabase Realtime channel events (150ms for near-instant updates)
-    let realtimeDebounceTimer: NodeJS.Timeout | null = null;
-    const handleRealtimeEvent = () => {
-      if (realtimeDebounceTimer) clearTimeout(realtimeDebounceTimer);
-      realtimeDebounceTimer = setTimeout(() => {
-        syncDataSilent();
-      }, 150);
-    };
-
-    // Immediate sync on tab focus or visibility change (device wake-up / unlock)
-    const handleVisibilityOrFocus = () => {
-      if (document.visibilityState === 'visible') {
-        syncDataSilent();
-      }
-    };
-    window.addEventListener('focus', handleVisibilityOrFocus);
-    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
-
-    // Supabase Realtime channel subscription covering ALL tables for multi-device live sync
-    let channel: any = null;
-    if (supabase) {
-      try {
-        channel = supabase.channel('vtv_realtime_channel')
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'task_cards' }, handleRealtimeEvent)
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'task_boards' }, handleRealtimeEvent)
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_assignments' }, handleRealtimeEvent)
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_change_requests' }, handleRealtimeEvent)
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'free_day_requests' }, handleRealtimeEvent)
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'workers' }, handleRealtimeEvent)
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'divisions' }, handleRealtimeEvent)
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'task_notifications' }, handleRealtimeEvent)
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'physical_audiovisual_materials' }, handleRealtimeEvent)
-          .subscribe();
-      } catch (err) {
-        console.warn('Realtime subscription error:', err);
-      }
-    }
-
-    return () => {
-      clearInterval(pollInterval);
-      if (realtimeDebounceTimer) clearTimeout(realtimeDebounceTimer);
-      window.removeEventListener('focus', handleVisibilityOrFocus);
-      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
-      if (supabase && channel) {
-        supabase.removeChannel(channel);
-      }
-    };
+    return () => clearInterval(interval);
   }, []);
 
-  // Task System Handlers
-  const handleAddBoard = async (board: TaskBoard) => {
-    const updated = [...taskBoards, board];
-    setTaskBoards(updated);
-    localStorage.setItem('vtv_task_boards', JSON.stringify(updated));
+  const sortedWorkers = useMemo(() => {
+    return [...workers].sort((a, b) => {
+      const divA = divisions.find(d => d.id === a.divisionId);
+      const divB = divisions.find(d => d.id === b.divisionId);
+      const nameA = divA ? divA.name : 'Sin división';
+      const nameB = divB ? divB.name : 'Sin división';
+      const divCompare = nameA.localeCompare(nameB);
+      if (divCompare !== 0) return divCompare;
+      return a.name.localeCompare(b.name);
+    });
+  }, [workers, divisions]);
+
+  // Handle Google Auth Login
+  const handleGoogleSignIn = async () => {
+    setAuthError(null);
     try {
-      await db.createTaskBoard(board);
-      addNotification('Tablero Creado', `El tablero "${board.name}" se sincronizó con Supabase.`, 'success');
-      setDbStatus(supabaseConnectionStatus);
-      setDbError(lastSupabaseError);
-    } catch (err: any) {
-      console.error('Error creating board in Supabase:', err);
-      addNotification('Error en Supabase', err.message || 'No se pudo guardar el tablero en Supabase.', 'info');
-      setDbStatus('error');
-      setDbError(err.message || 'Error guardando tablero en Supabase');
-    }
-  };
+      const res = await signInWithGoogle(true);
+      if (res?.user) {
+        const email = res.user.email || '';
+        let matchingWorker = workers.find(w => w.email.toLowerCase() === email.toLowerCase());
 
-  const handleDeleteBoard = async (boardId: string) => {
-    const updatedBoards = taskBoards.filter(b => b.id !== boardId);
-    const updatedCards = taskCards.filter(c => c.boardId !== boardId);
-    setTaskBoards(updatedBoards);
-    setTaskCards(updatedCards);
-    localStorage.setItem('vtv_task_boards', JSON.stringify(updatedBoards));
-    localStorage.setItem('vtv_task_cards', JSON.stringify(updatedCards));
-    try {
-      await db.deleteTaskBoard(boardId);
-      addNotification('Tablero Eliminado', 'Se eliminó el tablero correctamente.', 'success');
-    } catch (err: any) {
-      console.error('Error deleting board:', err);
-      addNotification('Error en Supabase', err.message || 'Error al eliminar el tablero.', 'info');
-    }
-  };
+        if (!matchingWorker) {
+          // Auto-register new worker for Google User
+          const newWorker: Worker = {
+            id: res.user.uid || `worker_${Date.now()}`,
+            name: res.user.displayName || email.split('@')[0],
+            email: email,
+            cargo: 'Colaborador VTV',
+            divisionId: divisions[0]?.id || 'div_archivo_prensa',
+            role: email.includes('admin') || email.includes('gerente') ? 'superadmin' : 'worker',
+            fixedShift: 'pool'
+          };
+          await db.registerWorker(newWorker);
+          matchingWorker = newWorker;
+          setWorkers(prev => [...prev, newWorker]);
+        }
 
-  const handleSaveCard = async (card: TaskCard) => {
-    const existingCard = taskCards.find(c => c.id === card.id);
-    const oldAssignees = existingCard ? existingCard.assignedWorkerIds : [];
-    const newlyAssigned = card.assignedWorkerIds.filter(id => !oldAssignees.includes(id));
-
-    const existingIndex = taskCards.findIndex(c => c.id === card.id);
-    let updatedCards: TaskCard[] = [];
-    if (existingIndex >= 0) {
-      updatedCards = taskCards.map(c => c.id === card.id ? card : c);
-    } else {
-      updatedCards = [card, ...taskCards];
-    }
-
-    setTaskCards(updatedCards);
-    localStorage.setItem('vtv_task_cards', JSON.stringify(updatedCards));
-
-    try {
-      await db.upsertTaskCard(card);
-      addNotification('Tarea Guardada', `La tarea "${card.title}" se guardó en la base de datos Supabase.`, 'success');
-      setDbStatus(supabaseConnectionStatus);
-      setDbError(lastSupabaseError);
-    } catch (err: any) {
-      console.error('Error upserting card in Supabase:', err);
-      addNotification('Error de Base de Datos', err.message || 'No se pudo guardar la tarea en Supabase.', 'info');
-      setDbStatus('error');
-      setDbError(err.message || 'Error guardando tarea en Supabase');
-    }
-
-    const currentUserId = currentSession?.userId;
-
-    // Si el mismo usuario modifica una tarea que le estaba generando una notificación, esta se marca como leída
-    if (currentUserId) {
-      const pendingNotifs = taskNotifications.filter(
-        n => (n.taskId === card.id || n.taskTitle === card.title) && n.workerId === currentUserId && !n.read
-      );
-      if (pendingNotifs.length > 0) {
-        pendingNotifs.forEach(n => {
-          handleMarkNotificationRead(n.id);
-        });
-      }
-    }
-
-    // Notifications for newly assigned workers
-    if (newlyAssigned.length > 0) {
-      const boardObj = taskBoards.find(b => b.id === card.boardId);
-      const boardName = boardObj ? boardObj.name : 'Tablero de Tareas';
-
-      for (const workerId of newlyAssigned) {
-        // Cuando el usuario crea o se agrega a sí mismo a una tarea, le genera notificación pero automáticamente se marca como leída
-        const isSelf = !!(currentUserId && workerId === currentUserId);
-
-        const notif: TaskNotification = {
-          id: `notif_${Date.now()}_${Math.random().toString(36).substr(2, 4)}_${Math.floor(Math.random() * 1000)}`,
-          workerId,
-          taskId: card.id,
-          taskTitle: card.title,
-          boardName,
-          message: `Se te ha asignado la tarea "${card.title}" en el tablero "${boardName}".`,
-          createdAt: new Date().toISOString(),
-          read: isSelf
+        const sessionData = {
+          userId: matchingWorker.id,
+          name: matchingWorker.name,
+          role: matchingWorker.role,
+          divisionId: matchingWorker.divisionId,
+          email: matchingWorker.email,
+          cargo: matchingWorker.cargo
         };
-        setTaskNotifications(prev => [notif, ...prev]);
-        try {
-          await db.createTaskNotification(notif);
-        } catch (e) {
-          console.warn('Error saving notif:', e);
-        }
+
+        setCurrentSession(sessionData);
+        localStorage.setItem('vtv_real_session', JSON.stringify(sessionData));
+        addNotification('Bienvenido', `Sesión iniciada con Google (${matchingWorker.name})`, 'success');
+
+        // Auto sync with Google Sheets if available
+        pushLatestToGoogleSheets().catch(() => null);
       }
-    }
-  };
-
-  const handleDeleteCard = async (cardId: string) => {
-    const updatedCards = taskCards
-      .filter(c => c.id !== cardId)
-      .map(c => {
-        if (c.linkedTaskIds && c.linkedTaskIds.includes(cardId)) {
-          return { ...c, linkedTaskIds: c.linkedTaskIds.filter(id => id !== cardId) };
-        }
-        return c;
-      });
-    setTaskCards(updatedCards);
-    localStorage.setItem('vtv_task_cards', JSON.stringify(updatedCards));
-
-    const updatedNotifs = taskNotifications.filter(n => n.taskId !== cardId);
-    setTaskNotifications(updatedNotifs);
-    localStorage.setItem('vtv_task_notifications', JSON.stringify(updatedNotifs));
-
-    try {
-      await db.deleteTaskCard(cardId);
-      addNotification('Tarea Eliminada', 'La tarea se eliminó de forma permanente del sistema.', 'success');
     } catch (err: any) {
-      console.error('Error deleting card:', err);
-      addNotification('Error al eliminar', err.message || 'No se pudo eliminar la tarea.', 'info');
-    }
-  };
-
-  const handleMarkNotificationRead = async (id: string) => {
-    const updated = taskNotifications.map(n => n.id === id ? { ...n, read: true } : n);
-    setTaskNotifications(updated);
-    localStorage.setItem('vtv_task_notifications', JSON.stringify(updated));
-    await db.markTaskNotificationRead(id);
-  };
-
-  const handleMarkAllNotificationsRead = async (workerId?: string) => {
-    const updated = taskNotifications.map(n => (!workerId || n.workerId === workerId) ? { ...n, read: true } : n);
-    setTaskNotifications(updated);
-    localStorage.setItem('vtv_task_notifications', JSON.stringify(updated));
-    await db.markAllTaskNotificationsRead(workerId);
-  };
-
-  const handleClearAllNotifications = async (workerId?: string) => {
-    const updated = workerId ? taskNotifications.filter(n => n.workerId !== workerId) : [];
-    setTaskNotifications(updated);
-    localStorage.setItem('vtv_task_notifications', JSON.stringify(updated));
-    await db.clearAllTaskNotifications(workerId);
-  };
-
-  const handleDeleteNotification = async (id: string) => {
-    const updated = taskNotifications.filter(n => n.id !== id);
-    setTaskNotifications(updated);
-    localStorage.setItem('vtv_task_notifications', JSON.stringify(updated));
-    await db.deleteTaskNotification(id);
-  };
-
-  // Update selected division ID when session changes
-  useEffect(() => {
-    if (currentSession && currentSession.role === 'coordinator' && currentSession.divisionId) {
-      setSelectedDivisionId(currentSession.divisionId);
-    }
-  }, [currentSession]);
-
-  // Auth Handlers
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const emailStr = loginEmail.trim().toLowerCase();
-    if (!emailStr) return;
-
-    setLoading(true);
-    try {
-      // Fetch latest workers list
-      const latestWorkers = await db.fetchWorkers();
-      let workerFound = latestWorkers.find(w => w.email.toLowerCase() === emailStr);
-
-      const isSuperEmail = emailStr === 'vtvgestiondiariarchaud@gmail.com';
-
-      // Verify passwords
-      if (isSuperEmail) {
-        if (loginPassword !== 'Moonshade.1') {
-          addNotification('Contraseña Incorrecta', 'La contraseña para el superusuario es inválida.', 'info');
-          setLoading(false);
-          return;
-        }
-      } else if (workerFound) {
-        if (workerFound.password && workerFound.password !== loginPassword) {
-          addNotification('Contraseña Incorrecta', 'La contraseña ingresada es incorrecta.', 'info');
-          setLoading(false);
-          return;
-        }
-      }
-
-      // Auto-register SuperAdmin if they don't exist yet
-      if (!workerFound && isSuperEmail) {
-        const superAdmin: Worker = {
-          id: 'sa_vtv_1',
-          name: 'Fredd Rojas - Gerente',
-          email: emailStr,
-          cargo: 'Gerente del Dpto de Archivo Audiovisual',
-          divisionId: 'div_archivo_prensa',
-          role: 'superadmin',
-          password: 'Moonshade.1'
-        };
-        await db.registerWorker(superAdmin);
-        workerFound = superAdmin;
-        await syncData();
-      } else if (workerFound && isSuperEmail && (workerFound.name !== 'Fredd Rojas - Gerente' || workerFound.cargo !== 'Gerente del Dpto de Archivo Audiovisual')) {
-        // Automatically enforce correct details on login
-        workerFound.name = 'Fredd Rojas - Gerente';
-        workerFound.cargo = 'Gerente del Dpto de Archivo Audiovisual';
-        workerFound.divisionId = 'div_archivo_prensa';
-        workerFound.password = 'Moonshade.1';
-        await db.registerWorker(workerFound);
-        await syncData();
-      }
-
-      if (workerFound) {
-        const session = {
-          userId: workerFound.id,
-          name: workerFound.name,
-          role: workerFound.role,
-          divisionId: workerFound.divisionId,
-          email: workerFound.email,
-          cargo: workerFound.cargo
-        };
-        setCurrentSession(session);
-        localStorage.setItem('vtv_real_session', JSON.stringify(session));
-        addNotification('Sesión Iniciada', `Bienvenido(a) de vuelta, ${workerFound.name}.`, 'success');
-        
-        // Reset login password
-        setLoginPassword('');
+      if (err?.message?.includes('cancelado') || err?.code === 'auth/popup-closed-by-user') {
+        setAuthError('Ventana emergente cerrada antes de completar el inicio de sesión.');
       } else {
-        addNotification('Acceso Denegado', 'El correo no está registrado como personal de VTV. Regístrate primero.', 'info');
+        setAuthError(err?.message || 'Error de autenticación con Google.');
       }
-    } catch (err) {
-      console.error(err);
-      addNotification('Error', 'Fallo al iniciar sesión.', 'info');
-    } finally {
-      setLoading(false);
     }
   };
 
-  const handleRegister = async (e: React.FormEvent) => {
+  // Handle Standard Login
+  const handleCredentialsLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    const nameStr = regName.trim();
-    const emailStr = regEmail.trim().toLowerCase();
-    const cargoStr = regCargo.trim();
-    const cedulaStr = regCedula.trim();
-    const passStr = regPassword;
+    setAuthError(null);
+    const trimmedEmail = loginEmail.trim().toLowerCase();
+    const matchedWorker = workers.find(w => w.email.toLowerCase() === trimmedEmail);
 
-    if (!nameStr || !emailStr || !cargoStr || !cedulaStr || !passStr) {
-      addNotification('Campos vacíos', 'Por favor, llena todos los campos, incluyendo la contraseña y Cédula.', 'info');
+    if (matchedWorker) {
+      if (matchedWorker.password && matchedWorker.password !== loginPassword) {
+        setAuthError('Contraseña incorrecta.');
+        return;
+      }
+
+      const sessionData = {
+        userId: matchedWorker.id,
+        name: matchedWorker.name,
+        role: matchedWorker.role,
+        divisionId: matchedWorker.divisionId,
+        email: matchedWorker.email,
+        cargo: matchedWorker.cargo
+      };
+
+      setCurrentSession(sessionData);
+      localStorage.setItem('vtv_real_session', JSON.stringify(sessionData));
+      addNotification('Sesión Iniciada', `Hola de nuevo, ${matchedWorker.name}`, 'success');
+    } else {
+      setAuthError('Correo de usuario no encontrado en el sistema.');
+    }
+  };
+
+  // Handle Register
+  const handleRegisterWorker = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    if (!regName.trim() || !regEmail.trim()) {
+      setAuthError('Nombre y correo son campos obligatorios.');
       return;
     }
 
-    setLoading(true);
+    const newWorker: Worker = {
+      id: `w_${Date.now()}`,
+      name: regName.trim(),
+      email: regEmail.trim().toLowerCase(),
+      cedula: regCedula.trim(),
+      cargo: regCargo.trim() || 'Colaborador VTV',
+      divisionId: regDivisionId,
+      role: regRole,
+      password: regPassword.trim() || '12345678',
+      fixedShift: 'pool'
+    };
+
     try {
-      const isSuperEmail = emailStr === 'vtvgestiondiariarchaud@gmail.com';
-      const selectedRole: UserRole = isSuperEmail ? 'superadmin' : regRole;
-
-      const newWorker: Worker = {
-        id: isSuperEmail ? 'sa_vtv_1' : `work_${Date.now()}`,
-        name: isSuperEmail ? 'Fredd Rojas - Gerente' : nameStr,
-        email: emailStr,
-        cargo: isSuperEmail ? 'Gerente del Dpto de Archivo Audiovisual' : cargoStr,
-        divisionId: isSuperEmail ? 'div_archivo_prensa' : regDivisionId,
-        role: selectedRole,
-        cedula: isSuperEmail ? 'V-12345678' : cedulaStr,
-        password: isSuperEmail ? 'Moonshade.1' : passStr
-      };
-
       await db.registerWorker(newWorker);
-      addNotification('Registro Exitoso', `Cuenta creada como ${selectedRole === 'superadmin' ? 'Gerente del Dpto de Archivo Audiovisual' : cargoStr}.`, 'success');
-
-      // If registered worker is coordinator, update division coordinator record automatically
-      if (selectedRole === 'coordinator') {
-        await db.updateDivisionCoordinator(regDivisionId, newWorker.id, nameStr);
-      }
-
-      await syncData();
-
-      // Log in
-      const session = {
+      setWorkers(prev => [...prev, newWorker]);
+      const sessionData = {
         userId: newWorker.id,
         name: newWorker.name,
         role: newWorker.role,
@@ -1076,1091 +316,556 @@ export default function App() {
         email: newWorker.email,
         cargo: newWorker.cargo
       };
-      setCurrentSession(session);
-      localStorage.setItem('vtv_real_session', JSON.stringify(session));
-
-      // Reset fields
-      setRegName('');
-      setRegEmail('');
-      setRegCargo('');
-      setRegCedula('');
-      setRegPassword('');
+      setCurrentSession(sessionData);
+      localStorage.setItem('vtv_real_session', JSON.stringify(sessionData));
+      addNotification('Cuenta Creada', `Registro exitoso como ${newWorker.name}`, 'success');
+      pushLatestToGoogleSheets().catch(() => null);
     } catch (err) {
-      console.error(err);
-      addNotification('Error', 'No se pudo realizar el registro.', 'info');
-    } finally {
-      setLoading(false);
+      setAuthError('Error al crear la cuenta. Intenta de nuevo.');
     }
   };
 
-  const handleForceChangePassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!currentSession) return;
-
-    const newPass = forceNewPassword.trim();
-    const confPass = forceConfirmPassword.trim();
-
-    if (newPass.length < 8) {
-      addNotification('Contraseña muy corta', 'La nueva contraseña debe tener al menos 8 caracteres.', 'info');
-      return;
-    }
-
-    if (newPass === '12345678') {
-      addNotification('Contraseña no permitida', 'No puedes usar la contraseña provisional "12345678" como tu contraseña definitiva.', 'info');
-      return;
-    }
-
-    if (newPass !== confPass) {
-      addNotification('Contraseñas no coinciden', 'La nueva contraseña y su confirmación no coinciden.', 'info');
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const latestWorkers = await db.fetchWorkers();
-      const currentWorker = latestWorkers.find(w => w.id === currentSession.userId);
-      if (currentWorker) {
-        currentWorker.password = newPass;
-        currentWorker.mustChangePassword = false;
-        await db.updateWorker(currentWorker);
-        
-        addNotification('Contraseña Actualizada', 'Tu contraseña ha sido actualizada correctamente. Ya puedes acceder al sistema.', 'success');
-        setForceNewPassword('');
-        setForceConfirmPassword('');
-        await syncData();
-      } else {
-        addNotification('Error', 'No se encontró tu registro de usuario.', 'info');
-      }
-    } catch (err) {
-      console.error(err);
-      addNotification('Error', 'Fallo al actualizar la contraseña.', 'info');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleChangeUsername = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!currentSession) return;
-    const cleanName = newUsername.trim();
-    const cleanCedula = newCedula.trim();
-    if (!cleanName) {
-      addNotification('Nombre vacío', 'Por favor ingresa un nombre válido.', 'info');
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const latestWorkers = await db.fetchWorkers();
-      const currentWorker = latestWorkers.find(w => w.id === currentSession.userId);
-      if (currentWorker) {
-        currentWorker.name = cleanName;
-        currentWorker.cedula = cleanCedula;
-        
-        // Also update coordinatorName if they are coordinator of some division
-        const updatedDivisions = divisions.map(d => {
-          if (d.coordinatorId === currentWorker.id) {
-            return { ...d, coordinatorName: cleanName };
-          }
-          return d;
-        });
-
-        await db.updateWorker(currentWorker);
-        
-        for (const d of updatedDivisions) {
-          if (d.coordinatorId === currentWorker.id) {
-            await db.updateDivision(d);
-          }
-        }
-
-        // Update active session
-        const updatedSession = { ...currentSession, name: cleanName };
-        setCurrentSession(updatedSession);
-        localStorage.setItem('vtv_real_session', JSON.stringify(updatedSession));
-        
-        addNotification('Perfil Actualizado', 'Tu nombre y cédula han sido modificados con éxito.', 'success');
-        setIsEditingUsername(false);
-      }
-    } catch (err) {
-      console.error(err);
-      addNotification('Error', 'No se pudo actualizar el perfil.', 'info');
-    } finally {
-      setLoading(false);
-      await syncData();
-    }
-  };
-
+  // Handle Logout
   const handleLogout = () => {
     setCurrentSession(null);
     localStorage.removeItem('vtv_real_session');
-    addNotification('Sesión Finalizada', 'Has cerrado tu sesión de forma segura.', 'info');
+    addNotification('Sesión Cerrada', 'Has salido del sistema.', 'info');
   };
 
-  // Sync wrappers to pass to child components
-  const handleUpdateAssignments = async (updated: ShiftAssignment[], divisionId?: string, date?: string) => {
-    setAssignments(updated);
-    try {
-      if (divisionId && date) {
-        // Clear existing assignments for this division and date to avoid duplicates / stale items
-        await db.deleteAssignmentsForDivisionAndDate(divisionId, date);
-        
-        // ONLY upsert the assignments that are actually for this division and date
-        // to avoid mass network traffic and slow performance/failures
-        const toUpsert = updated.filter(a => a.divisionId === divisionId && a.date === date);
-        for (const asg of toUpsert) {
-          await db.upsertAssignment(asg);
-        }
-      } else {
-        // Fallback (unlikely)
-        for (const asg of updated) {
-          await db.upsertAssignment(asg);
-        }
-      }
-    } catch (e) {
-      console.error(e);
+  // Task Handlers
+  const handleSaveCard = async (card: TaskCard) => {
+    const existingIdx = taskCards.findIndex(c => c.id === card.id);
+    let updated: TaskCard[];
+    if (existingIdx >= 0) {
+      updated = [...taskCards];
+      updated[existingIdx] = card;
+    } else {
+      updated = [card, ...taskCards];
     }
+    setTaskCards(updated);
+    localStorage.setItem('vtv_task_cards', JSON.stringify(updated));
+    await db.upsertTaskCard(card);
+    pushLatestToGoogleSheets().catch(() => null);
   };
 
-  const handleUpdateRequests = async (updated: ShiftChangeRequest[]) => {
-    setRequests(updated);
-    try {
-      for (const req of updated) {
-        const exists = requests.find(r => r.id === req.id);
-        if (!exists) {
-          await db.createRequest(req);
-        } else if (exists.status !== req.status) {
-          await db.updateRequestStatus(req.id, req.status);
-        }
-      }
-    } catch (e) {
-      console.error(e);
-    }
-    await syncData();
+  const handleDeleteCard = async (cardId: string) => {
+    const updated = taskCards.filter(c => c.id !== cardId);
+    setTaskCards(updated);
+    localStorage.setItem('vtv_task_cards', JSON.stringify(updated));
+    await db.deleteTaskCard(cardId);
+    pushLatestToGoogleSheets().catch(() => null);
   };
 
-  const handleUpdateWorkers = async (updated: Worker[]) => {
-    setWorkers(updated);
+  const handleAddBoard = async (board: TaskBoard) => {
+    const updated = [...taskBoards, board];
+    setTaskBoards(updated);
+    localStorage.setItem('vtv_task_boards', JSON.stringify(updated));
+    await db.createTaskBoard(board);
+    pushLatestToGoogleSheets().catch(() => null);
+  };
 
-    // Save preestablished fixed shifts, vacations, and manual adjustments to local storage fallback
+  const handleDeleteBoard = async (boardId: string) => {
+    const updated = taskBoards.filter(b => b.id !== boardId);
+    setTaskBoards(updated);
+    localStorage.setItem('vtv_task_boards', JSON.stringify(updated));
+    await db.deleteTaskBoard(boardId);
+    pushLatestToGoogleSheets().catch(() => null);
+  };
+
+  // Notification Handlers
+  const handleMarkNotificationRead = (id: string) => {
+    const updated = taskNotifications.map(n => n.id === id ? { ...n, read: true } : n);
+    setTaskNotifications(updated);
+    localStorage.setItem('vtv_task_notifications', JSON.stringify(updated));
+  };
+
+  const handleMarkAllNotificationsRead = (workerId?: string) => {
+    const updated = taskNotifications.map(n => {
+      if (!workerId || n.workerId === workerId) return { ...n, read: true };
+      return n;
+    });
+    setTaskNotifications(updated);
+    localStorage.setItem('vtv_task_notifications', JSON.stringify(updated));
+  };
+
+  const handleClearAllNotifications = (workerId?: string) => {
+    const updated = workerId ? taskNotifications.filter(n => n.workerId !== workerId) : [];
+    setTaskNotifications(updated);
+    localStorage.setItem('vtv_task_notifications', JSON.stringify(updated));
+  };
+
+  const handleDeleteNotification = (id: string) => {
+    const updated = taskNotifications.filter(n => n.id !== id);
+    setTaskNotifications(updated);
+    localStorage.setItem('vtv_task_notifications', JSON.stringify(updated));
+  };
+
+  const handleManualSync = async () => {
+    setIsSyncing(true);
     try {
-      const localFixedShiftsRaw = localStorage.getItem('vtv_worker_fixed_shifts');
-      const localFixedShifts = localFixedShiftsRaw ? JSON.parse(localFixedShiftsRaw) : {};
-
-      const localVacStartRaw = localStorage.getItem('vtv_worker_vacation_start');
-      const localVacStart = localVacStartRaw ? JSON.parse(localVacStartRaw) : {};
-
-      const localVacEndRaw = localStorage.getItem('vtv_worker_vacation_end');
-      const localVacEnd = localVacEndRaw ? JSON.parse(localVacEndRaw) : {};
-
-      const localManualFreeDaysRaw = localStorage.getItem('vtv_worker_manual_free_days');
-      const localManualFreeDays = localManualFreeDaysRaw ? JSON.parse(localManualFreeDaysRaw) : {};
-
-      updated.forEach(w => {
-        if (w.fixedShift) {
-          localFixedShifts[w.id] = w.fixedShift;
-        }
-        if (w.vacationStart) {
-          localVacStart[w.id] = w.vacationStart;
-        } else {
-          delete localVacStart[w.id];
-        }
-        if (w.vacationEnd) {
-          localVacEnd[w.id] = w.vacationEnd;
-        } else {
-          delete localVacEnd[w.id];
-        }
-        if (w.manualFreeDaysAdjustment !== undefined) {
-          localManualFreeDays[w.id] = w.manualFreeDaysAdjustment;
-        }
-      });
-      localStorage.setItem('vtv_worker_fixed_shifts', JSON.stringify(localFixedShifts));
-      localStorage.setItem('vtv_worker_vacation_start', JSON.stringify(localVacStart));
-      localStorage.setItem('vtv_worker_vacation_end', JSON.stringify(localVacEnd));
-      localStorage.setItem('vtv_worker_manual_free_days', JSON.stringify(localManualFreeDays));
+      await pullLatestFromGoogleSheets();
+      await pushLatestToGoogleSheets();
+      await syncData();
+      addNotification('Sincronización Completa', 'Datos actualizados desde Google Sheets.', 'success');
     } catch (err) {
-      console.warn('Error saving worker fixed shifts, vacations, and free days to local storage fallback:', err);
+      addNotification('Sincronización Interrumpida', 'Verifica tu conexión a Google Sheets.', 'info');
+    } finally {
+      setIsSyncing(false);
     }
-
-    try {
-      for (const w of updated) {
-        const old = workers.find(o => o.id === w.id);
-        if (old) {
-          if (
-            old.role !== w.role || 
-            old.divisionId !== w.divisionId || 
-            old.name !== w.name ||
-            old.password !== w.password ||
-            old.mustChangePassword !== w.mustChangePassword ||
-            old.fixedShift !== w.fixedShift ||
-            old.cargo !== w.cargo ||
-            old.cedula !== w.cedula ||
-            old.vacationStart !== w.vacationStart ||
-            old.vacationEnd !== w.vacationEnd ||
-            old.manualFreeDaysAdjustment !== w.manualFreeDaysAdjustment
-          ) {
-            await db.updateWorker(w);
-          }
-        }
-      }
-    } catch (e) {
-      console.error(e);
-    }
-    await syncData();
   };
 
-  const handleUpdateDivisions = async (updated: Division[]) => {
+  const handleUpdateWorkers = (updated: Worker[]) => {
+    setWorkers(updated);
+    localStorage.setItem('vtv_workers', JSON.stringify(updated));
+    pushLatestToGoogleSheets().catch(() => null);
+  };
+
+  const handleUpdateDivisions = (updated: Division[]) => {
     setDivisions(updated);
-    try {
-      for (const d of updated) {
-        const exists = divisions.find(div => div.id === d.id);
-        if (!exists) {
-          await db.createDivision(d);
-        } else if (exists.coordinatorId !== d.coordinatorId || exists.name !== d.name || exists.description !== d.description) {
-          await db.updateDivision(d);
-        }
-      }
-      for (const d of divisions) {
-        const exists = updated.find(div => div.id === d.id);
-        if (!exists) {
-          await db.deleteDivision(d.id);
-        }
-      }
-    } catch (e: any) {
-      console.error(e);
-      addNotification(
-        'Error de Base de Datos',
-        e?.message || 'No se pudo actualizar la estructura de divisiones en Supabase.',
-        'info'
-      );
-    }
-    await syncData();
+    localStorage.setItem('vtv_divisions', JSON.stringify(updated));
+    pushLatestToGoogleSheets().catch(() => null);
   };
 
-  const currentUserObj = currentSession ? workers.find(w => w.id === currentSession.userId) : null;
-  const isPasswordChangeRequired = currentUserObj?.mustChangePassword === true;
+  const handleUpdateAssignments = (updated: ShiftAssignment[]) => {
+    setAssignments(updated);
+    localStorage.setItem('vtv_assignments', JSON.stringify(updated));
+    pushLatestToGoogleSheets().catch(() => null);
+  };
 
   return (
-    <div className="min-h-screen text-slate-100 font-sans relative overflow-x-hidden selection:bg-cyan-500/30 selection:text-cyan-300">
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-cyan-500 selection:text-slate-950 pb-20 md:pb-8">
       
-      {/* Frosted Glass Liquid background */}
-      <div className="liquid-bg" />
-
-      {/* NO SESSION LOGGED IN - RENDER AUTHENTICATION PLATFORM */}
+      {/* If No Session -> Render Auth Page */}
       {!currentSession ? (
-        <div className="min-h-screen flex items-center justify-center p-4 relative z-10">
+        <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
           <motion.div 
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 0, y: 15 }}
             animate={{ opacity: 1, y: 0 }}
-            className="w-full max-w-md p-6 glass border-white/15 rounded-3xl shadow-2xl relative overflow-hidden space-y-6"
+            className="w-full max-w-md bg-slate-900/90 border border-white/10 rounded-3xl p-6 sm:p-8 shadow-[0_0_40px_rgba(0,0,0,0.8)] backdrop-blur-xl"
           >
-            {/* Header VTV */}
-            <div className="text-center space-y-3">
-              <div className="inline-flex w-14 h-14 rounded-2xl bg-gradient-to-tr from-cyan-500 to-violet-600 items-center justify-center shadow-lg shadow-cyan-500/20">
-                <Tv className="text-white animate-pulse" size={28} strokeWidth={2.5} />
+            {/* Header / Logo */}
+            <div className="text-center mb-6 space-y-2">
+              <div className="inline-flex p-3 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 mb-1">
+                <CheckSquare size={32} />
               </div>
-              <div className="space-y-1">
-                <h1 className="text-2xl font-black text-white tracking-tight">VTV GUARDIA</h1>
-                <p className="text-xs text-slate-400">Sistema Automatizado de Control de Guardia y Raciones de Comedor</p>
-              </div>
+              <h1 className="text-2xl font-black text-white tracking-tight">VTV - Gestión & Vacaciones</h1>
+              <p className="text-xs text-slate-400">Canal Venezolana de Televisión • Sistema Integrado</p>
             </div>
 
-            {/* Google Sheets Status */}
-            <div className="flex flex-col items-center gap-2 w-full">
-              <div className="flex items-center justify-center gap-2 py-1.5 px-3 bg-slate-900/60 rounded-xl border border-emerald-500/20 font-mono text-[10px] uppercase font-bold text-center w-full">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                <span className="text-emerald-400">Base de Datos Centralizada Google Sheets (Activa)</span>
-              </div>
+            {/* Google Sign In Prominent Button */}
+            <button
+              type="button"
+              onClick={handleGoogleSignIn}
+              className="w-full py-3.5 px-4 bg-white hover:bg-slate-100 text-slate-950 font-extrabold rounded-2xl transition-all shadow-lg flex items-center justify-center gap-3 cursor-pointer group mb-6 active:scale-[0.98]"
+            >
+              <svg className="w-5 h-5" viewBox="0 0 24 24">
+                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+              </svg>
+              <span>Continuar con Google Auth</span>
+            </button>
+
+            <div className="relative flex py-2 items-center mb-6">
+              <div className="flex-grow border-t border-white/10"></div>
+              <span className="flex-shrink mx-4 text-[10px] text-slate-500 uppercase tracking-widest font-bold">O usa credenciales VTV</span>
+              <div className="flex-grow border-t border-white/10"></div>
             </div>
 
-            {/* Tabs Selector */}
-            <div className="flex gap-2 p-1 bg-slate-950/80 border border-white/5 rounded-xl">
+            {/* Tabs for Credentials / Register */}
+            <div className="grid grid-cols-2 bg-slate-950 p-1 rounded-2xl border border-white/5 mb-4 text-xs font-bold">
               <button
-                onClick={() => setAuthTab('login')}
-                className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2 ${
-                  authTab === 'login' ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' : 'text-slate-400 hover:text-slate-200'
-                }`}
+                onClick={() => { setAuthTab('login'); setAuthError(null); }}
+                className={`py-2 rounded-xl transition-all ${authTab === 'login' ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' : 'text-slate-400 hover:text-white'}`}
               >
-                <KeyRound size={13} />
-                <span>Iniciar Sesión</span>
+                Ingresar
               </button>
               <button
-                onClick={() => setAuthTab('register')}
-                className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2 ${
-                  authTab === 'register' ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' : 'text-slate-400 hover:text-slate-200'
-                }`}
+                onClick={() => { setAuthTab('register'); setAuthError(null); }}
+                className={`py-2 rounded-xl transition-all ${authTab === 'register' ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' : 'text-slate-400 hover:text-white'}`}
               >
-                <UserPlus size={13} />
-                <span>Registrar Personal</span>
+                Registrarse
               </button>
             </div>
 
-            {/* Form */}
+            {authError && (
+              <div className="mb-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs font-medium flex items-center gap-2">
+                <AlertTriangle size={16} className="shrink-0" />
+                <span>{authError}</span>
+              </div>
+            )}
+
             {authTab === 'login' ? (
-              <form onSubmit={handleLogin} className="space-y-4">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] uppercase font-bold text-slate-400">Correo Electrónico:</label>
+              <form onSubmit={handleCredentialsLogin} className="space-y-3">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Correo Electrónico</label>
                   <input
                     type="email"
                     required
-                    placeholder="ej: nombre.apellido@vtv.gob.ve"
                     value={loginEmail}
                     onChange={(e) => setLoginEmail(e.target.value)}
-                    className="w-full bg-slate-950/80 border border-white/10 hover:border-white/20 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-cyan-500 transition-all font-mono"
+                    placeholder="usuario@vtv.gob.ve"
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50"
                   />
-                  <p className="text-[10px] text-slate-500 leading-normal">
-                    * Si eres el Gerente del Dpto de Archivo Audiovisual, ingresa tu correo <strong>vtvgestiondiariarchaud@gmail.com</strong> para auto-inicializar la cuenta como SuperAdmin.
-                  </p>
                 </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[10px] uppercase font-bold text-slate-400">Contraseña:</label>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Contraseña</label>
                   <input
                     type="password"
                     required
-                    placeholder="••••••••"
                     value={loginPassword}
                     onChange={(e) => setLoginPassword(e.target.value)}
-                    className="w-full bg-slate-950/80 border border-white/10 hover:border-white/20 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-cyan-500 transition-all"
+                    placeholder="••••••••"
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50"
                   />
                 </div>
-
                 <button
                   type="submit"
-                  disabled={loading}
-                  className="w-full py-2.5 bg-gradient-to-r from-cyan-500 to-violet-600 hover:from-cyan-600 hover:to-violet-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2"
+                  className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black rounded-xl text-xs transition-all shadow-lg cursor-pointer mt-2"
                 >
-                  {loading ? <Loader2 size={14} className="animate-spin" /> : 'Entrar al Sistema'}
+                  Iniciar Sesión
                 </button>
               </form>
             ) : (
-              <form onSubmit={handleRegister} className="space-y-4">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] uppercase font-bold text-slate-400">Nombre Completo:</label>
+              <form onSubmit={handleRegisterWorker} className="space-y-3">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Nombre Completo</label>
                   <input
                     type="text"
                     required
-                    placeholder="ej: Carlos Mendoza"
                     value={regName}
                     onChange={(e) => setRegName(e.target.value)}
-                    className="w-full bg-slate-950/80 border border-white/10 hover:border-white/20 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-cyan-500 transition-all"
+                    placeholder="Juan Pérez"
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50"
                   />
                 </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[10px] uppercase font-bold text-slate-400">Correo Electrónico:</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Cédula</label>
+                    <input
+                      type="text"
+                      value={regCedula}
+                      onChange={(e) => setRegCedula(e.target.value)}
+                      placeholder="V-12345678"
+                      className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Cargo</label>
+                    <input
+                      type="text"
+                      value={regCargo}
+                      onChange={(e) => setRegCargo(e.target.value)}
+                      placeholder="Productor / Operador"
+                      className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Correo Electrónico</label>
                   <input
                     type="email"
                     required
-                    placeholder="ej: carlos.m@vtv.gob.ve"
                     value={regEmail}
                     onChange={(e) => setRegEmail(e.target.value)}
-                    className="w-full bg-slate-950/80 border border-white/10 hover:border-white/20 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-cyan-500 transition-all font-mono"
+                    placeholder="correo@vtv.gob.ve"
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50"
                   />
                 </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[10px] uppercase font-bold text-slate-400">Cargo / Puesto de Trabajo:</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="ej: Editor de Guardia Principal"
-                    value={regCargo}
-                    onChange={(e) => setRegCargo(e.target.value)}
-                    className="w-full bg-slate-950/80 border border-white/10 hover:border-white/20 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-cyan-500 transition-all"
-                  />
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">División</label>
+                  <select
+                    value={regDivisionId}
+                    onChange={(e) => setRegDivisionId(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500/50"
+                  >
+                    {divisions.map(d => (
+                      <option key={d.id} value={d.id}>{d.name}</option>
+                    ))}
+                  </select>
                 </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[10px] uppercase font-bold text-slate-400">Cédula de Identidad:</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="ej: V-12345678"
-                    value={regCedula}
-                    onChange={(e) => setRegCedula(e.target.value)}
-                    className="w-full bg-slate-950/80 border border-white/10 hover:border-white/20 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-cyan-500 transition-all font-mono"
-                  />
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[10px] uppercase font-bold text-slate-400">Contraseña:</label>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Contraseña</label>
                   <input
                     type="password"
                     required
-                    placeholder="Crea una contraseña segura"
                     value={regPassword}
                     onChange={(e) => setRegPassword(e.target.value)}
-                    className="w-full bg-slate-950/80 border border-white/10 hover:border-white/20 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-cyan-500 transition-all"
+                    placeholder="Mínimo 6 caracteres"
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50"
                   />
                 </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] uppercase font-bold text-slate-400">División:</label>
-                    <div className="relative">
-                      <select
-                        value={regDivisionId}
-                        onChange={(e) => setRegDivisionId(e.target.value)}
-                        className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-cyan-500 transition-all appearance-none cursor-pointer"
-                      >
-                        {divisions.map(d => (
-                          <option key={d.id} value={d.id}>{d.name}</option>
-                        ))}
-                      </select>
-                      <ChevronDown size={14} className="absolute right-3 top-3 text-slate-400 pointer-events-none" />
-                    </div>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] uppercase font-bold text-slate-400">Tipo de Acceso:</label>
-                    <div className="relative">
-                      <select
-                        value={regRole}
-                        onChange={(e) => setRegRole(e.target.value as any)}
-                        className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-cyan-500 transition-all appearance-none cursor-pointer"
-                      >
-                        <option value="worker">Trabajador</option>
-                        <option value="coordinator">Coordinador / Jefe</option>
-                      </select>
-                      <ChevronDown size={14} className="absolute right-3 top-3 text-slate-400 pointer-events-none" />
-                    </div>
-                  </div>
-                </div>
-
                 <button
                   type="submit"
-                  disabled={loading}
-                  className="w-full py-2.5 bg-gradient-to-r from-cyan-500 to-violet-600 hover:from-cyan-600 hover:to-violet-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2"
+                  className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black rounded-xl text-xs transition-all shadow-lg cursor-pointer mt-2"
                 >
-                  {loading ? <Loader2 size={14} className="animate-spin" /> : 'Registrarse e Ingresar'}
+                  Registrar Cuenta
                 </button>
               </form>
             )}
-
-            {/* Instruction footnote */}
-            <div className="pt-2 border-t border-white/5 text-[10px] text-slate-400 text-center leading-relaxed">
-              Venezolana de Televisión • Canal de Integridad de Guardias
-            </div>
-          </motion.div>
-        </div>
-      ) : isPasswordChangeRequired ? (
-        /* FORCE PASSWORD CHANGE FORM */
-        <div className="min-h-screen flex items-center justify-center p-4 relative z-10">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="w-full max-w-md p-6 glass border-white/15 rounded-3xl shadow-2xl relative overflow-hidden space-y-6"
-          >
-            <div className="text-center space-y-3">
-              <div className="inline-flex w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 items-center justify-center shadow-lg">
-                <KeyRound className="text-amber-400" size={24} />
-              </div>
-              <div className="space-y-1">
-                <h2 className="text-xl font-bold text-white tracking-tight">Cambio de Contraseña Requerido</h2>
-                <p className="text-xs text-slate-400">Tu contraseña ha sido restablecida por un administrador. Debes cambiarla para poder continuar.</p>
-              </div>
-            </div>
-
-            <form onSubmit={handleForceChangePassword} className="space-y-4">
-              <div className="space-y-1.5">
-                <label className="text-[10px] uppercase font-bold text-slate-400">Nueva Contraseña:</label>
-                <input
-                  type="password"
-                  required
-                  placeholder="Mínimo 8 caracteres"
-                  value={forceNewPassword}
-                  onChange={(e) => setForceNewPassword(e.target.value)}
-                  className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-cyan-500 transition-all placeholder:text-slate-600"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-[10px] uppercase font-bold text-slate-400">Confirmar Nueva Contraseña:</label>
-                <input
-                  type="password"
-                  required
-                  placeholder="Repite la contraseña"
-                  value={forceConfirmPassword}
-                  onChange={(e) => setForceConfirmPassword(e.target.value)}
-                  className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-cyan-500 transition-all placeholder:text-slate-600"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full py-2.5 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-amber-500/10"
-              >
-                {loading ? <Loader2 size={14} className="animate-spin" /> : 'Actualizar Contraseña'}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setCurrentSession(null);
-                  localStorage.removeItem('vtv_real_session');
-                }}
-                className="w-full py-2 bg-white/5 hover:bg-white/10 text-slate-300 rounded-xl text-xs font-medium transition-all cursor-pointer"
-              >
-                Cerrar Sesión
-              </button>
-            </form>
           </motion.div>
         </div>
       ) : (
-        /* CORE APPLICATION LAYOUT */
-        <div className="relative z-10">
+        /* Authenticated Main App Interface */
+        <div className="min-h-screen flex flex-col">
           
-          {/* Header & Logo */}
-          <header className="border-b border-white/5 bg-slate-950/40 glass sticky top-0 z-40 px-4 py-3">
-            <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
+          {/* Header Bar */}
+          <header className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-white/10 px-4 py-3">
+            <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
               
-              {/* Logo & Title */}
+              {/* App Brand */}
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-violet-600 flex items-center justify-center shadow-lg shadow-cyan-500/10">
-                  <Tv className="text-white" size={20} strokeWidth={2.5} />
+                <div className="p-2 rounded-xl bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">
+                  <CheckSquare size={20} />
                 </div>
                 <div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-extrabold tracking-wider text-white text-base">VTV</span>
-                    <span className="h-4 w-px bg-white/20" />
-                    <span className="text-xs font-semibold uppercase tracking-widest text-cyan-400 font-mono">Control de Guardia</span>
-                  </div>
-                  <p className="text-[11px] text-slate-400">Venezolana de Televisión • Gerencia de Archivo Audiovisual</p>
+                  <h1 className="text-sm font-black text-white tracking-tight leading-tight">VTV Gestión & Vacaciones</h1>
+                  <p className="text-[10px] text-slate-400 font-medium">Google Sheets Database • Tiempo Real</p>
                 </div>
               </div>
 
-              {/* Lite Mode Toggle & User Session Profile & Logout */}
-              <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap justify-end">
-                {/* Botón de Modo Lite */}
+              {/* Google Sheets Status Badge & Header Controls */}
+              <div className="flex items-center gap-2">
                 <button
-                  type="button"
-                  onClick={async () => {
-                    const nextMode = !isLiteMode;
-                    setIsLiteMode(nextMode);
-                    if (currentSession) {
-                      const w = workers.find(item => item.id === currentSession.userId);
-                      if (w) {
-                        const updatedWorker = { ...w, isLiteMode: nextMode };
-                        setWorkers(workers.map(item => item.id === w.id ? updatedWorker : item));
-                        try {
-                          await db.updateWorker(updatedWorker);
-                        } catch (e) {
-                          console.warn('Error saving isLiteMode preference:', e);
-                        }
-                      }
-                    }
-                    addNotification(
-                      nextMode ? '⚡ Modo Lite Activado' : '✨ Modo Pro Activado',
-                      nextMode ? 'Se desactivaron animaciones y efectos pesados para máximo rendimiento.' : 'Se restablecieron efectos visuales completos.',
-                      'success'
-                    );
-                  }}
-                  className={`px-2.5 py-1.5 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 cursor-pointer shrink-0 ${
-                    isLiteMode
-                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30'
-                      : 'bg-slate-900/60 hover:bg-slate-800 text-slate-300 border-white/10 hover:text-white'
+                  onClick={() => setShowBlueprintModal(true)}
+                  className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    spreadsheetId 
+                      ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25'
+                      : 'bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-amber-500/25'
                   }`}
-                  title={isLiteMode ? 'Desactivar Modo Lite (Cargar interfaz Pro con efectos)' : 'Activar Modo Lite (Optimizado para teléfonos y PCs de bajo rendimiento)'}
+                  title="Gestionar Base de Datos en Google Sheets"
                 >
-                  <Zap size={13} className={isLiteMode ? 'text-amber-400 fill-amber-400' : 'text-slate-400'} />
-                  <span className="font-mono text-[11px]">{isLiteMode ? 'Modo Lite ⚡' : 'Modo Pro ✨'}</span>
+                  <FileSpreadsheet size={14} />
+                  <span className="hidden sm:inline">
+                    {spreadsheetId ? '🟢 Google Sheets Conectado' : '🟡 Modo Local (Conectar)'}
+                  </span>
+                  <span className="sm:hidden">
+                    {spreadsheetId ? '🟢 Sheets' : '🟡 Conectar'}
+                  </span>
                 </button>
 
-                {/* Botón de Sincronización Manual */}
                 <button
-                  type="button"
                   onClick={handleManualSync}
                   disabled={isSyncing}
-                  className="px-2.5 py-1.5 rounded-xl text-xs font-bold bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shrink-0 shadow-lg shadow-cyan-500/5"
-                  title="Forzar actualización manual con la base de datos Supabase"
+                  className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-white/10 transition-all cursor-pointer"
+                  title="Sincronizar ahora con Google Sheets"
                 >
-                  <RotateCcw size={13} className={`text-cyan-400 ${isSyncing ? 'animate-spin' : ''}`} />
-                  <span className="font-mono text-[11px]">{isSyncing ? 'Actualizando...' : 'Actualizar DB'}</span>
+                  <RefreshCw size={14} className={isSyncing ? 'animate-spin text-cyan-400' : ''} />
                 </button>
 
-                <div className="flex items-center gap-3.5 bg-slate-900/60 p-2 rounded-2xl border border-white/5">
-                <div className="flex items-center gap-2 px-1">
-                  <UserCircle size={16} className="text-cyan-400 shrink-0" />
-                  {isEditingUsername ? (
-                    <form onSubmit={handleChangeUsername} className="flex items-center gap-1.5">
-                      <input
-                        type="text"
-                        value={newUsername}
-                        onChange={(e) => setNewUsername(e.target.value)}
-                        className="bg-slate-950 border border-cyan-500/30 rounded px-2 py-0.5 text-[11px] text-white focus:outline-none w-28 font-sans font-medium"
-                        placeholder="Nuevo nombre..."
-                        title="Nombre"
-                        autoFocus
-                      />
-                      <input
-                        type="text"
-                        value={newCedula}
-                        onChange={(e) => setNewCedula(e.target.value)}
-                        className="bg-slate-950 border border-cyan-500/30 rounded px-2 py-0.5 text-[11px] text-white focus:outline-none w-20 font-mono text-[10px]"
-                        placeholder="Cédula..."
-                        title="Cédula"
-                      />
-                      <button
-                        type="submit"
-                        className="p-1 bg-cyan-500/20 hover:bg-cyan-500/35 text-cyan-300 border border-cyan-500/30 rounded cursor-pointer transition-all shrink-0"
-                        title="Guardar cambios"
-                      >
-                        <Check size={10} strokeWidth={2.5} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setIsEditingUsername(false)}
-                        className="p-1 bg-white/5 hover:bg-white/10 text-slate-400 rounded cursor-pointer transition-all shrink-0"
-                        title="Cancelar"
-                      >
-                        <X size={10} strokeWidth={2.5} />
-                      </button>
-                    </form>
-                  ) : (
-                    <div className="text-left">
-                      <div className="text-[11px] font-bold text-white leading-tight flex items-center gap-1.5">
-                        <span
-                          className="cursor-pointer hover:text-cyan-300 transition-all"
-                          onClick={() => {
-                            const wFound = workers.find(w => w.id === currentSession.userId);
-                            setNewUsername(currentSession.name);
-                            setNewCedula(wFound?.cedula || '');
-                            setIsEditingUsername(true);
-                          }}
-                          title="Click para editar perfil"
-                        >
-                          {currentSession.name}
-                        </span>
-                        <button
-                          onClick={() => {
-                            const wFound = workers.find(w => w.id === currentSession.userId);
-                            setNewUsername(currentSession.name);
-                            setNewCedula(wFound?.cedula || '');
-                            setIsEditingUsername(true);
-                          }}
-                          className="p-0.5 text-slate-400 hover:text-cyan-300 rounded hover:bg-white/5 transition-all cursor-pointer shrink-0"
-                          title="Cambiar nombre y cédula de usuario"
-                        >
-                          <Edit2 size={9} />
-                        </button>
-                      </div>
-                      <div className="text-[9px] text-slate-400 uppercase font-mono mt-0.5">
-                        {currentSession.role === 'superadmin' ? 'Gerente (SuperAdmin)' : currentSession.cargo}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <button
-                  onClick={handleLogout}
-                  className="p-1.5 hover:bg-rose-500/10 text-slate-400 hover:text-rose-400 rounded-xl transition-all cursor-pointer"
-                  title="Cerrar Sesión"
-                >
-                  <LogOut size={14} />
-                </button>
-              </div>
-            </div>
-
-            </div>
-          </header>
-
-          {/* Main Container */}
-          <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-
-            {/* Global Welcome Banner & Division Filter */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              
-              {/* Welcome Info */}
-              <div className="md:col-span-2 p-5 glass flex items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <span className="text-[10px] uppercase font-bold text-cyan-400 tracking-wider font-mono">Panel de Control Activo</span>
-                  <h2 className="text-xl font-bold text-white tracking-tight">
-                    Hola, {currentSession.name.split(' ')[0]}
-                  </h2>
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    {currentSession.role === 'superadmin' && 'Tienes acceso completo para orquestar la logística de guardia diaria y administrar divisiones.'}
-                    {currentSession.role === 'coordinator' && `Coordinas los turnos de la división: ${divisions.find(d => d.id === currentSession.divisionId)?.name || 'Tu división'}.`}
-                    {currentSession.role === 'worker' && 'Visualiza tus asignaciones de comedor y solicita intercambios de guardia.'}
-                  </p>
-                </div>
-                
-                <div className="hidden sm:block text-right">
-                  <span className="text-[10px] font-mono text-slate-500 block uppercase">Fecha de Operación</span>
-                  <span className="text-sm font-extrabold text-cyan-400 font-sans mt-1 block">{formattedSelectedDate}</span>
-                </div>
-              </div>
-
-              {/* Quick Division Selector */}
-              <div className="p-4 glass flex flex-col justify-center gap-1.5">
-                <label className="text-[10px] font-bold uppercase text-slate-400 tracking-wider block">
-                  Filtrar Tablero por División:
-                </label>
-                
-                {currentSession.role === 'coordinator' && currentSession.divisionId ? (
-                  <div className="p-2.5 bg-cyan-950/20 border border-cyan-500/20 rounded-xl text-xs text-cyan-300 font-semibold truncate font-mono">
-                    {divisions.find(d => d.id === selectedDivisionId)?.name} (Mi División)
+                {/* User Session Dropdown / Logout */}
+                <div className="flex items-center gap-2 pl-2 border-l border-white/10">
+                  <div className="hidden sm:block text-right">
+                    <span className="text-xs font-bold text-white block">{currentSession.name}</span>
+                    <span className="text-[10px] text-cyan-400 uppercase font-semibold block">{currentSession.cargo}</span>
                   </div>
-                ) : (
-                  <div className="relative">
-                    <select
-                      value={selectedDivisionId}
-                      onChange={(e) => setSelectedDivisionId(e.target.value)}
-                      className="w-full bg-slate-950 border border-white/10 hover:border-white/20 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:border-cyan-500 transition-all appearance-none cursor-pointer"
-                    >
-                      <option value="todos">Todas las Divisiones</option>
-                      {divisions.map(d => (
-                        <option key={d.id} value={d.id}>{d.name}</option>
-                      ))}
-                    </select>
-                    <ChevronDown size={14} className="absolute right-3 top-3 text-slate-400 pointer-events-none" />
-                  </div>
-                )}
+                  <button
+                    onClick={handleLogout}
+                    className="p-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 transition-all cursor-pointer"
+                    title="Cerrar Sesión"
+                  >
+                    <LogOut size={16} />
+                  </button>
+                </div>
               </div>
 
             </div>
 
-            {/* Unified Date Navigation Panel */}
-            {['tablero', 'comedor', 'reportes'].includes(activeTab) && (() => {
-              const { label, dayName, formattedDateDisplay } = getRelativeDateDetails(selectedDateStr);
-              const nextStr = getNextDateStr(selectedDateStr);
-              const nextDayExists = operationalDates.includes(nextStr);
-
-              const handlePrevDay = () => {
-                const prevStr = getPrevDateStr(selectedDateStr);
-                if (!operationalDates.includes(prevStr)) {
-                  handleAddOperationalDate(prevStr);
-                } else {
-                  setSelectedDateStr(prevStr);
-                }
-              };
-
-              const handleNextDay = () => {
-                setSelectedDateStr(nextStr);
-              };
-
-              const handleCreateNextDay = () => {
-                handleAddOperationalDate(nextStr);
-              };
-
-              return (
-                <div className="p-4 bg-gradient-to-r from-slate-900 via-slate-950 to-slate-900 rounded-2xl border border-white/10 shadow-xl flex flex-col sm:flex-row items-center justify-between gap-4">
-                  {/* Left side: Relative date and calendar date */}
-                  <div className="flex items-center gap-3">
-                    <div className="p-2.5 bg-cyan-500/10 text-cyan-400 rounded-xl border border-cyan-500/25">
-                      <Calendar size={18} />
-                    </div>
-                    <div>
-                      <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400 block font-mono">
-                        {label}
-                      </span>
-                      <h3 className="text-base font-bold text-white flex items-center gap-1.5 leading-none mt-0.5">
-                        <span>{dayName}</span>
-                        <span className="text-slate-400 text-xs font-normal">({formattedDateDisplay})</span>
-                      </h3>
-                    </div>
-                  </div>
-
-                  {/* Center / Right side: navigation arrows & + */}
-                  <div className="flex items-center justify-between sm:justify-start w-full sm:w-auto gap-3 bg-white/5 p-1 rounded-xl border border-white/10">
-                    {/* Left button: always previous day */}
-                    <button
-                      onClick={handlePrevDay}
-                      className="p-2.5 sm:p-2 hover:bg-white/10 text-slate-300 hover:text-white rounded-lg transition-all cursor-pointer flex items-center justify-center shrink-0"
-                      title="Día Anterior"
-                    >
-                      <ChevronLeft size={18} />
-                    </button>
-
-                    <span className="text-xs font-bold text-slate-200 select-none px-2 font-mono">
-                      {selectedDateStr}
-                    </span>
-
-                    {/* Right button: right arrow or + */}
-                    {nextDayExists ? (
-                      <button
-                        onClick={handleNextDay}
-                        className="p-2.5 sm:p-2 hover:bg-white/10 text-slate-300 hover:text-white rounded-lg transition-all cursor-pointer flex items-center justify-center shrink-0"
-                        title="Día Siguiente"
-                      >
-                        <ChevronRight size={18} />
-                      </button>
-                    ) : (
-                      <button
-                        onClick={handleCreateNextDay}
-                        className="px-4 py-2 sm:px-3 sm:py-1.5 bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/30 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold shrink-0"
-                        title="Habilitar Día Siguiente"
-                      >
-                        <Plus size={14} />
-                        <span>Habilitar Siguiente</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* Navigation Tabs - Glassmorphic Toolbar */}
-            <div className="flex overflow-x-auto gap-2 p-1.5 glass rounded-2xl">
+            {/* Desktop Navigation Tabs */}
+            <div className="hidden sm:flex items-center justify-center gap-2 mt-3 pt-2 border-t border-white/5">
               <button
                 onClick={() => setActiveTab('tareas')}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
-                  activeTab === 'tareas' 
-                    ? 'bg-gradient-to-r from-cyan-500/20 to-violet-500/20 text-white border border-cyan-500/30 font-extrabold shadow-[0_0_12px_rgba(6,182,212,0.3)]' 
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
+                className={`px-5 py-2 rounded-xl text-xs font-extrabold transition-all flex items-center gap-2 cursor-pointer ${
+                  activeTab === 'tareas'
+                    ? 'bg-cyan-500 text-slate-950 shadow-lg shadow-cyan-500/20'
+                    : 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
               >
-                <Kanban size={14} className={activeTab === 'tareas' ? 'text-cyan-400' : 'text-slate-400'} />
+                <CheckSquare size={16} />
                 <span>Gestión de Tareas</span>
-                {taskNotifications.filter(n => !n.read && n.workerId === currentSession?.userId).length > 0 && (
-                  <span className="w-2 h-2 rounded-full bg-rose-500 inline-block animate-pulse" />
-                )}
-              </button>
-
-              <button
-                onClick={() => setActiveTab('tablero')}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
-                  activeTab === 'tablero' 
-                    ? 'bg-gradient-to-r from-cyan-500/20 to-violet-500/20 text-white border border-cyan-500/30 font-extrabold' 
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
-                }`}
-              >
-                <Layers size={14} className={activeTab === 'tablero' ? 'text-cyan-400' : 'text-slate-400'} />
-                <span>Tableros Diarios</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('comedor')}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
-                  activeTab === 'comedor' 
-                    ? 'bg-gradient-to-r from-cyan-500/20 to-violet-500/20 text-white border border-cyan-500/30 font-extrabold' 
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
-                }`}
-              >
-                <Utensils size={14} className={activeTab === 'comedor' ? 'text-violet-400' : 'text-slate-400'} />
-                <span>Logística Comedor</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('reportes')}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
-                  activeTab === 'reportes' 
-                    ? 'bg-gradient-to-r from-cyan-500/20 to-violet-500/20 text-white border border-cyan-500/30 font-extrabold' 
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
-                }`}
-              >
-                <FileText size={14} className={activeTab === 'reportes' ? 'text-cyan-400' : 'text-slate-400'} />
-                <span>Generador Reportes</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('archivo_fisico')}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
-                  activeTab === 'archivo_fisico' 
-                    ? 'bg-gradient-to-r from-amber-500/20 to-amber-600/20 text-amber-200 border border-amber-500/40 font-extrabold shadow-[0_0_12px_rgba(245,158,11,0.2)]' 
-                    : 'text-slate-400 hover:text-amber-200 hover:bg-white/5'
-                }`}
-              >
-                <FolderArchive size={14} className={activeTab === 'archivo_fisico' ? 'text-amber-400' : 'text-slate-400'} />
-                <span>Archivo Físico</span>
               </button>
 
               <button
                 onClick={() => setActiveTab('vacaciones')}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer relative ${
-                  activeTab === 'vacaciones' 
-                    ? 'bg-gradient-to-r from-cyan-500/20 to-violet-500/20 text-white border border-cyan-500/30 font-extrabold' 
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
+                className={`px-5 py-2 rounded-xl text-xs font-extrabold transition-all flex items-center gap-2 cursor-pointer ${
+                  activeTab === 'vacaciones'
+                    ? 'bg-purple-500 text-white shadow-lg shadow-purple-500/20'
+                    : 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
               >
-                <Umbrella size={14} className={activeTab === 'vacaciones' ? 'text-cyan-400' : 'text-slate-400'} />
+                <Umbrella size={16} />
                 <span>Vacaciones y Días Libres</span>
-                {visiblePendingFreeDayRequestsCount > 0 && (
-                  <span className="px-1.5 py-0.5 text-[10px] font-black text-slate-950 bg-amber-400 rounded-full flex items-center justify-center animate-pulse ml-0.5 shadow-[0_0_8px_rgba(251,191,36,0.8)]">
-                    {visiblePendingFreeDayRequestsCount}
-                  </span>
-                )}
               </button>
 
-              {/* SuperAdmin Exclusivity Tab */}
-              {currentSession.role === 'superadmin' && (
-                <button
-                  onClick={() => setActiveTab('admin')}
-                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
-                    activeTab === 'admin' 
-                      ? 'bg-gradient-to-r from-cyan-500/20 to-violet-500/20 text-white border border-cyan-500/30 font-extrabold' 
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
-                  }`}
-                >
-                  <Shield size={14} className={activeTab === 'admin' ? 'text-sky-400' : 'text-slate-400'} />
-                  <span>Consola Gerencial</span>
-                </button>
-              )}
-            </div>
-
-            {/* RLS policy violation / schema error warning banner */}
-            {dbStatus === 'error' && (
-              <motion.div 
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                className="p-4 bg-amber-500/10 border border-amber-500/25 rounded-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4 text-xs text-slate-300 leading-relaxed mb-4"
+              <button
+                onClick={() => setActiveTab('perfil')}
+                className={`px-5 py-2 rounded-xl text-xs font-extrabold transition-all flex items-center gap-2 cursor-pointer ${
+                  activeTab === 'perfil'
+                    ? 'bg-indigo-500 text-white shadow-lg shadow-indigo-500/20'
+                    : 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-white'
+                }`}
               >
-                <div className="flex items-start gap-3">
-                  <AlertTriangle className="text-amber-400 shrink-0 mt-0.5" size={18} />
-                  <div>
-                    <span className="text-amber-400 font-bold block mb-0.5">⚠️ Sincronización en la Nube Pausada por Políticas RLS en Supabase</span>
-                    La conexión con la URL de tu Supabase es correcta, pero el servidor rechazó guardar la información debido a políticas de seguridad activas en tus tablas (Row-Level Security).
-                    <span className="text-white font-medium block mt-1">La aplicación ha cambiado al Almacenamiento Local de forma automática para que puedas interactuar y registrar todo al 100% sin perder datos.</span>
-                  </div>
-                </div>
-                {currentSession?.role === 'superadmin' && (
-                  <button
-                    onClick={() => setShowBlueprintModal(true)}
-                    className="px-4 py-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded-xl font-bold transition-all whitespace-nowrap shrink-0 self-stretch md:self-auto text-center cursor-pointer"
-                  >
-                    Ver Solución SQL 🛠️
-                  </button>
-                )}
-              </motion.div>
-            )}
-
-            {/* Core Tab Render Switcher */}
-            <div className="min-h-[500px]">
-              {loading ? (
-                <div className="min-h-[400px] flex items-center justify-center">
-                  <div className="flex flex-col items-center gap-2">
-                    <Loader2 size={36} className="text-cyan-400 animate-spin" />
-                    <p className="text-xs text-slate-400">Sincronizando base de datos...</p>
-                  </div>
-                </div>
-              ) : (
-                <AnimatePresence mode="wait">
-                  <motion.div
-                    key={activeTab}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    transition={{ duration: 0.2 }}
-                  >
-                    {activeTab === 'tareas' && (
-                      <TaskManager
-                        boards={taskBoards}
-                        cards={taskCards}
-                        notifications={taskNotifications}
-                        workers={sortedWorkers}
-                        divisions={divisions}
-                        currentSession={currentSession}
-                        onAddBoard={handleAddBoard}
-                        onDeleteBoard={handleDeleteBoard}
-                        onSaveCard={handleSaveCard}
-                        onDeleteCard={handleDeleteCard}
-                        onMarkNotificationRead={handleMarkNotificationRead}
-                        onMarkAllNotificationsRead={handleMarkAllNotificationsRead}
-                        onClearAllNotifications={handleClearAllNotifications}
-                        onDeleteNotification={handleDeleteNotification}
-                        onAddNotificationToast={addNotification}
-                        onManualSync={handleManualSync}
-                        isSyncing={isSyncing}
-                      />
-                    )}
-
-                    {activeTab === 'tablero' && (
-                      <TrelloBoard
-                        currentDivisionId={selectedDivisionId}
-                        divisions={divisions}
-                        workers={sortedWorkers}
-                        assignments={assignments}
-                        onUpdateAssignments={handleUpdateAssignments}
-                        userRole={currentSession.role}
-                        userDivisionId={currentSession.divisionId}
-                        onAddNotification={addNotification}
-                        selectedDateStr={selectedDateStr}
-                        setSelectedDateStr={setSelectedDateStr}
-                        operationalDates={operationalDates}
-                        onAddOperationalDate={handleAddOperationalDate}
-                      />
-                    )}
-
-                    {activeTab === 'comedor' && (
-                      <ComedorLogistics
-                        divisions={divisions}
-                        workers={sortedWorkers}
-                        assignments={assignments}
-                        selectedDateStr={selectedDateStr}
-                        setSelectedDateStr={setSelectedDateStr}
-                        operationalDates={operationalDates}
-                        onAddOperationalDate={handleAddOperationalDate}
-                        mealsPreferences={mealsPreferences}
-                        onUpdateMealsPreference={handleUpdateMealsPreference}
-                      />
-                    )}
-
-                    {activeTab === 'reportes' && (
-                      <ReportGenerator
-                        divisions={divisions}
-                        workers={sortedWorkers}
-                        assignments={assignments}
-                        onAddNotification={addNotification}
-                        selectedDateStr={selectedDateStr}
-                        setSelectedDateStr={setSelectedDateStr}
-                        operationalDates={operationalDates}
-                        onAddOperationalDate={handleAddOperationalDate}
-                      />
-                    )}
-
-                    {activeTab === 'archivo_fisico' && (
-                      <PhysicalArchive
-                        userRole={currentSession.role}
-                        userDivisionId={currentSession.divisionId}
-                        currentUserId={currentSession.userId}
-                        onAddNotification={(msg, type) => addNotification('Archivo Físico', msg, type || 'info')}
-                      />
-                    )}
-
-                    {activeTab === 'vacaciones' && (
-                      <VacationControl
-                        divisions={divisions}
-                        workers={sortedWorkers}
-                        assignments={assignments}
-                        onUpdateWorkers={handleUpdateWorkers}
-                        userRole={currentSession.role}
-                        userDivisionId={currentSession.divisionId}
-                        currentSession={currentSession}
-                        freeDayRequests={freeDayRequests}
-                        onUpdateFreeDayRequests={(updatedReqs) => {
-                          setFreeDayRequests(updatedReqs);
-                          getLocalDb.saveFreeDayRequests(updatedReqs);
-                        }}
-                        onUpdateAssignments={handleUpdateAssignments}
-                        onAddNotification={addNotification}
-                      />
-                    )}
-
-                    {activeTab === 'admin' && currentSession.role === 'superadmin' && (
-                      <AdminPanel
-                        divisions={divisions}
-                        workers={sortedWorkers}
-                        onUpdateDivisions={handleUpdateDivisions}
-                        onUpdateWorkers={handleUpdateWorkers}
-                        onAddNotification={addNotification}
-                        onOpenBlueprint={() => setShowBlueprintModal(true)}
-                      />
-                    )}
-                  </motion.div>
-                </AnimatePresence>
-              )}
+                <UserCircle size={16} />
+                <span>Mi Perfil & Personal</span>
+              </button>
             </div>
+          </header>
 
+          {/* Main View Container */}
+          <main className="max-w-7xl w-full mx-auto p-3 sm:p-6 flex-grow">
+            {loading ? (
+              <div className="min-h-[400px] flex items-center justify-center">
+                <div className="flex flex-col items-center gap-3">
+                  <Loader2 size={36} className="text-cyan-400 animate-spin" />
+                  <p className="text-xs text-slate-400 font-medium">Sincronizando registros con Google Sheets...</p>
+                </div>
+              </div>
+            ) : (
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={activeTab}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.15 }}
+                >
+                  {activeTab === 'tareas' && (
+                    <TaskManager
+                      boards={taskBoards}
+                      cards={taskCards}
+                      notifications={taskNotifications}
+                      workers={sortedWorkers}
+                      divisions={divisions}
+                      currentSession={currentSession}
+                      onAddBoard={handleAddBoard}
+                      onDeleteBoard={handleDeleteBoard}
+                      onSaveCard={handleSaveCard}
+                      onDeleteCard={handleDeleteCard}
+                      onMarkNotificationRead={handleMarkNotificationRead}
+                      onMarkAllNotificationsRead={handleMarkAllNotificationsRead}
+                      onClearAllNotifications={handleClearAllNotifications}
+                      onDeleteNotification={handleDeleteNotification}
+                      onAddNotificationToast={addNotification}
+                      onManualSync={handleManualSync}
+                      isSyncing={isSyncing}
+                    />
+                  )}
+
+                  {activeTab === 'vacaciones' && (
+                    <VacationControl
+                      divisions={divisions}
+                      workers={sortedWorkers}
+                      assignments={assignments}
+                      onUpdateWorkers={handleUpdateWorkers}
+                      userRole={currentSession.role}
+                      userDivisionId={currentSession.divisionId}
+                      currentSession={currentSession}
+                      freeDayRequests={freeDayRequests}
+                      onUpdateFreeDayRequests={(updatedReqs) => {
+                        setFreeDayRequests(updatedReqs);
+                        getLocalDb.saveFreeDayRequests(updatedReqs);
+                        pushLatestToGoogleSheets().catch(() => null);
+                      }}
+                      onUpdateAssignments={handleUpdateAssignments}
+                      onAddNotification={addNotification}
+                    />
+                  )}
+
+                  {activeTab === 'perfil' && (
+                    <div className="space-y-6">
+                      {/* Profile Overview Card */}
+                      <div className="bg-slate-900 border border-white/10 rounded-3xl p-6 space-y-4">
+                        <div className="flex items-center gap-4">
+                          <div className="w-14 h-14 rounded-2xl bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 flex items-center justify-center text-xl font-bold">
+                            {currentSession.name.charAt(0).toUpperCase()}
+                          </div>
+                          <div>
+                            <h2 className="text-lg font-bold text-white">{currentSession.name}</h2>
+                            <p className="text-xs text-slate-400">{currentSession.email}</p>
+                            <span className="inline-block mt-1 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                              {currentSession.cargo} • Rol: {currentSession.role}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="pt-4 border-t border-white/10 flex flex-wrap gap-3">
+                          <button
+                            onClick={() => setShowBlueprintModal(true)}
+                            className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold border border-white/10 flex items-center gap-2 cursor-pointer transition-all"
+                          >
+                            <FileSpreadsheet size={16} className="text-emerald-400" />
+                            <span>Configurar Google Sheets</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Admin Panel for Superadmin / Gerencia */}
+                      {(currentSession.role === 'superadmin' || currentSession.cargo.toLowerCase().includes('gerente')) && (
+                        <AdminPanel
+                          divisions={divisions}
+                          workers={sortedWorkers}
+                          onUpdateDivisions={handleUpdateDivisions}
+                          onUpdateWorkers={handleUpdateWorkers}
+                          onAddNotification={addNotification}
+                          onOpenBlueprint={() => setShowBlueprintModal(true)}
+                        />
+                      )}
+                    </div>
+                  )}
+                </motion.div>
+              </AnimatePresence>
+            )}
           </main>
+
+          {/* Mobile Bottom Navigation Bar */}
+          <nav className="sm:hidden fixed bottom-0 left-0 right-0 z-50 bg-slate-900/95 backdrop-blur-lg border-t border-white/10 px-3 py-2 flex items-center justify-around text-[10px] font-bold">
+            <button
+              onClick={() => setActiveTab('tareas')}
+              className={`flex flex-col items-center gap-1 transition-all ${
+                activeTab === 'tareas' ? 'text-cyan-400' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <CheckSquare size={18} />
+              <span>Tareas</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('vacaciones')}
+              className={`flex flex-col items-center gap-1 transition-all ${
+                activeTab === 'vacaciones' ? 'text-purple-400' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Umbrella size={18} />
+              <span>Vacaciones</span>
+            </button>
+
+            <button
+              onClick={() => setShowBlueprintModal(true)}
+              className="flex flex-col items-center gap-1 text-emerald-400 hover:text-emerald-300"
+            >
+              <FileSpreadsheet size={18} />
+              <span>Sheets</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('perfil')}
+              className={`flex flex-col items-center gap-1 transition-all ${
+                activeTab === 'perfil' ? 'text-indigo-400' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <UserCircle size={18} />
+              <span>Perfil</span>
+            </button>
+          </nav>
 
         </div>
       )}
 
-      {/* Blueprint Modal Overlay */}
+      {/* Blueprint / Google Sheets Modal Overlay */}
       <AnimatePresence>
         {showBlueprintModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 md:p-6 overflow-hidden">
-            {/* Backdrop */}
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 overflow-hidden">
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -2169,12 +874,11 @@ export default function App() {
               className="absolute inset-0 bg-slate-950/85 backdrop-blur-md cursor-pointer"
             />
             
-            {/* Modal Box */}
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 15 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 15 }}
-              className="relative w-full max-w-4xl max-h-[85vh] overflow-y-auto bg-slate-900 border border-white/10 rounded-3xl p-6 md:p-8 shadow-[0_0_50px_rgba(34,211,238,0.15)] space-y-6"
+              className="relative w-full max-w-4xl max-h-[90vh] overflow-y-auto bg-slate-900 border border-white/10 rounded-3xl p-4 sm:p-8 shadow-[0_0_50px_rgba(34,211,238,0.15)] space-y-6"
             >
               <DatabaseSchema onClose={() => setShowBlueprintModal(false)} />
             </motion.div>
@@ -2182,8 +886,8 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Floating Liquid-Style Notifications Center */}
-      <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none">
+      {/* Toast Notifications */}
+      <div className="fixed bottom-16 sm:bottom-5 right-3 sm:right-5 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none">
         <AnimatePresence>
           {notifications.map((notif, idx) => (
             <motion.div
@@ -2191,7 +895,7 @@ export default function App() {
               initial={{ opacity: 0, x: 50, scale: 0.9 }}
               animate={{ opacity: 1, x: 0, scale: 1 }}
               exit={{ opacity: 0, x: 50, scale: 0.9 }}
-              className="p-4 bg-slate-950/95 border border-cyan-500/20 shadow-xl rounded-2xl flex items-start gap-3 pointer-events-auto backdrop-blur-lg"
+              className="p-3.5 bg-slate-950/95 border border-cyan-500/20 shadow-xl rounded-2xl flex items-start gap-3 pointer-events-auto backdrop-blur-lg"
             >
               {notif.type === 'success' ? (
                 <CheckCircle2 size={18} className="text-cyan-400 shrink-0 mt-0.5" />
