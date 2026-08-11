@@ -1,15 +1,10 @@
-import { createClient } from '@supabase/supabase-js';
 import { Division, Worker, ShiftAssignment, ShiftChangeRequest, ShiftType, TaskBoard, TaskCard, TaskNotification, FreeDayRequest, PhysicalFormat, PhysicalLocation, PhysicalProgram, PhysicalAudiovisualMaterial } from './types';
+import { INITIAL_WORKERS } from './data';
 
-// Read values from env if available
-// @ts-ignore
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
-// @ts-ignore
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+// Supabase has been replaced with Google Sheets database migration per user directive
+export const isSupabaseConfigured = false;
 
-export const isSupabaseConfigured = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
-
-export let supabaseConnectionStatus: 'connected' | 'error' | 'not_configured' = isSupabaseConfigured ? 'connected' : 'not_configured';
+export let supabaseConnectionStatus: 'connected' | 'error' | 'not_configured' = 'connected';
 export let lastSupabaseError: string | null = null;
 
 export function setSupabaseConnectionStatus(status: 'connected' | 'error' | 'not_configured', errorMsg: string | null = null) {
@@ -17,19 +12,16 @@ export function setSupabaseConnectionStatus(status: 'connected' | 'error' | 'not
   lastSupabaseError = errorMsg;
 }
 
-// Real client (will be initialized if configured, can be re-assigned dynamically)
-export let supabase = isSupabaseConfigured 
-  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) 
-  : null;
+export function queryWithTimeout<T = any>(promise: PromiseLike<T>, timeoutMs = 4000, label = 'Consulta'): Promise<T> {
+  return Promise.resolve(promise);
+}
+
+// Supabase is completely removed in favor of Google Sheets + Local Data Management
+export let supabase: any = null;
 
 export function initSupabaseClient(url: string, key: string) {
-  if (url && key) {
-    supabase = createClient(url, key);
-    setSupabaseConnectionStatus('connected');
-  } else {
-    supabase = null;
-    setSupabaseConnectionStatus('not_configured');
-  }
+  supabase = null;
+  setSupabaseConnectionStatus('connected');
 }
 
 // Default initial divisions that should always exist for registration
@@ -261,7 +253,18 @@ on conflict (id) do update set
   description = excluded.description,
   color = excluded.color;
 
--- 8. Crear tabla de solicitudes de días libres (free_day_requests)
+-- 8. Insertar SuperUsuario Gerente por defecto (Acceso Inmediato)
+insert into workers (id, name, email, cargo, division_id, role, password, must_change_password) values
+('sa_vtv_1', 'Fredd Rojas - Gerente', 'vtvgestiondiariarchaud@gmail.com', 'Gerente del Dpto de Archivo Audiovisual', 'div_archivo_prensa', 'superadmin', 'Moonshade.1', false)
+on conflict (id) do update set
+  name = excluded.name,
+  email = excluded.email,
+  cargo = excluded.cargo,
+  division_id = excluded.division_id,
+  role = excluded.role,
+  password = excluded.password;
+
+-- 9. Crear tabla de solicitudes de días libres (free_day_requests)
 create table if not exists free_day_requests (
   id text primary key,
   worker_id text not null,
@@ -347,6 +350,631 @@ grant all privileges on table physical_materials to anon, authenticated, postgre
 `;
 };
 
+export const exportLocalStorageToSupabaseSQL = (): string => {
+  const sqlHelper = {
+    str: (val: any): string => {
+      if (val === null || val === undefined) return 'NULL';
+      if (typeof val === 'boolean') return val ? 'TRUE' : 'FALSE';
+      if (typeof val === 'number') return isNaN(val) ? 'NULL' : String(val);
+      if (typeof val === 'object') {
+        const jsonStr = JSON.stringify(val).replace(/'/g, "''");
+        return `'${jsonStr}'`;
+      }
+      return `'${String(val).replace(/'/g, "''")}'`;
+    },
+    num: (val: any, defaultVal = 0): string => {
+      const parsed = Number(val);
+      return isNaN(parsed) ? String(defaultVal) : String(parsed);
+    },
+    bool: (val: any): string => {
+      return val ? 'TRUE' : 'FALSE';
+    }
+  };
+
+  let sqlDump = getSupabaseSQLScript() + '\n\n';
+  sqlDump += `-- ====================================================================\n`;
+  sqlDump += `-- RESPALDO Y DUMP COMPLETO DE DATOS DE LOCALSTORAGE DE VTV\n`;
+  sqlDump += `-- Generado: ${new Date().toLocaleString()}\n`;
+  sqlDump += `-- ====================================================================\n\n`;
+
+  // 1. Divisions
+  try {
+    const raw = localStorage.getItem(LOCAL_DIVISIONS_KEY);
+    const items: Division[] = raw ? JSON.parse(raw) : DEFAULT_DIVISIONS;
+    if (items && items.length > 0) {
+      sqlDump += `-- [RESTAURACIÓN] ${items.length} Divisiones\n`;
+      items.forEach(item => {
+        sqlDump += `INSERT INTO divisions (id, name, description, coordinator_id, coordinator_name) VALUES (${sqlHelper.str(item.id)}, ${sqlHelper.str(item.name)}, ${sqlHelper.str(item.description)}, ${sqlHelper.str(item.coordinatorId)}, ${sqlHelper.str(item.coordinatorName)}) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description, coordinator_id = EXCLUDED.coordinator_id, coordinator_name = EXCLUDED.coordinator_name;\n`;
+      });
+      sqlDump += '\n';
+    }
+  } catch (e) {
+    console.error('Error dumping divisions:', e);
+  }
+
+  // 2. Workers / Personal y Usuarios
+  try {
+    const raw = localStorage.getItem(LOCAL_WORKERS_KEY);
+    let items: Worker[] = raw ? JSON.parse(raw) : [];
+
+    // Si está vacío en localStorage, utilizar el personal predeterminado
+    if (!items || items.length === 0) {
+      items = [...INITIAL_WORKERS];
+    }
+
+    // Incluir usuario activo en sesión si no existiera en la lista
+    const sessionRaw = localStorage.getItem('vtv_real_session');
+    if (sessionRaw) {
+      try {
+        const session = JSON.parse(sessionRaw);
+        if (session && session.worker) {
+          const found = items.find(w => w.id === session.worker.id || w.email === session.worker.email);
+          if (!found) {
+            items.push(session.worker);
+          }
+        }
+      } catch (err) {
+        console.warn('Error reading session for SQL dump:', err);
+      }
+    }
+
+    // Cargar configuraciones auxiliares de localStorage (turnos fijos, vacaciones, días libres, comedor)
+    const localFixedShiftsRaw = localStorage.getItem('vtv_worker_fixed_shifts');
+    const localFixedShifts = localFixedShiftsRaw ? JSON.parse(localFixedShiftsRaw) : {};
+
+    const localVacStartRaw = localStorage.getItem('vtv_worker_vacation_start');
+    const localVacStart = localVacStartRaw ? JSON.parse(localVacStartRaw) : {};
+
+    const localVacEndRaw = localStorage.getItem('vtv_worker_vacation_end');
+    const localVacEnd = localVacEndRaw ? JSON.parse(localVacEndRaw) : {};
+
+    const localManualFreeDaysRaw = localStorage.getItem('vtv_worker_manual_free_days');
+    const localManualFreeDays = localManualFreeDaysRaw ? JSON.parse(localManualFreeDaysRaw) : {};
+
+    const localMealsRaw = localStorage.getItem('vtv_meals_preferences');
+    const localMeals = localMealsRaw ? JSON.parse(localMealsRaw) : {};
+
+    // Combinar los atributos
+    items = items.map(item => ({
+      ...item,
+      fixedShift: localFixedShifts[item.id] || item.fixedShift || 'pool',
+      vacationStart: localVacStart[item.id] || item.vacationStart,
+      vacationEnd: localVacEnd[item.id] || item.vacationEnd,
+      manualFreeDaysAdjustment: localManualFreeDays[item.id] !== undefined ? localManualFreeDays[item.id] : (item.manualFreeDaysAdjustment || 0),
+      mealsPreference: localMeals[item.id] || item.mealsPreference
+    }));
+
+    if (items && items.length > 0) {
+      sqlDump += `-- [RESTAURACIÓN] ${items.length} Trabajadores / Personal y Usuarios del Sistema\n`;
+      items.forEach(item => {
+        sqlDump += `INSERT INTO workers (id, name, email, cargo, division_id, role, cedula, password, meals_preference, must_change_password, fixed_shift, vacation_start, vacation_end, manual_free_days_adjustment, is_lite_mode) VALUES (${sqlHelper.str(item.id)}, ${sqlHelper.str(item.name)}, ${sqlHelper.str(item.email)}, ${sqlHelper.str(item.cargo)}, ${sqlHelper.str(item.divisionId)}, ${sqlHelper.str(item.role || 'worker')}, ${sqlHelper.str(item.cedula)}, ${sqlHelper.str(item.password)}, ${sqlHelper.str(item.mealsPreference)}, ${sqlHelper.bool(item.mustChangePassword)}, ${sqlHelper.str(item.fixedShift || 'pool')}, ${sqlHelper.str(item.vacationStart)}, ${sqlHelper.str(item.vacationEnd)}, ${sqlHelper.num(item.manualFreeDaysAdjustment, 0)}, ${sqlHelper.bool(item.isLiteMode)}) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, cargo = EXCLUDED.cargo, division_id = EXCLUDED.division_id, role = EXCLUDED.role, cedula = EXCLUDED.cedula, password = EXCLUDED.password, meals_preference = EXCLUDED.meals_preference, must_change_password = EXCLUDED.must_change_password, fixed_shift = EXCLUDED.fixed_shift, vacation_start = EXCLUDED.vacation_start, vacation_end = EXCLUDED.vacation_end, manual_free_days_adjustment = EXCLUDED.manual_free_days_adjustment, is_lite_mode = EXCLUDED.is_lite_mode;\n`;
+      });
+      sqlDump += '\n';
+    }
+  } catch (e) {
+    console.error('Error dumping workers:', e);
+  }
+
+  // 3. Shift Assignments
+  try {
+    const raw = localStorage.getItem(LOCAL_ASSIGNMENTS_KEY);
+    const items: ShiftAssignment[] = raw ? JSON.parse(raw) : [];
+    if (items && items.length > 0) {
+      sqlDump += `-- [RESTAURACIÓN] ${items.length} Asignaciones de Guardias / Turnos\n`;
+      items.forEach(item => {
+        sqlDump += `INSERT INTO shift_assignments (id, worker_id, division_id, date, shift_type) VALUES (${sqlHelper.str(item.id)}, ${sqlHelper.str(item.workerId)}, ${sqlHelper.str(item.divisionId)}, ${sqlHelper.str(item.date)}, ${sqlHelper.str(item.shiftType)}) ON CONFLICT (id) DO UPDATE SET worker_id = EXCLUDED.worker_id, division_id = EXCLUDED.division_id, date = EXCLUDED.date, shift_type = EXCLUDED.shift_type;\n`;
+      });
+      sqlDump += '\n';
+    }
+  } catch (e) {
+    console.error('Error dumping shift assignments:', e);
+  }
+
+  // 4. Shift Change Requests
+  try {
+    const raw = localStorage.getItem(LOCAL_REQUESTS_KEY);
+    const items: ShiftChangeRequest[] = raw ? JSON.parse(raw) : [];
+    if (items && items.length > 0) {
+      sqlDump += `-- [RESTAURACIÓN] ${items.length} Solicitudes de Cambio de Guardia\n`;
+      items.forEach(item => {
+        sqlDump += `INSERT INTO shift_change_requests (id, requester_id, requester_name, target_worker_id, target_worker_name, division_id, date, reason, status, created_at) VALUES (${sqlHelper.str(item.id)}, ${sqlHelper.str(item.requesterId)}, ${sqlHelper.str(item.requesterName)}, ${sqlHelper.str(item.targetWorkerId)}, ${sqlHelper.str(item.targetWorkerName)}, ${sqlHelper.str(item.divisionId)}, ${sqlHelper.str(item.date)}, ${sqlHelper.str(item.reason)}, ${sqlHelper.str(item.status)}, ${sqlHelper.str(item.createdAt || new Date().toISOString())}) ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, reason = EXCLUDED.reason;\n`;
+      });
+      sqlDump += '\n';
+    }
+  } catch (e) {
+    console.error('Error dumping shift requests:', e);
+  }
+
+  // 5. Free Day Requests
+  try {
+    const raw = localStorage.getItem(LOCAL_FREE_DAY_REQUESTS_KEY);
+    const items: FreeDayRequest[] = raw ? JSON.parse(raw) : [];
+    if (items && items.length > 0) {
+      sqlDump += `-- [RESTAURACIÓN] ${items.length} Solicitudes de Días Libres\n`;
+      items.forEach(item => {
+        sqlDump += `INSERT INTO free_day_requests (id, worker_id, worker_name, division_id, requested_date, reason, status, created_at, reviewed_by_worker_id, reviewed_by_name, reviewed_at) VALUES (${sqlHelper.str(item.id)}, ${sqlHelper.str(item.workerId)}, ${sqlHelper.str(item.workerName)}, ${sqlHelper.str(item.divisionId)}, ${sqlHelper.str(item.requestedDate)}, ${sqlHelper.str(item.reason)}, ${sqlHelper.str(item.status)}, ${sqlHelper.str(item.createdAt)}, ${sqlHelper.str(item.reviewedByWorkerId)}, ${sqlHelper.str(item.reviewedByName)}, ${sqlHelper.str(item.reviewedAt)}) ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, reviewed_by_worker_id = EXCLUDED.reviewed_by_worker_id, reviewed_by_name = EXCLUDED.reviewed_by_name, reviewed_at = EXCLUDED.reviewed_at;\n`;
+      });
+      sqlDump += '\n';
+    }
+  } catch (e) {
+    console.error('Error dumping free day requests:', e);
+  }
+
+  // 6. Task Boards
+  try {
+    const raw = localStorage.getItem('vtv_task_boards');
+    const items: TaskBoard[] = raw ? JSON.parse(raw) : [];
+    if (items && items.length > 0) {
+      sqlDump += `-- [RESTAURACIÓN] ${items.length} Tableros de Procesos Audiovisuales\n`;
+      items.forEach(item => {
+        sqlDump += `INSERT INTO task_boards (id, name, description, color, division_id, created_at) VALUES (${sqlHelper.str(item.id)}, ${sqlHelper.str(item.name)}, ${sqlHelper.str(item.description)}, ${sqlHelper.str(item.color)}, ${sqlHelper.str(item.divisionId)}, ${sqlHelper.str(item.createdAt || new Date().toISOString())}) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description, color = EXCLUDED.color, division_id = EXCLUDED.division_id;\n`;
+      });
+      sqlDump += '\n';
+    }
+  } catch (e) {
+    console.error('Error dumping task boards:', e);
+  }
+
+  // 7. Task Cards
+  try {
+    const raw = localStorage.getItem('vtv_task_cards');
+    const items: TaskCard[] = raw ? JSON.parse(raw) : [];
+    if (items && items.length > 0) {
+      sqlDump += `-- [RESTAURACIÓN] ${items.length} Tarjetas de Tareas y Pautas Audiovisuales\n`;
+      items.forEach(item => {
+        sqlDump += `INSERT INTO task_cards (id, board_id, division_id, title, description, status, start_date, due_date, assigned_worker_ids, checklist, priority, is_gerencia_only, duration, edited_duration, is_ingested, ingested_at, is_edited, edited_at, is_documented, documented_at, is_finalized, finalized_at, is_other_request, is_department_achievement, is_discarded, discarded_at, linked_task_ids, created_by_worker_id, created_by_name, created_at) VALUES (${sqlHelper.str(item.id)}, ${sqlHelper.str(item.boardId)}, ${sqlHelper.str(item.divisionId)}, ${sqlHelper.str(item.title)}, ${sqlHelper.str(item.description)}, ${sqlHelper.str(item.status)}, ${sqlHelper.str(item.startDate)}, ${sqlHelper.str(item.dueDate)}, ${sqlHelper.str(item.assignedWorkerIds)}, ${sqlHelper.str(item.checklist)}, ${sqlHelper.str(item.priority || 'media')}, ${sqlHelper.bool(item.isGerenciaOnly)}, ${sqlHelper.str(item.duration || '00:00:00')}, ${sqlHelper.str(item.editedDuration || '00:00:00')}, ${sqlHelper.bool(item.isIngested)}, ${sqlHelper.str(item.ingestedAt)}, ${sqlHelper.bool(item.isEdited)}, ${sqlHelper.str(item.editedAt)}, ${sqlHelper.bool(item.isDocumented)}, ${sqlHelper.str(item.documentedAt)}, ${sqlHelper.bool(item.isFinalized)}, ${sqlHelper.str(item.finalizedAt)}, ${sqlHelper.bool(item.isOtherRequest)}, ${sqlHelper.bool(item.isDepartmentAchievement)}, ${sqlHelper.bool(item.isDiscarded)}, ${sqlHelper.str(item.discardedAt)}, ${sqlHelper.str(item.linkedTaskIds)}, ${sqlHelper.str(item.createdByWorkerId)}, ${sqlHelper.str(item.createdByName)}, ${sqlHelper.str(item.createdAt || new Date().toISOString())}) ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, description = EXCLUDED.description, status = EXCLUDED.status, duration = EXCLUDED.duration, edited_duration = EXCLUDED.edited_duration, is_ingested = EXCLUDED.is_ingested, is_edited = EXCLUDED.is_edited, is_documented = EXCLUDED.is_documented, is_finalized = EXCLUDED.is_finalized, is_discarded = EXCLUDED.is_discarded, assigned_worker_ids = EXCLUDED.assigned_worker_ids, checklist = EXCLUDED.checklist;\n`;
+      });
+      sqlDump += '\n';
+    }
+  } catch (e) {
+    console.error('Error dumping task cards:', e);
+  }
+
+  // 8. Task Notifications
+  try {
+    const raw = localStorage.getItem('vtv_task_notifications');
+    const items: TaskNotification[] = raw ? JSON.parse(raw) : [];
+    if (items && items.length > 0) {
+      sqlDump += `-- [RESTAURACIÓN] ${items.length} Notificaciones\n`;
+      items.forEach(item => {
+        sqlDump += `INSERT INTO task_notifications (id, worker_id, task_id, task_title, board_name, message, read, created_at) VALUES (${sqlHelper.str(item.id)}, ${sqlHelper.str(item.workerId)}, ${sqlHelper.str(item.taskId)}, ${sqlHelper.str(item.taskTitle)}, ${sqlHelper.str(item.boardName)}, ${sqlHelper.str(item.message)}, ${sqlHelper.bool(item.read)}, ${sqlHelper.str(item.createdAt || new Date().toISOString())}) ON CONFLICT (id) DO NOTHING;\n`;
+      });
+      sqlDump += '\n';
+    }
+  } catch (e) {
+    console.error('Error dumping task notifications:', e);
+  }
+
+  // 9. Physical Formats
+  try {
+    const raw = localStorage.getItem(LOCAL_PHYSICAL_FORMATS_KEY);
+    const items: PhysicalFormat[] = raw ? JSON.parse(raw) : [];
+    if (items && items.length > 0) {
+      sqlDump += `-- [RESTAURACIÓN] ${items.length} Formatos de Archivo Físico\n`;
+      items.forEach(item => {
+        sqlDump += `INSERT INTO physical_formats (id, name) VALUES (${sqlHelper.str(item.id)}, ${sqlHelper.str(item.name)}) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name;\n`;
+      });
+      sqlDump += '\n';
+    }
+  } catch (e) {
+    console.error('Error dumping physical formats:', e);
+  }
+
+  // 10. Physical Locations
+  try {
+    const raw = localStorage.getItem(LOCAL_PHYSICAL_LOCATIONS_KEY);
+    const items: PhysicalLocation[] = raw ? JSON.parse(raw) : [];
+    if (items && items.length > 0) {
+      sqlDump += `-- [RESTAURACIÓN] ${items.length} Ubicaciones de Archivo Físico\n`;
+      items.forEach(item => {
+        sqlDump += `INSERT INTO physical_locations (id, name) VALUES (${sqlHelper.str(item.id)}, ${sqlHelper.str(item.name)}) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name;\n`;
+      });
+      sqlDump += '\n';
+    }
+  } catch (e) {
+    console.error('Error dumping physical locations:', e);
+  }
+
+  // 11. Physical Programs
+  try {
+    const raw = localStorage.getItem(LOCAL_PHYSICAL_PROGRAMS_KEY);
+    const items: PhysicalProgram[] = raw ? JSON.parse(raw) : [];
+    if (items && items.length > 0) {
+      sqlDump += `-- [RESTAURACIÓN] ${items.length} Programas de Archivo Físico\n`;
+      items.forEach(item => {
+        sqlDump += `INSERT INTO physical_programs (id, name, release_date) VALUES (${sqlHelper.str(item.id)}, ${sqlHelper.str(item.name)}, ${sqlHelper.str(item.releaseDate)}) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, release_date = EXCLUDED.release_date;\n`;
+      });
+      sqlDump += '\n';
+    }
+  } catch (e) {
+    console.error('Error dumping physical programs:', e);
+  }
+
+  // 12. Physical Materials
+  try {
+    const raw = localStorage.getItem(LOCAL_PHYSICAL_MATERIALS_KEY);
+    const items: PhysicalAudiovisualMaterial[] = raw ? JSON.parse(raw) : [];
+    if (items && items.length > 0) {
+      sqlDump += `-- [RESTAURACIÓN] ${items.length} Materiales Audiovisuales Registrados\n`;
+      items.forEach(item => {
+        sqlDump += `INSERT INTO physical_materials (id, code, format_id, program_id, title, recording_date, air_date, segment_number, total_time, location_id, synopsis, observations, created_at, created_by_worker_id) VALUES (${sqlHelper.str(item.id)}, ${sqlHelper.num(item.code, Date.now())}, ${sqlHelper.str(item.formatId)}, ${sqlHelper.str(item.programId)}, ${sqlHelper.str(item.title)}, ${sqlHelper.str(item.recordingDate)}, ${sqlHelper.str(item.airDate)}, ${sqlHelper.num(item.segmentNumber, 1)}, ${sqlHelper.str(item.totalTime)}, ${sqlHelper.str(item.locationId)}, ${sqlHelper.str(item.synopsis)}, ${sqlHelper.str(item.observations)}, ${sqlHelper.str(item.createdAt || new Date().toISOString())}, ${sqlHelper.str(item.createdByWorkerId)}) ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, synopsis = EXCLUDED.synopsis, observations = EXCLUDED.observations, total_time = EXCLUDED.total_time, location_id = EXCLUDED.location_id;\n`;
+      });
+      sqlDump += '\n';
+    }
+  } catch (e) {
+    console.error('Error dumping physical materials:', e);
+  }
+
+  return sqlDump;
+};
+
+export const downloadLocalStorageSqlDump = () => {
+  const sqlContent = exportLocalStorageToSupabaseSQL();
+  const blob = new Blob([sqlContent], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const dateStr = new Date().toISOString().split('T')[0];
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `vtv_respaldo_local_supabase_${dateStr}.sql`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+export const exportLocalStorageToCSV = (): string => {
+  const escapeCsv = (val: any): string => {
+    if (val === null || val === undefined) return '""';
+    if (typeof val === 'boolean') return val ? '"SI"' : '"NO"';
+    if (typeof val === 'number') return isNaN(val) ? '""' : `"${val}"`;
+    if (typeof val === 'object') {
+      const jsonStr = JSON.stringify(val);
+      return `"${jsonStr.replace(/"/g, '""')}"`;
+    }
+    return `"${String(val).replace(/"/g, '""')}"`;
+  };
+
+  // Add UTF-8 BOM byte order mark (\uFEFF) for Microsoft Excel & Google Sheets compatibility
+  let csv = '\uFEFF';
+
+  csv += '=== VTV - BASE DE DATOS COMPLETA PARA MIGRACIÓN A GOOGLE DRIVE / EXCEL ===\n';
+  csv += `Fecha de Generacion,${new Date().toLocaleString()}\n\n`;
+
+  // 1. WORKERS / PERSONAL Y USUARIOS
+  csv += '--- TABLA: PERSONAL Y TRABAJADORES (workers) ---\n';
+  csv += ['ID', 'Nombre', 'Email', 'Cargo', 'ID Division', 'Rol', 'Cedula', 'Turno Fijo', 'Inicio Vacaciones', 'Fin Vacaciones', 'Ajuste Dias Libres', 'Preferencia Comedor', 'Modo Lite'].map(escapeCsv).join(',') + '\n';
+  try {
+    const raw = localStorage.getItem(LOCAL_WORKERS_KEY);
+    let items: Worker[] = raw ? JSON.parse(raw) : [];
+    if (!items || items.length === 0) items = [...INITIAL_WORKERS];
+
+    const sessionRaw = localStorage.getItem('vtv_real_session');
+    if (sessionRaw) {
+      try {
+        const session = JSON.parse(sessionRaw);
+        if (session && session.worker) {
+          if (!items.find(w => w.id === session.worker.id || w.email === session.worker.email)) {
+            items.push(session.worker);
+          }
+        }
+      } catch (e) {}
+    }
+
+    const localFixedShifts = JSON.parse(localStorage.getItem('vtv_worker_fixed_shifts') || '{}');
+    const localVacStart = JSON.parse(localStorage.getItem('vtv_worker_vacation_start') || '{}');
+    const localVacEnd = JSON.parse(localStorage.getItem('vtv_worker_vacation_end') || '{}');
+    const localManualFreeDays = JSON.parse(localStorage.getItem('vtv_worker_manual_free_days') || '{}');
+    const localMeals = JSON.parse(localStorage.getItem('vtv_meals_preferences') || '{}');
+
+    items.forEach(item => {
+      const fixedShift = localFixedShifts[item.id] || item.fixedShift || 'pool';
+      const vacStart = localVacStart[item.id] || item.vacationStart || '';
+      const vacEnd = localVacEnd[item.id] || item.vacationEnd || '';
+      const freeDaysAdj = localManualFreeDays[item.id] !== undefined ? localManualFreeDays[item.id] : (item.manualFreeDaysAdjustment || 0);
+      const meals = localMeals[item.id] || item.mealsPreference || '';
+
+      csv += [
+        item.id,
+        item.name,
+        item.email,
+        item.cargo,
+        item.divisionId,
+        item.role || 'worker',
+        item.cedula,
+        fixedShift,
+        vacStart,
+        vacEnd,
+        freeDaysAdj,
+        meals,
+        item.isLiteMode
+      ].map(escapeCsv).join(',') + '\n';
+    });
+  } catch (e) {
+    console.error('CSV export workers error:', e);
+  }
+  csv += '\n';
+
+  // 2. TASK CARDS / PAUTAS
+  csv += '--- TABLA: TARJETAS Y PAUTAS AUDIOVISUALES (task_cards) ---\n';
+  csv += ['ID', 'ID Tablero', 'ID Division', 'Titulo', 'Descripcion', 'Estado', 'Fecha Inicio', 'Fecha Limite', 'IDs Asignados', 'Prioridad', 'Gerencia Solo', 'Duracion', 'Duracion Editada', 'Ingestado', 'Editado', 'Documentado', 'Finalizado', 'Descartado', 'Creado Por', 'Fecha Creacion'].map(escapeCsv).join(',') + '\n';
+  try {
+    const raw = localStorage.getItem('vtv_task_cards');
+    const items: TaskCard[] = raw ? JSON.parse(raw) : [];
+    items.forEach(item => {
+      csv += [
+        item.id,
+        item.boardId,
+        item.divisionId,
+        item.title,
+        item.description,
+        item.status,
+        item.startDate,
+        item.dueDate,
+        Array.isArray(item.assignedWorkerIds) ? item.assignedWorkerIds.join('; ') : item.assignedWorkerIds,
+        item.priority || 'media',
+        item.isGerenciaOnly,
+        item.duration || '00:00:00',
+        item.editedDuration || '00:00:00',
+        item.isIngested,
+        item.isEdited,
+        item.isDocumented,
+        item.isFinalized,
+        item.isDiscarded,
+        item.createdByName || item.createdByWorkerId,
+        item.createdAt
+      ].map(escapeCsv).join(',') + '\n';
+    });
+  } catch (e) {
+    console.error('CSV export task cards error:', e);
+  }
+  csv += '\n';
+
+  // 3. TASK BOARDS
+  csv += '--- TABLA: TABLEROS DE TAREAS (task_boards) ---\n';
+  csv += ['ID', 'Nombre', 'Descripcion', 'Color', 'ID Division', 'Fecha Creacion'].map(escapeCsv).join(',') + '\n';
+  try {
+    const raw = localStorage.getItem('vtv_task_boards');
+    const items: TaskBoard[] = raw ? JSON.parse(raw) : [];
+    items.forEach(item => {
+      csv += [item.id, item.name, item.description, item.color, item.divisionId, item.createdAt].map(escapeCsv).join(',') + '\n';
+    });
+  } catch (e) {
+    console.error('CSV export task boards error:', e);
+  }
+  csv += '\n';
+
+  // 4. SHIFT ASSIGNMENTS
+  csv += '--- TABLA: ASIGNACIONES DE GUARDIAS (shift_assignments) ---\n';
+  csv += ['ID', 'ID Trabajador', 'ID Division', 'Fecha', 'Tipo Turno'].map(escapeCsv).join(',') + '\n';
+  try {
+    const raw = localStorage.getItem(LOCAL_ASSIGNMENTS_KEY);
+    const items: ShiftAssignment[] = raw ? JSON.parse(raw) : [];
+    items.forEach(item => {
+      csv += [item.id, item.workerId, item.divisionId, item.date, item.shiftType].map(escapeCsv).join(',') + '\n';
+    });
+  } catch (e) {
+    console.error('CSV export assignments error:', e);
+  }
+  csv += '\n';
+
+  // 5. SHIFT CHANGE REQUESTS
+  csv += '--- TABLA: SOLICITUDES DE CAMBIO DE GUARDIA (shift_change_requests) ---\n';
+  csv += ['ID', 'Solicitante ID', 'Solicitante Nombre', 'Destino ID', 'Destino Nombre', 'ID Division', 'Fecha', 'Motivo', 'Estado', 'Fecha Creacion'].map(escapeCsv).join(',') + '\n';
+  try {
+    const raw = localStorage.getItem(LOCAL_REQUESTS_KEY);
+    const items: ShiftChangeRequest[] = raw ? JSON.parse(raw) : [];
+    items.forEach(item => {
+      csv += [item.id, item.requesterId, item.requesterName, item.targetWorkerId, item.targetWorkerName, item.divisionId, item.date, item.reason, item.status, item.createdAt].map(escapeCsv).join(',') + '\n';
+    });
+  } catch (e) {
+    console.error('CSV export shift requests error:', e);
+  }
+  csv += '\n';
+
+  // 6. FREE DAY REQUESTS
+  csv += '--- TABLA: SOLICITUDES DE DÍAS LIBRES (free_day_requests) ---\n';
+  csv += ['ID', 'ID Trabajador', 'Nombre Trabajador', 'ID Division', 'Fecha Solicitada', 'Motivo', 'Estado', 'Revisado Por ID', 'Revisado Por Nombre', 'Fecha Revision'].map(escapeCsv).join(',') + '\n';
+  try {
+    const raw = localStorage.getItem(LOCAL_FREE_DAY_REQUESTS_KEY);
+    const items: FreeDayRequest[] = raw ? JSON.parse(raw) : [];
+    items.forEach(item => {
+      csv += [item.id, item.workerId, item.workerName, item.divisionId, item.requestedDate, item.reason, item.status, item.reviewedByWorkerId, item.reviewedByName, item.reviewedAt].map(escapeCsv).join(',') + '\n';
+    });
+  } catch (e) {
+    console.error('CSV export free day requests error:', e);
+  }
+  csv += '\n';
+
+  // 7. PHYSICAL MATERIALS
+  csv += '--- TABLA: ARCHIVO FÍSICO - MATERIALES (physical_materials) ---\n';
+  csv += ['ID', 'Codigo', 'Titulo', 'ID Formato', 'ID Programa', 'ID Ubicacion', 'Fecha Grabacion', 'Fecha Emision', 'Nro Segmento', 'Tiempo Total', 'Sinopsis', 'Observaciones', 'Fecha Creacion'].map(escapeCsv).join(',') + '\n';
+  try {
+    const raw = localStorage.getItem(LOCAL_PHYSICAL_MATERIALS_KEY);
+    const items: PhysicalAudiovisualMaterial[] = raw ? JSON.parse(raw) : [];
+    items.forEach(item => {
+      csv += [item.id, item.code, item.title, item.formatId, item.programId, item.locationId, item.recordingDate, item.airDate, item.segmentNumber, item.totalTime, item.synopsis, item.observations, item.createdAt].map(escapeCsv).join(',') + '\n';
+    });
+  } catch (e) {
+    console.error('CSV export physical materials error:', e);
+  }
+  csv += '\n';
+
+  // 8. PHYSICAL PROGRAMS
+  csv += '--- TABLA: ARCHIVO FÍSICO - PROGRAMAS (physical_programs) ---\n';
+  csv += ['ID', 'Nombre', 'Fecha Estreno'].map(escapeCsv).join(',') + '\n';
+  try {
+    const raw = localStorage.getItem(LOCAL_PHYSICAL_PROGRAMS_KEY);
+    const items: PhysicalProgram[] = raw ? JSON.parse(raw) : [];
+    items.forEach(item => {
+      csv += [item.id, item.name, item.releaseDate].map(escapeCsv).join(',') + '\n';
+    });
+  } catch (e) {
+    console.error('CSV export physical programs error:', e);
+  }
+  csv += '\n';
+
+  // 9. PHYSICAL LOCATIONS
+  csv += '--- TABLA: ARCHIVO FÍSICO - UBICACIONES (physical_locations) ---\n';
+  csv += ['ID', 'Nombre'].map(escapeCsv).join(',') + '\n';
+  try {
+    const raw = localStorage.getItem(LOCAL_PHYSICAL_LOCATIONS_KEY);
+    const items: PhysicalLocation[] = raw ? JSON.parse(raw) : [];
+    items.forEach(item => {
+      csv += [item.id, item.name].map(escapeCsv).join(',') + '\n';
+    });
+  } catch (e) {
+    console.error('CSV export physical locations error:', e);
+  }
+  csv += '\n';
+
+  // 10. PHYSICAL FORMATS
+  csv += '--- TABLA: ARCHIVO FÍSICO - FORMATOS (physical_formats) ---\n';
+  csv += ['ID', 'Nombre'].map(escapeCsv).join(',') + '\n';
+  try {
+    const raw = localStorage.getItem(LOCAL_PHYSICAL_FORMATS_KEY);
+    const items: PhysicalFormat[] = raw ? JSON.parse(raw) : [];
+    items.forEach(item => {
+      csv += [item.id, item.name].map(escapeCsv).join(',') + '\n';
+    });
+  } catch (e) {
+    console.error('CSV export physical formats error:', e);
+  }
+  csv += '\n';
+
+  // 11. DIVISIONS
+  csv += '--- TABLA: DIVISIONES (divisions) ---\n';
+  csv += ['ID', 'Nombre', 'Descripcion', 'Coordinador ID', 'Coordinador Nombre'].map(escapeCsv).join(',') + '\n';
+  try {
+    const raw = localStorage.getItem(LOCAL_DIVISIONS_KEY);
+    const items: Division[] = raw ? JSON.parse(raw) : DEFAULT_DIVISIONS;
+    items.forEach(item => {
+      csv += [item.id, item.name, item.description, item.coordinatorId, item.coordinatorName].map(escapeCsv).join(',') + '\n';
+    });
+  } catch (e) {
+    console.error('CSV export divisions error:', e);
+  }
+  csv += '\n';
+
+  // 12. NOTIFICATIONS
+  csv += '--- TABLA: NOTIFICACIONES (task_notifications) ---\n';
+  csv += ['ID', 'ID Trabajador', 'ID Tarea', 'Titulo Tarea', 'Tablero', 'Mensaje', 'Leido', 'Fecha Creacion'].map(escapeCsv).join(',') + '\n';
+  try {
+    const raw = localStorage.getItem('vtv_task_notifications');
+    const items: TaskNotification[] = raw ? JSON.parse(raw) : [];
+    items.forEach(item => {
+      csv += [item.id, item.workerId, item.taskId, item.taskTitle, item.boardName, item.message, item.read, item.createdAt].map(escapeCsv).join(',') + '\n';
+    });
+  } catch (e) {
+    console.error('CSV export notifications error:', e);
+  }
+
+  return csv;
+};
+
+export const downloadLocalStorageCsvDump = () => {
+  const csvContent = exportLocalStorageToCSV();
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const dateStr = new Date().toISOString().split('T')[0];
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `vtv_base_datos_migracion_google_drive_${dateStr}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+export const downloadSpecificTableCSV = (tableName: string) => {
+  const escapeCsv = (val: any): string => {
+    if (val === null || val === undefined) return '""';
+    if (typeof val === 'boolean') return val ? '"SI"' : '"NO"';
+    if (typeof val === 'number') return isNaN(val) ? '""' : `"${val}"`;
+    if (typeof val === 'object') {
+      const jsonStr = JSON.stringify(val);
+      return `"${jsonStr.replace(/"/g, '""')}"`;
+    }
+    return `"${String(val).replace(/"/g, '""')}"`;
+  };
+
+  let csv = '\uFEFF';
+  let filename = `vtv_${tableName}_${new Date().toISOString().split('T')[0]}.csv`;
+
+  if (tableName === 'workers') {
+    csv += ['ID', 'Nombre', 'Email', 'Cargo', 'ID Division', 'Rol', 'Cedula', 'Turno Fijo', 'Inicio Vacaciones', 'Fin Vacaciones', 'Ajuste Dias Libres', 'Preferencia Comedor', 'Modo Lite'].map(escapeCsv).join(',') + '\n';
+    const raw = localStorage.getItem(LOCAL_WORKERS_KEY);
+    let items: Worker[] = raw ? JSON.parse(raw) : [];
+    if (!items || items.length === 0) items = [...INITIAL_WORKERS];
+
+    const sessionRaw = localStorage.getItem('vtv_real_session');
+    if (sessionRaw) {
+      try {
+        const session = JSON.parse(sessionRaw);
+        if (session && session.worker) {
+          if (!items.find(w => w.id === session.worker.id || w.email === session.worker.email)) {
+            items.push(session.worker);
+          }
+        }
+      } catch (e) {}
+    }
+
+    const localFixedShifts = JSON.parse(localStorage.getItem('vtv_worker_fixed_shifts') || '{}');
+    const localVacStart = JSON.parse(localStorage.getItem('vtv_worker_vacation_start') || '{}');
+    const localVacEnd = JSON.parse(localStorage.getItem('vtv_worker_vacation_end') || '{}');
+    const localManualFreeDays = JSON.parse(localStorage.getItem('vtv_worker_manual_free_days') || '{}');
+    const localMeals = JSON.parse(localStorage.getItem('vtv_meals_preferences') || '{}');
+
+    items.forEach(item => {
+      csv += [
+        item.id, item.name, item.email, item.cargo, item.divisionId, item.role || 'worker', item.cedula,
+        localFixedShifts[item.id] || item.fixedShift || 'pool',
+        localVacStart[item.id] || item.vacationStart || '',
+        localVacEnd[item.id] || item.vacationEnd || '',
+        localManualFreeDays[item.id] !== undefined ? localManualFreeDays[item.id] : (item.manualFreeDaysAdjustment || 0),
+        localMeals[item.id] || item.mealsPreference || '',
+        item.isLiteMode
+      ].map(escapeCsv).join(',') + '\n';
+    });
+  } else if (tableName === 'task_cards') {
+    csv += ['ID', 'ID Tablero', 'ID Division', 'Titulo', 'Descripcion', 'Estado', 'Fecha Inicio', 'Fecha Limite', 'IDs Asignados', 'Prioridad', 'Gerencia Solo', 'Duracion', 'Duracion Editada', 'Ingestado', 'Editado', 'Documentado', 'Finalizado', 'Descartado', 'Creado Por', 'Fecha Creacion'].map(escapeCsv).join(',') + '\n';
+    const raw = localStorage.getItem('vtv_task_cards');
+    const items: TaskCard[] = raw ? JSON.parse(raw) : [];
+    items.forEach(item => {
+      csv += [
+        item.id, item.boardId, item.divisionId, item.title, item.description, item.status, item.startDate, item.dueDate,
+        Array.isArray(item.assignedWorkerIds) ? item.assignedWorkerIds.join('; ') : item.assignedWorkerIds,
+        item.priority || 'media', item.isGerenciaOnly, item.duration || '00:00:00', item.editedDuration || '00:00:00',
+        item.isIngested, item.isEdited, item.isDocumented, item.isFinalized, item.isDiscarded,
+        item.createdByName || item.createdByWorkerId, item.createdAt
+      ].map(escapeCsv).join(',') + '\n';
+    });
+  } else if (tableName === 'physical_materials') {
+    csv += ['ID', 'Codigo', 'Titulo', 'ID Formato', 'ID Programa', 'ID Ubicacion', 'Fecha Grabacion', 'Fecha Emision', 'Nro Segmento', 'Tiempo Total', 'Sinopsis', 'Observaciones', 'Fecha Creacion'].map(escapeCsv).join(',') + '\n';
+    const raw = localStorage.getItem(LOCAL_PHYSICAL_MATERIALS_KEY);
+    const items: PhysicalAudiovisualMaterial[] = raw ? JSON.parse(raw) : [];
+    items.forEach(item => {
+      csv += [item.id, item.code, item.title, item.formatId, item.programId, item.locationId, item.recordingDate, item.airDate, item.segmentNumber, item.totalTime, item.synopsis, item.observations, item.createdAt].map(escapeCsv).join(',') + '\n';
+    });
+  } else if (tableName === 'shift_assignments') {
+    csv += ['ID', 'ID Trabajador', 'ID Division', 'Fecha', 'Tipo Turno'].map(escapeCsv).join(',') + '\n';
+    const raw = localStorage.getItem(LOCAL_ASSIGNMENTS_KEY);
+    const items: ShiftAssignment[] = raw ? JSON.parse(raw) : [];
+    items.forEach(item => {
+      csv += [item.id, item.workerId, item.divisionId, item.date, item.shiftType].map(escapeCsv).join(',') + '\n';
+    });
+  }
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
 // Local storage keys for the local mock database (representing the clean start)
 const LOCAL_DIVISIONS_KEY = 'vtv_real_divisions';
 const LOCAL_WORKERS_KEY = 'vtv_real_workers';
@@ -371,7 +999,21 @@ export const getLocalDb = {
   },
   getWorkers: (): Worker[] => {
     const data = localStorage.getItem(LOCAL_WORKERS_KEY);
-    return data ? JSON.parse(data) : [];
+    let workers: Worker[] = data ? JSON.parse(data) : [];
+    if (!workers || workers.length === 0) {
+      workers = [...INITIAL_WORKERS];
+    }
+    const resetDone = localStorage.getItem('vtv_passwords_reset_12345678_sheet_v1');
+    if (!resetDone) {
+      workers = workers.map(w => ({
+        ...w,
+        password: w.mustChangePassword === false ? w.password : '12345678',
+        mustChangePassword: w.mustChangePassword !== false
+      }));
+      localStorage.setItem('vtv_passwords_reset_12345678_sheet_v1', 'true');
+      localStorage.setItem(LOCAL_WORKERS_KEY, JSON.stringify(workers));
+    }
+    return workers;
   },
   saveWorkers: (workers: Worker[]) => {
     localStorage.setItem(LOCAL_WORKERS_KEY, JSON.stringify(workers));
@@ -443,7 +1085,7 @@ export const db = {
       return getLocalDb.getDivisions();
     }
     try {
-      const { data, error } = await supabase.from('divisions').select('*');
+      const { data, error } = await queryWithTimeout(supabase.from('divisions').select('*'), 4000, 'divisions');
       if (error) {
         console.warn('Error fetching divisions from Supabase:', error.message);
         setSupabaseConnectionStatus('error', `Error al consultar 'divisions': ${error.message}. Por favor ejecuta el Script SQL en Supabase.`);
@@ -630,7 +1272,7 @@ export const db = {
       return getLocalDb.getWorkers();
     }
     try {
-      const { data, error } = await supabase.from('workers').select('*');
+      const { data, error } = await queryWithTimeout(supabase.from('workers').select('*'), 4000, 'workers');
       if (error) {
         console.warn('Error fetching workers from Supabase:', error.message);
         setSupabaseConnectionStatus('error', `Error al consultar 'workers': ${error.message}. Ejecuta el Script SQL en Supabase.`);
@@ -948,7 +1590,7 @@ export const db = {
       return getLocalDb.getAssignments();
     }
     try {
-      const { data, error } = await supabase.from('shift_assignments').select('*');
+      const { data, error } = await queryWithTimeout(supabase.from('shift_assignments').select('*'), 4000, 'shift_assignments');
       if (error) {
         console.warn('Error fetching shift assignments from Supabase:', error.message);
         setSupabaseConnectionStatus('error', `Error al consultar 'shift_assignments': ${error.message}. Ejecuta el Script SQL en Supabase.`);
@@ -1026,7 +1668,7 @@ export const db = {
       return getLocalDb.getRequests();
     }
     try {
-      const { data, error } = await supabase.from('shift_change_requests').select('*').order('created_at', { ascending: false });
+      const { data, error } = await queryWithTimeout(supabase.from('shift_change_requests').select('*').order('created_at', { ascending: false }), 4000, 'shift_change_requests');
       if (error) {
         console.warn('Error fetching shift requests from Supabase:', error.message);
         setSupabaseConnectionStatus('error', `Error al consultar 'shift_change_requests': ${error.message}. Ejecuta el Script SQL en Supabase.`);
@@ -1092,7 +1734,7 @@ export const db = {
     let supabaseBoards: TaskBoard[] = [];
     if (supabase) {
       try {
-        const { data, error } = await supabase.from('task_boards').select('*').order('created_at', { ascending: true });
+        const { data, error } = await queryWithTimeout(supabase.from('task_boards').select('*').order('created_at', { ascending: true }), 4000, 'task_boards');
         if (!error && data) {
           supabaseBoards = data.map(b => ({
             id: b.id,
@@ -1186,10 +1828,10 @@ export const db = {
     let supabaseCards: TaskCard[] = [];
     if (supabase) {
       try {
-        let queryRes = await supabase.from('task_cards').select('*').order('created_at', { ascending: false });
-        if (queryRes.error) {
-          console.warn('Order by created_at failed, retrying plain select on task_cards...', queryRes.error);
-          queryRes = await supabase.from('task_cards').select('*');
+        let queryRes: any = await queryWithTimeout(supabase.from('task_cards').select('*').order('created_at', { ascending: false }), 4000, 'task_cards').catch(() => null);
+        if (!queryRes || queryRes.error) {
+          console.warn('Order by created_at failed, retrying plain select on task_cards...');
+          queryRes = await queryWithTimeout(supabase.from('task_cards').select('*'), 4000, 'task_cards_fallback');
         }
         const { data, error } = queryRes;
         if (!error && data) {
@@ -1246,12 +1888,25 @@ export const db = {
           // Non-destructive merge with local storage cards
           const saved = localStorage.getItem('vtv_task_cards');
           const localCards: TaskCard[] = saved ? JSON.parse(saved) : [];
+          const localCardsMap = new Map<string, TaskCard>();
+          localCards.forEach(lc => localCardsMap.set(lc.id, lc));
+
+          const rawTimestamps = localStorage.getItem('vtv_card_edit_timestamps');
+          const editMap: Record<string, number> = rawTimestamps ? JSON.parse(rawTimestamps) : {};
+          const now = Date.now();
 
           const mergedMap = new Map<string, TaskCard>();
-          // Remote first (ignoring blacklisted deleted cards)
+          // Remote first (ignoring blacklisted deleted cards, but preserving recent local edits)
           supabaseCards.forEach(c => {
             if (!deletedCardIds.has(c.id)) {
-              mergedMap.set(c.id, c);
+              const lastLocalEdit = editMap[c.id] || 0;
+              const localVersion = localCardsMap.get(c.id);
+              // If edited locally within the last 15 seconds, prioritize local optimistic version until server catches up
+              if (localVersion && (now - lastLocalEdit < 15000)) {
+                mergedMap.set(c.id, localVersion);
+              } else {
+                mergedMap.set(c.id, c);
+              }
             }
           });
           // Local second (preserve any local-only tasks and sync them back to Supabase if not deleted)
@@ -1294,6 +1949,12 @@ export const db = {
         cards.unshift(card);
       }
       localStorage.setItem('vtv_task_cards', JSON.stringify(cards));
+
+      // Record local edit timestamp to guard against race conditions in real-time sync
+      const rawTimestamps = localStorage.getItem('vtv_card_edit_timestamps');
+      const editMap = rawTimestamps ? JSON.parse(rawTimestamps) : {};
+      editMap[card.id] = Date.now();
+      localStorage.setItem('vtv_card_edit_timestamps', JSON.stringify(editMap));
     } catch (e) {
       console.error('Error saving task_card to localStorage:', e);
     }
@@ -1487,7 +2148,7 @@ export const db = {
         if (workerId) {
           query = query.eq('worker_id', workerId);
         }
-        const { data, error } = await query;
+        const { data, error } = await queryWithTimeout(query, 4000, 'task_notifications');
         if (!error && data) {
           return data.map(n => ({
             id: n.id,
@@ -1644,7 +2305,7 @@ export const db = {
   async fetchFreeDayRequests(): Promise<FreeDayRequest[]> {
     if (supabase) {
       try {
-        const { data, error } = await supabase.from('free_day_requests').select('*').order('created_at', { ascending: false });
+        const { data, error } = await queryWithTimeout(supabase.from('free_day_requests').select('*').order('created_at', { ascending: false }), 4000, 'free_day_requests');
         if (!error && data) {
           return data.map((item: any) => ({
             id: item.id,
@@ -1734,7 +2395,7 @@ export const db = {
       return getLocalDb.getPhysicalFormats(defaultFormats);
     }
     try {
-      const { data, error } = await supabase.from('physical_formats').select('*').order('name', { ascending: true });
+      const { data, error } = await queryWithTimeout(supabase.from('physical_formats').select('*').order('name', { ascending: true }), 4000, 'physical_formats');
       if (error) {
         console.warn('Supabase physical_formats check warning:', error.message);
         setSupabaseConnectionStatus('error', `Atención en 'physical_formats': ${error.message}. Ejecuta el Script SQL en Supabase para habilitar las tablas.`);
@@ -1806,7 +2467,7 @@ export const db = {
       return getLocalDb.getPhysicalLocations(defaultLocations);
     }
     try {
-      const { data, error } = await supabase.from('physical_locations').select('*').order('name', { ascending: true });
+      const { data, error } = await queryWithTimeout(supabase.from('physical_locations').select('*').order('name', { ascending: true }), 4000, 'physical_locations');
       if (error) {
         console.warn('Supabase physical_locations check warning:', error.message);
         setSupabaseConnectionStatus('error', `Atención en 'physical_locations': ${error.message}. Ejecuta el Script SQL en Supabase para habilitar las tablas.`);
@@ -1878,7 +2539,7 @@ export const db = {
       return getLocalDb.getPhysicalPrograms(defaultPrograms);
     }
     try {
-      const { data, error } = await supabase.from('physical_programs').select('*').order('name', { ascending: true });
+      const { data, error } = await queryWithTimeout(supabase.from('physical_programs').select('*').order('name', { ascending: true }), 4000, 'physical_programs');
       if (error) {
         console.warn('Supabase physical_programs check warning:', error.message);
         setSupabaseConnectionStatus('error', `Atención en 'physical_programs': ${error.message}. Ejecuta el Script SQL en Supabase para habilitar las tablas.`);
@@ -1950,7 +2611,7 @@ export const db = {
       return getLocalDb.getPhysicalMaterials(defaultMaterials);
     }
     try {
-      const { data, error } = await supabase.from('physical_materials').select('*').order('code', { ascending: true });
+      const { data, error } = await queryWithTimeout(supabase.from('physical_materials').select('*').order('code', { ascending: true }), 4000, 'physical_materials');
       if (error) {
         console.warn('Supabase physical_materials check warning:', error.message);
         setSupabaseConnectionStatus('error', `Atención en 'physical_materials': ${error.message}. Ejecuta el Script SQL en Supabase para habilitar la tabla physical_materials.`);

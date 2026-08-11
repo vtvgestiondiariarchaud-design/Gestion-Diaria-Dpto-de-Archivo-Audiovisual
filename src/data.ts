@@ -33,36 +33,36 @@ export const INITIAL_DIVISIONS: Division[] = [
 
 export const INITIAL_WORKERS: Worker[] = [
   // Archivo Audiovisual
-  { id: 'work_1', name: 'Carlos Mendoza', email: 'carlos.m@vtv.gob.ve', cargo: 'Archivista de cintas LTO', divisionId: 'div_archivo', role: 'worker' },
-  { id: 'work_2', name: 'Adriana Silva', email: 'adriana.s@vtv.gob.ve', cargo: 'Digitalizadora Betacam/U-matic', divisionId: 'div_archivo', role: 'worker' },
-  { id: 'work_3', name: 'Jesús Rondón', email: 'jesus.r@vtv.gob.ve', cargo: 'Catalogador de Metadatos', divisionId: 'div_archivo', role: 'worker' },
-  { id: 'work_4', name: 'Milagros Vegas', email: 'milagros.v@vtv.gob.ve', cargo: 'Restauradora de Video Analógico', divisionId: 'div_archivo', role: 'worker' },
-  { id: 'work_5', name: 'Luis Altuve', email: 'luis.a@vtv.gob.ve', cargo: 'Técnico de Ingesta Audiovisual', divisionId: 'div_archivo', role: 'worker' },
+  { id: 'work_1', name: 'Carlos Mendoza', email: 'carlos.m@vtv.gob.ve', cargo: 'Archivista de cintas LTO', divisionId: 'div_archivo', role: 'worker', password: '12345678', mustChangePassword: true },
+  { id: 'work_2', name: 'Adriana Silva', email: 'adriana.s@vtv.gob.ve', cargo: 'Digitalizadora Betacam/U-matic', divisionId: 'div_archivo', role: 'worker', password: '12345678', mustChangePassword: true },
+  { id: 'work_3', name: 'Jesús Rondón', email: 'jesus.r@vtv.gob.ve', cargo: 'Catalogador de Metadatos', divisionId: 'div_archivo', role: 'worker', password: '12345678', mustChangePassword: true },
+  { id: 'work_4', name: 'Milagros Vegas', email: 'milagros.v@vtv.gob.ve', cargo: 'Restauradora de Video Analógico', divisionId: 'div_archivo', role: 'worker', password: '12345678', mustChangePassword: true },
+  { id: 'work_5', name: 'Luis Altuve', email: 'luis.a@vtv.gob.ve', cargo: 'Técnico de Ingesta Audiovisual', divisionId: 'div_archivo', role: 'worker', password: '12345678', mustChangePassword: true },
 
   // Edición
-  { id: 'work_6', name: 'Yusmeri Blanco', email: 'yusmeri.b@vtv.gob.ve', cargo: 'Editora de Guardia Principal', divisionId: 'div_edicion', role: 'worker' },
-  { id: 'work_7', name: 'Alejandro Colina', email: 'alejandro.c@vtv.gob.ve', cargo: 'Postproductor de Noticias', divisionId: 'div_edicion', role: 'worker' },
-  { id: 'work_8', name: 'Sofía Martínez', email: 'sofia.m@vtv.gob.ve', cargo: 'Editora de Programas Especiales', divisionId: 'div_edicion', role: 'worker' },
-  { id: 'work_9', name: 'José Gregorio Rivas', email: 'jose.r@vtv.gob.ve', cargo: 'Montajista de Archivo Crítico', divisionId: 'div_edicion', role: 'worker' },
-  { id: 'work_10', name: 'Katiuska Díaz', email: 'katiuska.d@vtv.gob.ve', cargo: 'Editora Colorista', divisionId: 'div_edicion', role: 'worker' },
+  { id: 'work_6', name: 'Yusmeri Blanco', email: 'yusmeri.b@vtv.gob.ve', cargo: 'Editora de Guardia Principal', divisionId: 'div_edicion', role: 'worker', password: '12345678', mustChangePassword: true },
+  { id: 'work_7', name: 'Alejandro Colina', email: 'alejandro.c@vtv.gob.ve', cargo: 'Postproductor de Noticias', divisionId: 'div_edicion', role: 'worker', password: '12345678', mustChangePassword: true },
+  { id: 'work_8', name: 'Sofía Martínez', email: 'sofia.m@vtv.gob.ve', cargo: 'Editora de Programas Especiales', divisionId: 'div_edicion', role: 'worker', password: '12345678', mustChangePassword: true },
+  { id: 'work_9', name: 'José Gregorio Rivas', email: 'jose.r@vtv.gob.ve', cargo: 'Montajista de Archivo Crítico', divisionId: 'div_edicion', role: 'worker', password: '12345678', mustChangePassword: true },
+  { id: 'work_10', name: 'Katiuska Díaz', email: 'katiuska.d@vtv.gob.ve', cargo: 'Editora Colorista', divisionId: 'div_edicion', role: 'worker', password: '12345678', mustChangePassword: true },
 
   // Resguardo
-  { id: 'work_11', name: 'Nelson Pineda', email: 'nelson.p@vtv.gob.ve', cargo: 'Administrador de Almacenamiento NAS/SAN', divisionId: 'div_resguardo', role: 'worker' },
-  { id: 'work_12', name: 'Beatriz Ochoa', email: 'beatriz.o@vtv.gob.ve', cargo: 'Operadora de Servidores de Resguardo', divisionId: 'div_resguardo', role: 'worker' },
-  { id: 'work_13', name: 'Frank Zambrano', email: 'frank.z@vtv.gob.ve', cargo: 'Especialista en Backups LTO-9', divisionId: 'div_resguardo', role: 'worker' },
-  { id: 'work_14', name: 'Gabriela Toro', email: 'gabriela.t@vtv.gob.ve', cargo: 'Ingeniera de Redes Audiovisuales', divisionId: 'div_resguardo', role: 'worker' },
+  { id: 'work_11', name: 'Nelson Pineda', email: 'nelson.p@vtv.gob.ve', cargo: 'Administrador de Almacenamiento NAS/SAN', divisionId: 'div_resguardo', role: 'worker', password: '12345678', mustChangePassword: true },
+  { id: 'work_12', name: 'Beatriz Ochoa', email: 'beatriz.o@vtv.gob.ve', cargo: 'Operadora de Servidores de Resguardo', divisionId: 'div_resguardo', role: 'worker', password: '12345678', mustChangePassword: true },
+  { id: 'work_13', name: 'Frank Zambrano', email: 'frank.z@vtv.gob.ve', cargo: 'Especialista en Backups LTO-9', divisionId: 'div_resguardo', role: 'worker', password: '12345678', mustChangePassword: true },
+  { id: 'work_14', name: 'Gabriela Toro', email: 'gabriela.t@vtv.gob.ve', cargo: 'Ingeniera de Redes Audiovisuales', divisionId: 'div_resguardo', role: 'worker', password: '12345678', mustChangePassword: true },
 
   // Noticias
-  { id: 'work_15', name: 'Héctor Guerra', email: 'hector.g@vtv.gob.ve', cargo: 'Editor de Avances Informativos', divisionId: 'div_noticias', role: 'worker' },
-  { id: 'work_16', name: 'Patricia Laya', email: 'patricia.l@vtv.gob.ve', cargo: 'Operadora de Ingesta de Corresponsalías', divisionId: 'div_noticias', role: 'worker' }
+  { id: 'work_15', name: 'Héctor Guerra', email: 'hector.g@vtv.gob.ve', cargo: 'Editor de Avances Informativos', divisionId: 'div_noticias', role: 'worker', password: '12345678', mustChangePassword: true },
+  { id: 'work_16', name: 'Patricia Laya', email: 'patricia.l@vtv.gob.ve', cargo: 'Operadora de Ingesta de Corresponsalías', divisionId: 'div_noticias', role: 'worker', password: '12345678', mustChangePassword: true }
 ];
 
 // Default Coordinators
 export const COORDINATORS = [
-  { id: 'coord_marcos', name: 'Marcos Peña', email: 'marcos.p@vtv.gob.ve', divisionId: 'div_archivo', role: 'coordinator' },
-  { id: 'coord_elena', name: 'Elena Rostova', email: 'elena.r@vtv.gob.ve', divisionId: 'div_edicion', role: 'coordinator' },
-  { id: 'coord_gabriel', name: 'Gabriel Sanoja', email: 'gabriel.s@vtv.gob.ve', divisionId: 'div_resguardo', role: 'coordinator' },
-  { id: 'coord_ricardo', name: 'Ricardo Méndez', email: 'ricardo.m@vtv.gob.ve', divisionId: 'div_noticias', role: 'coordinator' }
+  { id: 'coord_marcos', name: 'Marcos Peña', email: 'marcos.p@vtv.gob.ve', divisionId: 'div_archivo', role: 'coordinator', password: '12345678', mustChangePassword: true },
+  { id: 'coord_elena', name: 'Elena Rostova', email: 'elena.r@vtv.gob.ve', divisionId: 'div_edicion', role: 'coordinator', password: '12345678', mustChangePassword: true },
+  { id: 'coord_gabriel', name: 'Gabriel Sanoja', email: 'gabriel.s@vtv.gob.ve', divisionId: 'div_resguardo', role: 'coordinator', password: '12345678', mustChangePassword: true },
+  { id: 'coord_ricardo', name: 'Ricardo Méndez', email: 'ricardo.m@vtv.gob.ve', divisionId: 'div_noticias', role: 'coordinator', password: '12345678', mustChangePassword: true }
 ];
 
 // Predefined yesterday assignments (needed for Comedor calculations of salientes de noche anterior)

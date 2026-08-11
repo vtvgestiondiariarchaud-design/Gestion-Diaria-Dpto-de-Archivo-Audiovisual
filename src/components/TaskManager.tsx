@@ -8,7 +8,7 @@ import {
   UserCheck, AlertTriangle, Layers, FileText, Printer, Copy, Database,
   Code2, Download, ExternalLink, BarChart3, Eye, Lock, Crown, Scissors,
   FileCheck, Archive, Award, CheckCheck, BellOff, Link2, History,
-  ChevronUp, RotateCcw, Unlock, Sliders
+  ChevronUp, RotateCcw, Unlock, Sliders, Building2
 } from 'lucide-react';
 import { TaskBoard, TaskCard, TaskNotification, TaskStatus, Worker, Division, UserRole } from '../types';
 
@@ -66,13 +66,46 @@ const normalizeToYMD = (dateStr?: string): string => {
   }
 
   try {
-    const d = new Date(trimmed);
+    let parseable = trimmed;
+    if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(trimmed)) {
+      parseable = trimmed.replace(' ', 'T') + '-04:00';
+    }
+    const d = new Date(parseable);
     if (!isNaN(d.getTime())) {
       return getLocalYMD(d);
     }
   } catch {}
 
   return trimmed.slice(0, 10);
+};
+
+// Helper para determinar si una tarea está asociada o fue procesada por un usuario (asignado, creador, ingestado por, editado por, documentado por o finalizado por)
+const isCardAssociatedWithWorker = (card: TaskCard, workerId: string, workerName?: string): boolean => {
+  if (!workerId) return false;
+
+  // 1. Asignado explícitamente en el arreglo
+  if (card.assignedWorkerIds && card.assignedWorkerIds.includes(workerId)) return true;
+
+  // 2. Creador de la tarea
+  if (card.createdByWorkerId === workerId) return true;
+
+  // 3. Procesador explícito por ID de usuario en cualquiera de las etapas
+  if (card.ingestedByWorkerId === workerId) return true;
+  if (card.editedByWorkerId === workerId) return true;
+  if (card.documentedByWorkerId === workerId) return true;
+  if (card.finalizedByWorkerId === workerId) return true;
+  if (card.discardedByWorkerId === workerId) return true;
+
+  // 4. Coincidencia por nombre completo del usuario si está registrado en la etapa
+  if (workerName && workerName.trim()) {
+    const wLower = workerName.toLowerCase().trim();
+    if (card.ingestedByWorkerName && card.ingestedByWorkerName.toLowerCase().trim() === wLower) return true;
+    if (card.editedByWorkerName && card.editedByWorkerName.toLowerCase().trim() === wLower) return true;
+    if (card.documentedByWorkerName && card.documentedByWorkerName.toLowerCase().trim() === wLower) return true;
+    if (card.finalizedByWorkerName && card.finalizedByWorkerName.toLowerCase().trim() === wLower) return true;
+  }
+
+  return false;
 };
 
 // Helpers para cálculo y formateo de duración de material audiovisual
@@ -489,55 +522,85 @@ export interface CardTaskGroup {
 
 // Helper to group linked tasks for report consolidation
 const buildCardTaskGroups = (listCards: TaskCard[], allCards: TaskCard[]): CardTaskGroup[] => {
+  if (!listCards || listCards.length === 0) return [];
+
+  // Mapear todas las tarjetas y relaciones padre-hijo en Map de O(1)
+  const cardById = new Map<string, TaskCard>();
+  const parentsMap = new Map<string, TaskCard[]>();
+  const childCardIds = new Set<string>();
+
+  for (let i = 0; i < allCards.length; i++) {
+    const c = allCards[i];
+    cardById.set(c.id, c);
+    const links = c.linkedTaskIds;
+    if (links && links.length > 0) {
+      for (let j = 0; j < links.length; j++) {
+        const childId = links[j];
+        if (childId !== c.id) {
+          childCardIds.add(childId);
+          let pList = parentsMap.get(childId);
+          if (!pList) {
+            pList = [];
+            parentsMap.set(childId, pList);
+          }
+          pList.push(c);
+        }
+      }
+    }
+  }
+
+  const listCardIds = new Set(listCards.map(c => c.id));
   const visitedIds = new Set<string>();
   const groups: CardTaskGroup[] = [];
 
-  // Mapear todas las sub-tareas hijas (tarjetas cuyos IDs están incluidos en linkedTaskIds de alguna otra tarjeta)
-  const childCardIds = new Set<string>();
-  allCards.forEach(c => {
-    (c.linkedTaskIds || []).forEach(childId => {
-      if (childId !== c.id) {
-        childCardIds.add(childId);
-      }
-    });
-  });
-
-  listCards.forEach(card => {
-    if (visitedIds.has(card.id)) return;
+  for (let i = 0; i < listCards.length; i++) {
+    const card = listCards[i];
+    if (visitedIds.has(card.id)) continue;
 
     const clusterMap = new Map<string, TaskCard>();
-    const queue = [card];
+    const queue: TaskCard[] = [card];
     clusterMap.set(card.id, card);
 
     while (queue.length > 0) {
       const current = queue.shift()!;
-      const linkedIds = current.linkedTaskIds || [];
-      const parentCards = allCards.filter(c => (c.linkedTaskIds || []).includes(current.id));
-      const neighbors = [
-        ...linkedIds.map(id => allCards.find(c => c.id === id)).filter((c): c is TaskCard => Boolean(c)),
-        ...parentCards
-      ];
-
-      neighbors.forEach(neighbor => {
-        if (!clusterMap.has(neighbor.id)) {
-          clusterMap.set(neighbor.id, neighbor);
-          queue.push(neighbor);
+      const linkedIds = current.linkedTaskIds;
+      if (linkedIds && linkedIds.length > 0) {
+        for (let j = 0; j < linkedIds.length; j++) {
+          const neighbor = cardById.get(linkedIds[j]);
+          if (neighbor && !clusterMap.has(neighbor.id)) {
+            clusterMap.set(neighbor.id, neighbor);
+            queue.push(neighbor);
+          }
         }
-      });
+      }
+      const parents = parentsMap.get(current.id);
+      if (parents && parents.length > 0) {
+        for (let j = 0; j < parents.length; j++) {
+          const neighbor = parents[j];
+          if (!clusterMap.has(neighbor.id)) {
+            clusterMap.set(neighbor.id, neighbor);
+            queue.push(neighbor);
+          }
+        }
+      }
     }
 
-    const clusterCards = Array.from(clusterMap.values());
-    clusterCards.forEach(c => {
-      if (listCards.some(lc => lc.id === c.id)) {
+    clusterMap.forEach((c) => {
+      if (listCardIds.has(c.id)) {
         visitedIds.add(c.id);
       }
     });
 
-    const groupCardsInPeriod = clusterCards.filter(c => listCards.some(lc => lc.id === c.id));
-    if (groupCardsInPeriod.length === 0) return;
+    const groupCardsInPeriod: TaskCard[] = [];
+    clusterMap.forEach((c) => {
+      if (listCardIds.has(c.id)) {
+        groupCardsInPeriod.push(c);
+      }
+    });
+
+    if (groupCardsInPeriod.length === 0) continue;
 
     // Designar Tarea Raíz (primaryCard):
-    // Prioridad 1: Tarjeta que NO sea sub-tarea de otra y posea vinculaciones explicitas
     let primaryCard = groupCardsInPeriod.find(c => !childCardIds.has(c.id) && (c.linkedTaskIds || []).length > 0);
     if (!primaryCard) {
       primaryCard = groupCardsInPeriod.find(c => (c.linkedTaskIds || []).length > 0);
@@ -551,12 +614,16 @@ const buildCardTaskGroups = (listCards: TaskCard[], allCards: TaskCard[]): CardT
     }
 
     const subTasks = groupCardsInPeriod.filter(c => c.id !== primaryCard.id);
-    const totalDurationSeconds = groupCardsInPeriod.reduce((sum, c) => sum + parseDurationToSeconds(c.duration), 0);
-    const totalEditedDurationSeconds = groupCardsInPeriod.reduce((sum, c) => {
+    let totalDurationSeconds = 0;
+    let totalEditedDurationSeconds = 0;
+
+    for (let j = 0; j < groupCardsInPeriod.length; j++) {
+      const c = groupCardsInPeriod[j];
       const origSec = parseDurationToSeconds(c.duration);
       const editSec = c.isEdited && c.editedDuration ? parseDurationToSeconds(c.editedDuration) : origSec;
-      return sum + editSec;
-    }, 0);
+      totalDurationSeconds += origSec;
+      totalEditedDurationSeconds += editSec;
+    }
 
     groups.push({
       groupId: primaryCard.id,
@@ -568,7 +635,7 @@ const buildCardTaskGroups = (listCards: TaskCard[], allCards: TaskCard[]): CardT
       totalEditedDurationSeconds,
       totalEditedDurationHHMMSS: formatSecondsToHHMMSS(totalEditedDurationSeconds)
     });
-  });
+  }
 
   return groups;
 };
@@ -940,17 +1007,53 @@ const CustomDatePicker: React.FC<CustomDatePickerProps> = ({
   );
 };
 
-// Helper to format ISO or Date string for <input type="datetime-local" />
+// Helper to format ISO or Date string for <input type="datetime-local" /> in Venezuela time (America/Caracas, UTC-4)
 const formatForDatetimeLocal = (isoStr?: string) => {
   if (!isoStr) return '';
   try {
-    const d = new Date(isoStr);
+    const trimmed = isoStr.trim();
+    if (!trimmed) return '';
+    let parseable = trimmed;
+    if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(trimmed)) {
+      parseable = trimmed.replace(' ', 'T') + '-04:00';
+    }
+    const d = new Date(parseable);
     if (isNaN(d.getTime())) return '';
-    const pad = (n: number) => n < 10 ? '0' + n : n;
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Caracas',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+    const parts = formatter.formatToParts(d);
+    const getPart = (type: string) => parts.find(p => p.type === type)?.value || '00';
+    const year = getPart('year');
+    const month = getPart('month');
+    const day = getPart('day');
+    let hour = getPart('hour');
+    if (hour === '24') hour = '00';
+    const minute = getPart('minute');
+
+    return `${year}-${month}-${day}T${hour}:${minute}`;
   } catch {
     return '';
   }
+};
+
+// Helper to convert datetime-local input string (YYYY-MM-DDTHH:mm) entered in Venezuela time into a valid ISO string
+const parseDatetimeLocalToIso = (datetimeLocalVal?: string): string | undefined => {
+  if (!datetimeLocalVal) return undefined;
+  const trimmed = datetimeLocalVal.trim();
+  if (!trimmed) return undefined;
+
+  const formatted = trimmed.length === 16 ? `${trimmed}:00-04:00` : (trimmed.length === 19 ? `${trimmed}-04:00` : trimmed);
+  const d = new Date(formatted);
+  if (isNaN(d.getTime())) return undefined;
+  return d.toISOString();
 };
 
 function TaskManager({
@@ -986,6 +1089,18 @@ function TaskManager({
       role === 'deputy' ||
       cargo.includes('gerente') ||
       cargo.includes('adjunt') ||
+      email === 'vtvgestiondiariarchaud@gmail.com'
+    );
+  }, [currentSession, currentWorker]);
+
+  // Check if current user is SuperUser (SuperAdmin or Gerente principal)
+  const isSuperUser = useMemo(() => {
+    const role = currentSession?.role || currentWorker?.role || '';
+    const cargo = (currentSession?.cargo || currentWorker?.cargo || '').toLowerCase();
+    const email = (currentSession?.email || currentWorker?.email || '').toLowerCase();
+    return (
+      role === 'superadmin' ||
+      cargo.includes('gerente') ||
       email === 'vtvgestiondiariarchaud@gmail.com'
     );
   }, [currentSession, currentWorker]);
@@ -1082,12 +1197,14 @@ function TaskManager({
   const [reportType, setReportType] = useState<'diario' | 'mensual' | 'anual'>('diario');
   const [reportDate, setReportDate] = useState<string>(() => getLocalYMD());
   const [reportMonth, setReportMonth] = useState<string>(() => getLocalYMD().slice(0, 7));
-  const [reportYear, setReportYear] = useState<string>(() => new Date().getFullYear().toString());
+  const [reportYear, setReportYear] = useState<string>(() => getLocalYMD().slice(0, 4));
   const [reportBoardFilter, setReportBoardFilter] = useState<string>('todos');
   const [reportDivisionFilter, setReportDivisionFilter] = useState<string>('todos');
   const [reportWorkerFilter, setReportWorkerFilter] = useState<string>('todos');
   const [copiedText, setCopiedText] = useState<boolean>(false);
   const [expandedGroupIds, setExpandedGroupIds] = useState<Record<string, boolean>>({});
+  const [superUserSearch, setSuperUserSearch] = useState<string>('');
+  const [selectedWorkerDetailId, setSelectedWorkerDetailId] = useState<string | null>(null);
 
   const toggleGroupExpanded = (groupId: string) => {
     setExpandedGroupIds(prev => ({ ...prev, [groupId]: !prev[groupId] }));
@@ -1385,20 +1502,39 @@ function TaskManager({
 
   // Sorted cards by date descending (newest created tasks always on top)
   const sortedCardsDescending = useMemo(() => {
-    return [...cards].sort((a, b) => getCardTimestamp(b) - getCardTimestamp(a));
+    const mapped = cards.map(c => ({ card: c, ts: getCardTimestamp(c) }));
+    mapped.sort((a, b) => b.ts - a.ts);
+    return mapped.map(x => x.card);
   }, [cards]);
 
   // Helper to match card dates against dateFilter (YYYY-MM-DD)
-  // Solo las tareas creadas o ingestadas en la fecha seleccionada
   const cardMatchesDateFilter = (card: TaskCard, filterDate: string) => {
     if (!filterDate) return true;
-    const dates = [
-      card.createdAt,
-      card.startDate,
-      card.ingestedAt
-    ].filter(Boolean) as string[];
 
-    return dates.some(d => normalizeToYMD(d) === filterDate);
+    // Para la lista de Ingesta
+    if (card.boardId === 'board_ingesta') {
+      const dateStr = card.isIngested ? (card.ingestedAt || card.createdAt) : (card.createdAt || card.startDate);
+      return normalizeToYMD(dateStr) === filterDate;
+    }
+
+    // Para Archivo de Prensa y Archivo de Programación
+    if (card.boardId === 'board_prensa' || card.boardId === 'board_programacion') {
+      const dateStr = (card.isDocumented || card.isFinalized) ? (card.documentedAt || card.finalizedAt || card.createdAt) : (card.createdAt || card.startDate);
+      return normalizeToYMD(dateStr) === filterDate;
+    }
+
+    // Para Gerencia / Administración / Otras Solicitudes
+    if (card.isOtherRequest || card.boardId === 'board_otras_solicitudes' || card.boardId === 'board_administracion' || card.isGerenciaOnly) {
+      const dateStr = card.isFinalized ? (card.finalizedAt || card.createdAt) : (card.createdAt || card.startDate);
+      return normalizeToYMD(dateStr) === filterDate;
+    }
+
+    // Para otras listas
+    const targetStr = (card.isFinalized ? card.finalizedAt : undefined) ||
+                      (card.isDocumented ? card.documentedAt : undefined) ||
+                      (card.isIngested ? card.ingestedAt : undefined) ||
+                      card.createdAt || card.startDate;
+    return normalizeToYMD(targetStr) === filterDate;
   };
 
   // Helper para filtrar tarjetas según las etapas de proceso seleccionadas (Ingestado, Editado, Por Archivar)
@@ -1444,7 +1580,10 @@ function TaskManager({
       if (selectedBoardId !== 'todos' && card.boardId !== selectedBoardId) return false;
 
       // 5. Only my tasks filter
-      if (onlyMyTasks && currentWorkerId && !card.assignedWorkerIds.includes(currentWorkerId)) return false;
+      if (onlyMyTasks && currentWorkerId) {
+        const activeObj = workers.find(w => w.id === currentWorkerId);
+        if (!isCardAssociatedWithWorker(card, currentWorkerId, activeObj?.name)) return false;
+      }
 
       // 6. Search query
       if (searchQuery.trim() !== '') {
@@ -1490,11 +1629,10 @@ function TaskManager({
       // 3. Privacy: Gerencia Exclusive tasks remain hidden except for Gerente & Adjunta
       if (card.isGerenciaOnly && !isGerenciaUser) return false;
 
-      // 4. Only my tasks filter (matches assigned workers OR creator)
+      // 4. Only my tasks filter (matches assigned workers, creator or processing steps)
       if (onlyMyTasks && currentWorkerId) {
-        const isAssigned = card.assignedWorkerIds && card.assignedWorkerIds.includes(currentWorkerId);
-        const isCreator = card.createdByWorkerId === currentWorkerId;
-        if (!isAssigned && !isCreator) return false;
+        const activeObj = workers.find(w => w.id === currentWorkerId);
+        if (!isCardAssociatedWithWorker(card, currentWorkerId, activeObj?.name)) return false;
       }
 
       // 5. Search query
@@ -1610,6 +1748,27 @@ function TaskManager({
     return discardedCards.slice(start, start + TASKS_PER_PAGE);
   }, [discardedCards, currentPageDescartados]);
 
+  // Memoized Header & Board card counters for zero-overhead rendering
+  const cardHeaderCounts = useMemo(() => {
+    let finalized = 0;
+    let discarded = 0;
+    for (let i = 0; i < cards.length; i++) {
+      const c = cards[i];
+      if (c.isDiscarded) discarded++;
+      else if (c.isFinalized) finalized++;
+    }
+    return { finalized, discarded };
+  }, [cards]);
+
+  const productionBoardCardCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (let i = 0; i < productionCards.length; i++) {
+      const bId = productionCards[i].boardId;
+      counts[bId] = (counts[bId] || 0) + 1;
+    }
+    return counts;
+  }, [productionCards]);
+
   // Helper to resolve documentation technician details for documented tasks
   const getDocumentedInfo = (card: TaskCard) => {
     if (!card.isDocumented) {
@@ -1684,9 +1843,8 @@ function TaskManager({
       }
 
       if (reportWorkerFilter !== 'todos') {
-        const isAssigned = card.assignedWorkerIds.includes(reportWorkerFilter);
-        const isCreator = card.createdByWorkerId === reportWorkerFilter;
-        if (!isAssigned && !isCreator) return false;
+        const wObj = workers.find(w => w.id === reportWorkerFilter);
+        if (!isCardAssociatedWithWorker(card, reportWorkerFilter, wObj?.name)) return false;
       }
 
       return true;
@@ -1720,7 +1878,7 @@ function TaskManager({
     // Si fue descartado PERO está ingestado, aparece en la lista de ingesta
     const ingestadosEnPeriodo = baseCards.filter(c => {
       if (!c.isIngested) return false;
-      const ingStr = c.ingestedAt || c.startDate || c.createdAt;
+      const ingStr = c.ingestedAt || c.createdAt;
       return matchesPeriod(ingStr);
     });
     
@@ -1728,7 +1886,7 @@ function TaskManager({
     const totalIngestaSeconds = ingestadosEnPeriodo.reduce((sum, c) => sum + parseDurationToSeconds(c.duration), 0);
 
     // Editados en el período (excluyendo descartados)
-    const editadosEnPeriodo = baseCards.filter(c => c.isEdited && !c.isDiscarded && matchesPeriod(c.editedAt || c.startDate || c.createdAt));
+    const editadosEnPeriodo = baseCards.filter(c => c.isEdited && !c.isDiscarded && matchesPeriod(c.editedAt || c.createdAt));
     
     // Tiempo Ahorrado por Filtro de Ingesta: resta de (tiempo material original - tiempo material editado)
     const tiempoAhorradoSeconds = editadosEnPeriodo.reduce((sum, c) => {
@@ -1748,26 +1906,34 @@ function TaskManager({
     const ingestadosYEditadosCount = ingestedAndEditedList.length;
     const ingestedAndEditedGroups = buildCardTaskGroups(ingestedAndEditedList, cards);
 
-    // 2. LISTA 2: Material Archivado ("Para Archivar" / Documentados / Finalizados) y Logros de Otras Solicitudes
-    // Regla 1: El material descartado NO aparece en Material Archivado ni en Logros (solo en Ingesta si fue ingestado).
-    // Regla 2: Solo va a salir el material en Lista 2 (Material Archivado y Logros) si está marcado como FINALIZADO.
-    // Regla 3: Aparecen en la lista si fueron marcados en el rango de fecha solicitado del reporte.
-    // Regla 4: En material archivado y logros se cuenta como 1 logro por familia de tareas (si tiene sub-tareas vinculadas cuenta como 1 solo).
+    // 2. LISTA 2: Material Archivado ("Por Archivar" para Prensa y Programación, "Ingestado" para Ingesta, "Finalizado" para Gerencia)
     const documentadosEnPeriodo = baseCards.filter(c => {
       if (c.isDiscarded) return false;
+
+      // Ingesta: basta estar Ingestado
+      if (c.boardId === 'board_ingesta') {
+        if (!c.isIngested) return false;
+        return matchesPeriod(c.ingestedAt || c.createdAt);
+      }
+
+      // Archivo de Prensa y Archivo de Programación: basta estar Por Archivar
+      if (c.boardId === 'board_prensa' || c.boardId === 'board_programacion') {
+        if (!c.isDocumented && !c.isFinalized) return false;
+        return matchesPeriod(c.documentedAt || c.finalizedAt || c.createdAt);
+      }
+
+      // Gerencia / Administración / Otras Solicitudes: Requiere estar Finalizado
       const isFin = Boolean(c.isFinalized || c.status === 'Finalizado');
-      if (!isFin) return false; // Requisito estricto: estar marcado como finalizado
-      const isArch = Boolean(c.isDocumented || c.isFinalized || c.status === 'Finalizado');
-      if (!isArch) return false;
-      const archDateStr = c.finalizedAt || c.documentedAt || c.startDate || c.createdAt;
+      if (!isFin) return false;
+      const archDateStr = c.finalizedAt || c.documentedAt || c.createdAt;
       return matchesPeriod(archDateStr);
     });
 
     // Materiales Descartados en el período
-    const descartadosEnPeriodo = baseCards.filter(c => c.isDiscarded && matchesPeriod(c.discardedAt || c.startDate || c.createdAt));
+    const descartadosEnPeriodo = baseCards.filter(c => c.isDiscarded && matchesPeriod(c.discardedAt || c.createdAt));
 
     // Finalizados en el período (excluyendo descartados)
-    const finalizadosEnPeriodo = baseCards.filter(c => (c.isFinalized || c.status === 'Finalizado') && !c.isDiscarded && matchesPeriod(c.finalizedAt || c.startDate || c.createdAt));
+    const finalizadosEnPeriodo = baseCards.filter(c => (c.isFinalized || c.status === 'Finalizado') && !c.isDiscarded && matchesPeriod(c.finalizedAt || c.createdAt));
 
     // Logros de solicitudes (no administrativas ni gerenciales, excluyendo descartados, requiriendo estar finalizados)
     const departmentAchievements = baseCards.filter(c => {
@@ -1776,7 +1942,7 @@ function TaskManager({
       if (c.isDiscarded) return false;
       const isFin = Boolean(c.isFinalized || c.status === 'Finalizado');
       if (!isFin) return false; // Requisito estricto: estar marcado como finalizado
-      const achDateStr = c.finalizedAt || c.documentedAt || c.startDate || c.createdAt;
+      const achDateStr = c.documentedAt || c.finalizedAt || c.createdAt;
       if (!matchesPeriod(achDateStr)) return false;
       return Boolean(c.isDepartmentAchievement || c.isOtherRequest);
     });
@@ -1814,9 +1980,9 @@ function TaskManager({
       // Regla estricta: Solo contar tareas con c.isIngested marcado como true
       const dayTasks = baseCards.filter(c => {
         if (!c.isIngested) return false;
-        const ingStr = (c.ingestedAt || c.startDate || c.createdAt || '').trim();
+        const ingStr = (c.ingestedAt || c.createdAt || '').trim();
         if (!ingStr) return false;
-        return normalizeToYMD(ingStr) === dateStr || ingStr.slice(0, 10) === dateStr;
+        return normalizeToYMD(ingStr) === dateStr;
       });
 
       const dayIngestedSeconds = dayTasks.reduce((sum, c) => sum + parseDurationToSeconds(c.duration), 0);
@@ -1916,8 +2082,8 @@ function TaskManager({
       const bName = boardObj?.name || (c.isOtherRequest ? 'Otras Solicitudes' : 'VTV');
 
       // 1. Ingestado
-      if (c.isIngested && matchesPeriod(c.ingestedAt || c.startDate || c.createdAt)) {
-        const ts = c.ingestedAt || c.startDate || c.createdAt;
+      if (c.isIngested && matchesPeriod(c.ingestedAt || c.createdAt)) {
+        const ts = c.ingestedAt || c.createdAt;
         dailyActivityEvents.push({
           id: `ing_${c.id}_${ts}`,
           cardId: c.id,
@@ -1935,8 +2101,8 @@ function TaskManager({
       }
 
       // 2. Editado
-      if (c.isEdited && !c.isDiscarded && matchesPeriod(c.editedAt || c.startDate || c.createdAt)) {
-        const ts = c.editedAt || c.startDate || c.createdAt;
+      if (c.isEdited && !c.isDiscarded && matchesPeriod(c.editedAt || c.createdAt)) {
+        const ts = c.editedAt || c.createdAt;
         dailyActivityEvents.push({
           id: `edit_${c.id}_${ts}`,
           cardId: c.id,
@@ -1954,8 +2120,8 @@ function TaskManager({
       }
 
       // 3. Documentado / Por Archivar
-      if (c.isDocumented && !c.isDiscarded && matchesPeriod(c.documentedAt || c.startDate || c.createdAt)) {
-        const ts = c.documentedAt || c.startDate || c.createdAt;
+      if (c.isDocumented && !c.isDiscarded && matchesPeriod(c.documentedAt || c.createdAt)) {
+        const ts = c.documentedAt || c.createdAt;
         dailyActivityEvents.push({
           id: `doc_${c.id}_${ts}`,
           cardId: c.id,
@@ -1973,8 +2139,8 @@ function TaskManager({
       }
 
       // 4. Finalizado
-      if (c.isFinalized && !c.isDiscarded && matchesPeriod(c.finalizedAt || c.startDate || c.createdAt)) {
-        const ts = c.finalizedAt || c.startDate || c.createdAt;
+      if (c.isFinalized && !c.isDiscarded && matchesPeriod(c.finalizedAt || c.createdAt)) {
+        const ts = c.finalizedAt || c.createdAt;
         dailyActivityEvents.push({
           id: `fin_${c.id}_${ts}`,
           cardId: c.id,
@@ -1992,8 +2158,8 @@ function TaskManager({
       }
 
       // 5. Descartado
-      if (c.isDiscarded && matchesPeriod(c.discardedAt || c.startDate || c.createdAt)) {
-        const ts = c.discardedAt || c.startDate || c.createdAt;
+      if (c.isDiscarded && matchesPeriod(c.discardedAt || c.createdAt)) {
+        const ts = c.discardedAt || c.createdAt;
         dailyActivityEvents.push({
           id: `disc_${c.id}_${ts}`,
           cardId: c.id,
@@ -2046,6 +2212,180 @@ function TaskManager({
       deliveredTotalEditedHHMMSS: formatSecondsToHHMMSS(deliveredTotalEditedSeconds)
     };
   }, [cards, reportType, reportDate, reportMonth, reportYear, reportBoardFilter, reportDivisionFilter, reportWorkerFilter, isGerenciaUser, isDivisionHeadUser, currentSession, currentWorker, workers, productionBoards]);
+
+  // Raw Superuser Metrics Memo (heavy computation independent of search filters)
+  const superuserRawWorkerMetrics = useMemo(() => {
+    if (!isSuperUser) return null;
+
+    const matchesPeriod = (dateStr?: string) => {
+      if (!dateStr) return false;
+      const trimmed = dateStr.trim();
+      if (!trimmed) return false;
+      const ymdLocal = normalizeToYMD(trimmed);
+
+      if (reportType === 'diario') return ymdLocal === reportDate;
+      if (reportType === 'mensual') return ymdLocal.slice(0, 7) === reportMonth;
+      if (reportType === 'anual') return ymdLocal.slice(0, 4) === reportYear;
+      return true;
+    };
+
+    const isCoordinatorRole = (w: Worker) => {
+      const role = w.role || '';
+      const cargo = (w.cargo || '').toLowerCase();
+      return (
+        role === 'coordinator' ||
+        role === 'deputy' ||
+        role === 'superadmin' ||
+        cargo.includes('coordinador') ||
+        cargo.includes('jefe') ||
+        cargo.includes('gerente')
+      );
+    };
+
+    const calculateForUser = (w: Worker) => {
+      const division = divisions.find(d => d.id === w.divisionId);
+      const divName = (division ? division.name : '').toLowerCase();
+
+      const userCards = cards.filter(c => {
+        if (c.isGerenciaOnly && !isGerenciaUser) return false;
+        return isCardAssociatedWithWorker(c, w.id, w.name);
+      });
+
+      const totalCompletedCards = userCards.filter(c => {
+        if (c.isDiscarded) return false;
+        if (c.boardId === 'board_ingesta' || divName.includes('ingesta')) {
+          return Boolean(c.isIngested);
+        }
+        if (c.boardId === 'board_prensa' || c.boardId === 'board_programacion' || divName.includes('prensa') || divName.includes('programaci')) {
+          return Boolean(c.isDocumented || c.isFinalized || c.status === 'Finalizado');
+        }
+        return Boolean(c.isFinalized || c.status === 'Finalizado');
+      });
+
+      const periodCompletedCards = totalCompletedCards.filter(c => {
+        let dateStr = c.createdAt;
+        if (c.boardId === 'board_ingesta' || divName.includes('ingesta')) {
+          dateStr = c.ingestedAt || c.createdAt;
+        } else if (c.boardId === 'board_prensa' || c.boardId === 'board_programacion' || divName.includes('prensa') || divName.includes('programaci')) {
+          dateStr = c.documentedAt || c.finalizedAt || c.createdAt;
+        } else {
+          dateStr = c.finalizedAt || c.documentedAt || c.ingestedAt || c.createdAt;
+        }
+        return matchesPeriod(dateStr);
+      });
+
+      const inProgressCards = userCards.filter(c => {
+        if (c.isDiscarded) return false;
+        if (c.boardId === 'board_ingesta' || divName.includes('ingesta')) {
+          return !c.isIngested;
+        }
+        if (c.boardId === 'board_prensa' || c.boardId === 'board_programacion' || divName.includes('prensa') || divName.includes('programaci')) {
+          return !c.isDocumented && !c.isFinalized && c.status !== 'Finalizado';
+        }
+        return !c.isFinalized && c.status !== 'Finalizado';
+      });
+
+      // Consolidación por familia de tareas vinculadas (cuenta 1 por familia)
+      const totalCompletedGroups = buildCardTaskGroups(totalCompletedCards, cards);
+      const periodCompletedGroups = buildCardTaskGroups(periodCompletedCards, cards);
+      const inProgressGroups = buildCardTaskGroups(inProgressCards, cards);
+
+      return {
+        worker: w,
+        divisionName: division ? division.name : 'Sin Área',
+        totalCompletedCount: totalCompletedGroups.length,
+        periodCompletedCount: periodCompletedGroups.length,
+        inProgressCount: inProgressGroups.length,
+        periodGroups: periodCompletedGroups,
+        totalGroups: totalCompletedGroups,
+        totalItemCardsCount: totalCompletedCards.length
+      };
+    };
+
+    const allTechs = workers.filter(w => !isCoordinatorRole(w)).map(calculateForUser);
+    const allCoords = workers.filter(w => isCoordinatorRole(w)).map(calculateForUser);
+
+    return { allTechs, allCoords };
+  }, [isSuperUser, workers, cards, divisions, reportType, reportDate, reportMonth, reportYear, isGerenciaUser]);
+
+  // Superuser Metrics Memo: Fast filtering by search query and division filter
+  const superuserWorkerMetrics = useMemo(() => {
+    if (!isSuperUser || !superuserRawWorkerMetrics) return null;
+
+    const { allTechs, allCoords } = superuserRawWorkerMetrics;
+    const q = superUserSearch.toLowerCase().trim();
+
+    const filteredTechs = allTechs
+      .filter(item => {
+        if (!q) return true;
+        return (
+          item.worker.name.toLowerCase().includes(q) ||
+          item.worker.cargo.toLowerCase().includes(q) ||
+          item.divisionName.toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => b.periodCompletedCount - a.periodCompletedCount || b.totalCompletedCount - a.totalCompletedCount || a.worker.name.localeCompare(b.worker.name));
+
+    const filteredCoords = allCoords
+      .filter(item => {
+        if (!q) return true;
+        return (
+          item.worker.name.toLowerCase().includes(q) ||
+          item.worker.cargo.toLowerCase().includes(q) ||
+          item.divisionName.toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => b.periodCompletedCount - a.periodCompletedCount || b.totalCompletedCount - a.totalCompletedCount || a.worker.name.localeCompare(b.worker.name));
+
+    const totalTechPeriod = allTechs.reduce((sum, t) => sum + t.periodCompletedCount, 0);
+    const totalTechAllTime = allTechs.reduce((sum, t) => sum + t.totalCompletedCount, 0);
+    const totalCoordPeriod = allCoords.reduce((sum, c) => sum + c.periodCompletedCount, 0);
+    const totalCoordAllTime = allCoords.reduce((sum, c) => sum + c.totalCompletedCount, 0);
+
+    // Agrupamiento por división
+    const byDivision = divisions.map(div => {
+      const divTechs = filteredTechs.filter(t => t.worker.divisionId === div.id);
+      const divCoords = filteredCoords.filter(c => c.worker.divisionId === div.id);
+      const periodTechCount = divTechs.reduce((sum, t) => sum + t.periodCompletedCount, 0);
+      const periodCoordCount = divCoords.reduce((sum, c) => sum + c.periodCompletedCount, 0);
+      return {
+        division: div,
+        techs: divTechs,
+        coords: divCoords,
+        totalPeriodCount: periodTechCount + periodCoordCount,
+        totalAllTimeCount: divTechs.reduce((sum, t) => sum + t.totalCompletedCount, 0) + divCoords.reduce((sum, c) => sum + c.totalCompletedCount, 0)
+      };
+    }).filter(d => {
+      if (reportDivisionFilter !== 'todos' && d.division.id !== reportDivisionFilter) return false;
+      if (!q) return d.techs.length > 0 || d.coords.length > 0;
+      return d.techs.length > 0 || d.coords.length > 0 || d.division.name.toLowerCase().includes(q);
+    });
+
+    // Personal sin división explícita asignada
+    const unassignedTechs = filteredTechs.filter(t => !divisions.some(d => d.id === t.worker.divisionId));
+    const unassignedCoords = filteredCoords.filter(c => !divisions.some(d => d.id === c.worker.divisionId));
+    if ((unassignedTechs.length > 0 || unassignedCoords.length > 0) && (reportDivisionFilter === 'todos')) {
+      byDivision.push({
+        division: { id: 'sin_division', name: 'General / Sin Área Asignada', description: 'Personal de apoyo o sin división específica' } as Division,
+        techs: unassignedTechs,
+        coords: unassignedCoords,
+        totalPeriodCount: unassignedTechs.reduce((sum, t) => sum + t.periodCompletedCount, 0) + unassignedCoords.reduce((sum, c) => sum + c.periodCompletedCount, 0),
+        totalAllTimeCount: unassignedTechs.reduce((sum, t) => sum + t.totalCompletedCount, 0) + unassignedCoords.reduce((sum, c) => sum + c.totalCompletedCount, 0)
+      });
+    }
+
+    return {
+      technicians: filteredTechs,
+      coordinators: filteredCoords,
+      byDivision,
+      totalTechPeriod,
+      totalTechAllTime,
+      totalCoordPeriod,
+      totalCoordAllTime,
+      allTechsCount: allTechs.length,
+      allCoordsCount: allCoords.length
+    };
+  }, [isSuperUser, superuserRawWorkerMetrics, superUserSearch, reportDivisionFilter, divisions]);
 
   // Stage Toggle Handler for Cards directly from view or modal
   const handleToggleStage = (card: TaskCard, stage: 'ingested' | 'edited' | 'documented' | 'finalized' | 'discarded', e?: React.MouseEvent) => {
@@ -2315,12 +2655,12 @@ function TaskManager({
     setTaskDiscardedAt(undefined);
     setTaskLinkedTaskIds([]);
 
-    const today = new Date().toISOString().split('T')[0];
+    const today = getLocalYMD();
     setTaskStartDate(today);
     
     const nextWeek = new Date();
     nextWeek.setDate(nextWeek.getDate() + 7);
-    setTaskDueDate(nextWeek.toISOString().split('T')[0]);
+    setTaskDueDate(getLocalYMD(nextWeek));
     
     if (currentWorkerId) {
       setTaskAssignedWorkerIds([currentWorkerId]);
@@ -2348,8 +2688,8 @@ function TaskManager({
     setTaskTitle(card.title);
     setTaskDesc(card.description);
     setTaskPriority(card.priority || 'media');
-    setTaskStartDate(card.startDate || new Date().toISOString().split('T')[0]);
-    setTaskDueDate(card.dueDate || new Date().toISOString().split('T')[0]);
+    setTaskStartDate(card.startDate || getLocalYMD());
+    setTaskDueDate(card.dueDate || getLocalYMD());
     setTaskAssignedWorkerIds(card.assignedWorkerIds || []);
     setTaskChecklist(card.checklist || []);
     setNewChecklistItemText('');
@@ -3017,6 +3357,26 @@ function TaskManager({
       });
     }
 
+    if (isSuperUser && superuserWorkerMetrics) {
+      reportText += `\n--- DESGLOSE SUPERUSUARIO: METRICAS POR DIVISION (1 FAMILIA POR TAREA) ---\n`;
+      superuserWorkerMetrics.byDivision.forEach((dGroup) => {
+        reportText += `\n[ DIVISIÓN: ${dGroup.division.name.toUpperCase()} ] - ${dGroup.totalPeriodCount} familias completadas en el período (${dGroup.totalAllTimeCount} histórico)\n`;
+        if (dGroup.coords.length > 0) {
+          reportText += `  • Coordinadores / Jefes:\n`;
+          dGroup.coords.forEach((c) => {
+            reportText += `    - ${c.worker.name} (${c.worker.cargo}): ${c.periodCompletedCount} en período | ${c.totalCompletedCount} histórico\n`;
+          });
+        }
+        if (dGroup.techs.length > 0) {
+          reportText += `  • Personal Técnico:\n`;
+          dGroup.techs.forEach((t) => {
+            reportText += `    - ${t.worker.name} (${t.worker.cargo}): ${t.periodCompletedCount} en período | ${t.totalCompletedCount} histórico\n`;
+          });
+        }
+      });
+      reportText += `\n`;
+    }
+
     reportText += `--------------------------------------------------\n`;
     reportText += `Gerencia de Archivo y Gestión Diaria - VTV\n`;
 
@@ -3137,7 +3497,7 @@ function TaskManager({
           <CheckCircle2 className="w-4 h-4 text-emerald-400" />
           <span>Tareas Finalizadas</span>
           <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-emerald-500/10 text-emerald-300 font-mono font-bold">
-            {cards.filter(c => !c.isDiscarded && c.isFinalized).length}
+            {cardHeaderCounts.finalized}
           </span>
         </button>
 
@@ -3152,7 +3512,7 @@ function TaskManager({
           <Trash2 className="w-4 h-4 text-red-400" />
           <span>Material Descartado</span>
           <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-red-500/10 text-red-300 font-mono font-bold">
-            {cards.filter(c => c.isDiscarded).length}
+            {cardHeaderCounts.discarded}
           </span>
         </button>
 
@@ -3203,7 +3563,7 @@ function TaskManager({
                     <span className="w-2 h-2 rounded-full bg-cyan-400" />
                     <span>{b.name}</span>
                     <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-950/60 text-slate-400 font-mono">
-                      {productionCards.filter(c => c.boardId === b.id).length}
+                      {productionBoardCardCounts[b.id] || 0}
                     </span>
                   </button>
 
@@ -3302,11 +3662,8 @@ function TaskManager({
                 const savedSec = Math.max(0, origSec - editSec);
 
                 return (
-                  <motion.div
+                  <div
                     key={card.id}
-                    layout
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
                     className="glass-card p-4 rounded-2xl border border-white/10 bg-slate-900/90 hover:border-cyan-500/40 transition-all space-y-3 relative group"
                   >
                     {/* Header Badges */}
@@ -3559,7 +3916,7 @@ function TaskManager({
                         </select>
                       </div>
                     </div>
-                  </motion.div>
+                  </div>
                 );
               })
             )}
@@ -3671,11 +4028,8 @@ function TaskManager({
                 const isAdminBoard = card.boardId === 'board_administracion';
 
                 return (
-                  <motion.div
+                  <div
                     key={card.id}
-                    layout
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
                     className="glass-card p-4 rounded-2xl border border-white/10 bg-slate-900/90 hover:border-amber-500/40 transition-all space-y-3 relative group"
                   >
                     <div className="flex items-center justify-between flex-wrap gap-1">
@@ -3861,7 +4215,7 @@ function TaskManager({
                         </button>
                       </div>
                     </div>
-                  </motion.div>
+                  </div>
                 );
               })
             )}
@@ -3950,11 +4304,8 @@ function TaskManager({
                 const bObj = productionBoards.find(b => b.id === card.boardId);
 
                 return (
-                  <motion.div
+                  <div
                     key={card.id}
-                    layout
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
                     className="glass-card p-4 rounded-2xl border border-emerald-500/30 bg-slate-900/90 space-y-3 relative"
                   >
                     <div className="flex items-center justify-between">
@@ -4052,7 +4403,7 @@ function TaskManager({
                         <span>Reabrir Tarea</span>
                       </button>
                     )}
-                  </motion.div>
+                  </div>
                 );
               })
             )}
@@ -4145,11 +4496,8 @@ function TaskManager({
               {paginatedDiscardedCards.map(card => {
                 const bObj = productionBoards.find(b => b.id === card.boardId);
                 return (
-                  <motion.div
+                  <div
                     key={card.id}
-                    layout
-                    initial={{ opacity: 0, scale: 0.98 }}
-                    animate={{ opacity: 1, scale: 1 }}
                     className="glass-card p-4 rounded-2xl border border-red-500/20 bg-slate-900/80 hover:border-red-500/40 transition-all space-y-3 relative group"
                   >
                     <div className="flex items-start justify-between gap-2">
@@ -4229,7 +4577,7 @@ function TaskManager({
                         </button>
                       )}
                     </div>
-                  </motion.div>
+                  </div>
                 );
               })}
             </div>
@@ -4436,6 +4784,247 @@ function TaskManager({
                 <p className="text-[10px] text-slate-400">Tareas finalizadas (tareas vinculadas cuentan como 1 solo item).</p>
               </div>
             </div>
+
+            {/* APARTADO EXCLUSIVO DE SUPERUSUARIO: TAREAS COMPLETADAS POR PERSONAL AGRUPADO POR DIVISIÓN */}
+            {isSuperUser && superuserWorkerMetrics && (
+              <div className="pt-4 border-t border-purple-500/30">
+                <div className="p-5 rounded-2xl bg-slate-950/90 border border-purple-500/40 shadow-[0_0_35px_rgba(168,85,247,0.15)] space-y-6">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-purple-500/20">
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase font-mono tracking-wider bg-purple-500/20 text-purple-300 border border-purple-500/40 flex items-center gap-1.5">
+                          <Crown className="w-3.5 h-3.5 text-amber-400" />
+                          Vista Exclusiva de Superusuario
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-mono">Control por Divisiones</span>
+                      </div>
+                      <h3 className="text-lg font-black text-white tracking-tight flex items-center gap-2">
+                        Métricas de Tareas Completadas Desglosadas por Área / División
+                      </h3>
+                      <p className="text-xs text-slate-400">
+                        Visualización jerárquica del personal técnico y coordinadores agrupados por cada división operativa. Tareas vinculadas contabilizan 1 por familia.
+                      </p>
+                    </div>
+
+                    {/* Search Filter for Superuser Section */}
+                    <div className="relative w-full md:w-64">
+                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={superUserSearch}
+                        onChange={(e) => setSuperUserSearch(e.target.value)}
+                        placeholder="Buscar división, técnico o jefe..."
+                        className="w-full pl-9 pr-8 py-1.5 bg-slate-900 border border-purple-500/30 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-purple-400"
+                      />
+                      {superUserSearch && (
+                        <button
+                          type="button"
+                          onClick={() => setSuperUserSearch('')}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Resumen Superior de Totales por Categoría */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+                    <div className="p-3.5 rounded-xl bg-amber-950/20 border border-amber-500/30 flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] font-bold text-amber-400 uppercase block">Técnicos (Período)</span>
+                        <span className="text-xl font-black text-amber-200 font-mono">{superuserWorkerMetrics.totalTechPeriod} familias</span>
+                      </div>
+                      <Users className="w-6 h-6 text-amber-400/50" />
+                    </div>
+
+                    <div className="p-3.5 rounded-xl bg-amber-950/10 border border-amber-500/20 flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase block">Técnicos (Histórico)</span>
+                        <span className="text-xl font-black text-white font-mono">{superuserWorkerMetrics.totalTechAllTime} familias</span>
+                      </div>
+                      <CheckCircle2 className="w-6 h-6 text-slate-500/50" />
+                    </div>
+
+                    <div className="p-3.5 rounded-xl bg-purple-950/20 border border-purple-500/30 flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] font-bold text-purple-400 uppercase block">Coordinadores (Período)</span>
+                        <span className="text-xl font-black text-purple-200 font-mono">{superuserWorkerMetrics.totalCoordPeriod} familias</span>
+                      </div>
+                      <Crown className="w-6 h-6 text-purple-400/50" />
+                    </div>
+
+                    <div className="p-3.5 rounded-xl bg-purple-950/10 border border-purple-500/20 flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase block">Coordinadores (Histórico)</span>
+                        <span className="text-xl font-black text-white font-mono">{superuserWorkerMetrics.totalCoordAllTime} familias</span>
+                      </div>
+                      <Award className="w-6 h-6 text-slate-500/50" />
+                    </div>
+                  </div>
+
+                  {/* BLOQUES DE PERSONAL AGRUPADOS POR CADA DIVISIÓN */}
+                  <div className="space-y-6 pt-2">
+                    {superuserWorkerMetrics.byDivision.length > 0 ? (
+                      superuserWorkerMetrics.byDivision.map((divGroup) => (
+                        <div key={`div_block_${divGroup.division.id}`} className="space-y-3 bg-slate-900/60 p-4 rounded-2xl border border-purple-500/30">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-purple-500/20">
+                            <div>
+                              <h4 className="text-sm font-black text-white tracking-tight flex items-center gap-2">
+                                <Building2 className="w-4 h-4 text-cyan-400" />
+                                <span>{divGroup.division.name}</span>
+                              </h4>
+                              {divGroup.division.description && (
+                                <p className="text-[11px] text-slate-400 mt-0.5">{divGroup.division.description}</p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="px-2.5 py-1 rounded-lg text-xs font-mono font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
+                                {divGroup.totalPeriodCount} familias en período
+                              </span>
+                              <span className="px-2.5 py-1 rounded-lg text-xs font-mono text-slate-400 bg-slate-950 border border-white/10">
+                                {divGroup.totalAllTimeCount} histórico
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 pt-1">
+                            {/* COORDINADORES Y JEFES DE ESTA DIVISIÓN */}
+                            <div className="space-y-2 bg-slate-950/80 p-3 rounded-xl border border-purple-500/20">
+                              <div className="flex items-center justify-between pb-1">
+                                <span className="text-[11px] font-bold text-purple-300 uppercase tracking-wider flex items-center gap-1.5">
+                                  <Crown className="w-3.5 h-3.5 text-amber-400" />
+                                  Coordinadores y Jefes ({divGroup.coords.length})
+                                </span>
+                              </div>
+                              {divGroup.coords.length > 0 ? (
+                                <div className="overflow-x-auto rounded-lg border border-white/5">
+                                  <table className="w-full text-left text-xs">
+                                    <thead className="bg-purple-950/40 text-purple-300 uppercase text-[9px] font-bold border-b border-purple-500/20">
+                                      <tr>
+                                        <th className="p-2">Coordinador</th>
+                                        <th className="p-2 text-center">En Período</th>
+                                        <th className="p-2 text-center">Histórico</th>
+                                        <th className="p-2 text-center">En Proceso</th>
+                                        <th className="p-2 text-right">Detalle</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-white/5 text-slate-300">
+                                      {divGroup.coords.map((item) => (
+                                        <tr key={`div_c_${item.worker.id}`} className="hover:bg-purple-950/20 transition-colors">
+                                          <td className="p-2 font-bold text-white">
+                                            <div className="text-xs flex items-center gap-1">
+                                              <span>{item.worker.name}</span>
+                                              <Crown className="w-3 h-3 text-amber-400 shrink-0" />
+                                            </div>
+                                            <div className="text-[10px] text-purple-300 font-normal">{item.worker.cargo}</div>
+                                          </td>
+                                          <td className="p-2 text-center font-mono font-black text-emerald-400">
+                                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30">
+                                              {item.periodCompletedCount}
+                                            </span>
+                                          </td>
+                                          <td className="p-2 text-center font-mono text-slate-300">
+                                            {item.totalCompletedCount}
+                                          </td>
+                                          <td className="p-2 text-center font-mono text-amber-400 text-[10px]">
+                                            {item.inProgressCount > 0 ? `${item.inProgressCount} act.` : '-'}
+                                          </td>
+                                          <td className="p-2 text-right">
+                                            <button
+                                              type="button"
+                                              onClick={() => setSelectedWorkerDetailId(item.worker.id)}
+                                              className="px-2 py-0.5 rounded bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/30 text-[10px] font-bold transition-all cursor-pointer inline-flex items-center gap-1"
+                                              title="Ver tareas del período de este coordinador"
+                                            >
+                                              <Eye className="w-3 h-3 text-purple-400" />
+                                              <span>Ver</span>
+                                            </button>
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              ) : (
+                                <div className="p-3 text-center text-[11px] text-slate-500 italic">
+                                  Sin coordinadores registrados en esta división.
+                                </div>
+                              )}
+                            </div>
+
+                            {/* PERSONAL TÉCNICO DE ESTA DIVISIÓN */}
+                            <div className="space-y-2 bg-slate-950/80 p-3 rounded-xl border border-amber-500/20">
+                              <div className="flex items-center justify-between pb-1">
+                                <span className="text-[11px] font-bold text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
+                                  <Users className="w-3.5 h-3.5 text-amber-400" />
+                                  Personal Técnico ({divGroup.techs.length})
+                                </span>
+                              </div>
+                              {divGroup.techs.length > 0 ? (
+                                <div className="overflow-x-auto rounded-lg border border-white/5">
+                                  <table className="w-full text-left text-xs">
+                                    <thead className="bg-amber-950/40 text-amber-300 uppercase text-[9px] font-bold border-b border-amber-500/20">
+                                      <tr>
+                                        <th className="p-2">Técnico</th>
+                                        <th className="p-2 text-center">En Período</th>
+                                        <th className="p-2 text-center">Histórico</th>
+                                        <th className="p-2 text-center">En Proceso</th>
+                                        <th className="p-2 text-right">Detalle</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-white/5 text-slate-300">
+                                      {divGroup.techs.map((item) => (
+                                        <tr key={`div_t_${item.worker.id}`} className="hover:bg-amber-950/20 transition-colors">
+                                          <td className="p-2 font-bold text-white">
+                                            <div className="text-xs">{item.worker.name}</div>
+                                            <div className="text-[10px] text-slate-400 font-normal">{item.worker.cargo}</div>
+                                          </td>
+                                          <td className="p-2 text-center font-mono font-black text-emerald-400">
+                                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30">
+                                              {item.periodCompletedCount}
+                                            </span>
+                                          </td>
+                                          <td className="p-2 text-center font-mono text-slate-300">
+                                            {item.totalCompletedCount}
+                                          </td>
+                                          <td className="p-2 text-center font-mono text-amber-400 text-[10px]">
+                                            {item.inProgressCount > 0 ? `${item.inProgressCount} act.` : '-'}
+                                          </td>
+                                          <td className="p-2 text-right">
+                                            <button
+                                              type="button"
+                                              onClick={() => setSelectedWorkerDetailId(item.worker.id)}
+                                              className="px-2 py-0.5 rounded bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/30 text-[10px] font-bold transition-all cursor-pointer inline-flex items-center gap-1"
+                                              title="Ver tareas del período de este técnico"
+                                            >
+                                              <Eye className="w-3 h-3 text-purple-400" />
+                                              <span>Ver</span>
+                                            </button>
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              ) : (
+                                <div className="p-3 text-center text-[11px] text-slate-500 italic">
+                                  Sin técnicos registrados en esta división.
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="p-6 text-center text-xs text-slate-400 italic bg-slate-900/40 rounded-xl border border-white/5">
+                        No se encontraron divisiones ni personal con el filtro o búsqueda actual.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* MONTHLY CALENDAR GRID (When reportType === 'mensual') - Posicionado justo debajo de los resumenes de métricas */}
             {reportType === 'mensual' && (
@@ -5254,7 +5843,7 @@ function TaskManager({
                               value={formatForDatetimeLocal(taskIngestedAt)}
                               onChange={(e) => {
                                 if (e.target.value) {
-                                  setTaskIngestedAt(new Date(e.target.value).toISOString());
+                                  setTaskIngestedAt(parseDatetimeLocalToIso(e.target.value));
                                 }
                               }}
                               className={`w-full bg-slate-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-cyan-200 font-mono focus:outline-none focus:border-cyan-500 ${!canManageTasks ? 'opacity-70 cursor-not-allowed bg-slate-900' : 'cursor-pointer'}`}
@@ -5304,7 +5893,7 @@ function TaskManager({
                               value={formatForDatetimeLocal(taskEditedAt)}
                               onChange={(e) => {
                                 if (e.target.value) {
-                                  setTaskEditedAt(new Date(e.target.value).toISOString());
+                                  setTaskEditedAt(parseDatetimeLocalToIso(e.target.value));
                                 }
                               }}
                               className={`w-full bg-slate-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-blue-200 font-mono focus:outline-none focus:border-blue-500 ${!canManageTasks ? 'opacity-70 cursor-not-allowed bg-slate-900' : 'cursor-pointer'}`}
@@ -5354,7 +5943,7 @@ function TaskManager({
                               value={formatForDatetimeLocal(taskDocumentedAt)}
                               onChange={(e) => {
                                 if (e.target.value) {
-                                  setTaskDocumentedAt(new Date(e.target.value).toISOString());
+                                  setTaskDocumentedAt(parseDatetimeLocalToIso(e.target.value));
                                 }
                               }}
                               className={`w-full bg-slate-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-amber-200 font-mono focus:outline-none focus:border-amber-500 ${!canManageTasks ? 'opacity-70 cursor-not-allowed bg-slate-900' : 'cursor-pointer'}`}
@@ -5405,7 +5994,7 @@ function TaskManager({
                               value={formatForDatetimeLocal(taskDiscardedAt)}
                               onChange={(e) => {
                                 if (e.target.value) {
-                                  setTaskDiscardedAt(new Date(e.target.value).toISOString());
+                                  setTaskDiscardedAt(parseDatetimeLocalToIso(e.target.value));
                                 }
                               }}
                               className={`w-full bg-slate-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-red-200 font-mono focus:outline-none focus:border-red-500 ${!canManageTasks ? 'opacity-70 cursor-not-allowed bg-slate-900' : 'cursor-pointer'}`}
@@ -5451,7 +6040,7 @@ function TaskManager({
                               value={formatForDatetimeLocal(taskFinalizedAt)}
                               onChange={(e) => {
                                 if (e.target.value) {
-                                  setTaskFinalizedAt(new Date(e.target.value).toISOString());
+                                  setTaskFinalizedAt(parseDatetimeLocalToIso(e.target.value));
                                 }
                               }}
                               className={`w-full bg-slate-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-emerald-200 font-mono focus:outline-none focus:border-emerald-500 ${!canManageTasks ? 'opacity-70 cursor-not-allowed bg-slate-900' : 'cursor-pointer'}`}
@@ -5945,6 +6534,159 @@ function TaskManager({
             </motion.div>
           </div>
         )}
+      </AnimatePresence>
+
+      {/* MODAL DETALLE TAREAS COMPLETADAS POR USUARIO (SUPERUSUARIO - SOLO PERIODO SOLICITADO) */}
+      <AnimatePresence>
+        {selectedWorkerDetailId && (() => {
+          const w = workers.find(work => work.id === selectedWorkerDetailId);
+          if (!w) return null;
+
+          const isCoord = w.role === 'coordinator' || w.role === 'deputy' || w.role === 'superadmin' || w.cargo.toLowerCase().includes('coordinador') || w.cargo.toLowerCase().includes('jefe') || w.cargo.toLowerCase().includes('gerente');
+          const divObj = divisions.find(d => d.id === w.divisionId);
+
+          const matchesPeriod = (dateStr?: string) => {
+            if (!dateStr) return false;
+            const trimmed = dateStr.trim();
+            if (!trimmed) return false;
+            const ymdLocal = normalizeToYMD(trimmed);
+
+            if (reportType === 'diario') return ymdLocal === reportDate;
+            if (reportType === 'mensual') return ymdLocal.slice(0, 7) === reportMonth;
+            if (reportType === 'anual') return ymdLocal.slice(0, 4) === reportYear;
+            return true;
+          };
+
+          const periodLabel = reportType === 'diario'
+            ? `Día ${reportDate}`
+            : reportType === 'mensual'
+            ? `Mes ${reportMonth}`
+            : `Año ${reportYear}`;
+
+          // Filtrar estrictamente por tareas procesadas por el usuario EN EL PERÍODO SOLICITADO
+          const userPeriodCompletedCards = cards.filter(c => {
+            if (c.isGerenciaOnly && !isGerenciaUser) return false;
+            if (!isCardAssociatedWithWorker(c, w.id, w.name)) return false;
+            if (c.isDiscarded) return false;
+
+            const divName = (divObj ? divObj.name : '').toLowerCase();
+
+            let isCompleted = false;
+            let targetDate = c.createdAt;
+
+            if (c.boardId === 'board_ingesta' || divName.includes('ingesta')) {
+              isCompleted = Boolean(c.isIngested);
+              targetDate = c.ingestedAt || c.createdAt;
+            } else if (c.boardId === 'board_prensa' || c.boardId === 'board_programacion' || divName.includes('prensa') || divName.includes('programaci')) {
+              isCompleted = Boolean(c.isDocumented || c.isFinalized || c.status === 'Finalizado');
+              targetDate = c.documentedAt || c.finalizedAt || c.createdAt;
+            } else {
+              isCompleted = Boolean(c.isFinalized || c.status === 'Finalizado');
+              targetDate = c.finalizedAt || c.documentedAt || c.ingestedAt || c.createdAt;
+            }
+
+            if (!isCompleted) return false;
+            return matchesPeriod(targetDate);
+          });
+
+          const userPeriodCompletedGroups = buildCardTaskGroups(userPeriodCompletedCards, cards);
+
+          return (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md overflow-y-auto">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="bg-slate-900 border border-purple-500/40 rounded-2xl w-full max-w-2xl overflow-hidden shadow-2xl my-8 space-y-0"
+              >
+                <div className="p-5 border-b border-purple-500/30 bg-slate-950 flex items-center justify-between">
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-base font-bold text-white flex items-center gap-2">
+                        {isCoord ? <Crown className="w-4 h-4 text-purple-400" /> : <Users className="w-4 h-4 text-amber-400" />}
+                        <span>{w.name}</span>
+                      </h3>
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                        {isCoord ? 'Coordinador' : 'Técnico'}
+                      </span>
+                      {divObj && (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
+                          {divObj.name}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-400 mt-1">
+                      {w.cargo} • Período: <strong className="text-purple-300 font-mono">{periodLabel}</strong> • Tareas del Período: <strong className="text-emerald-400 font-mono">{userPeriodCompletedGroups.length} familias</strong> ({userPeriodCompletedCards.length} ítems)
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setSelectedWorkerDetailId(null)}
+                    className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-white/10 transition-all cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="p-5 space-y-3 max-h-[60vh] overflow-y-auto">
+                  {userPeriodCompletedGroups.length > 0 ? (
+                    userPeriodCompletedGroups.map((group) => {
+                      const c = group.primaryCard;
+                      const board = productionBoards.find(b => b.id === c.boardId);
+                      return (
+                        <div key={`detail_g_${group.groupId}`} className="p-3 rounded-xl bg-slate-950 border border-white/10 hover:border-purple-500/40 transition-all flex items-center justify-between gap-3 text-xs">
+                          <div className="space-y-1 max-w-[70%]">
+                            <div className="font-bold text-white flex items-center gap-2">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                              <span className="truncate">{c.title}</span>
+                              {group.isLinkedGroup && (
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                                  Familia ({group.linkedCards.length + 1} tareas)
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[10px] text-slate-400 flex items-center gap-2 font-mono flex-wrap">
+                              <span className="text-cyan-300">{board?.name || 'VTV'}</span>
+                              <span>•</span>
+                              <span>Duración sumada: {group.totalDurationHHMMSS}</span>
+                              {c.finalizedAt && (
+                                <>
+                                  <span>•</span>
+                                  <span>Fin: {normalizeToYMD(c.finalizedAt)}</span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => {
+                              setSelectedWorkerDetailId(null);
+                              handleOpenEditTask(c);
+                            }}
+                            className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 text-[10px] font-bold border border-white/10 transition-all shrink-0 cursor-pointer"
+                          >
+                            Ver Tarea
+                          </button>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="p-8 text-center text-xs text-slate-400 italic bg-slate-950/60 rounded-xl border border-white/5">
+                      Este usuario no registra tareas completadas en el período seleccionado ({periodLabel}).
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-4 border-t border-white/10 bg-slate-950 text-right">
+                  <button
+                    onClick={() => setSelectedWorkerDetailId(null)}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer"
+                  >
+                    Cerrar
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          );
+        })()}
       </AnimatePresence>
 
       {/* NEW BOARD MODAL */}

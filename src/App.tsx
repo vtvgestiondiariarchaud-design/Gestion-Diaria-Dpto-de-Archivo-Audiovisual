@@ -383,9 +383,12 @@ export default function App() {
   const syncData = async () => {
     setLoading(true);
     try {
-      // Intentar obtener configuración en caliente del backend (Render, etc.) para evitar re-compilaciones
+      // Intentar obtener configuración en caliente del backend (Render, etc.) para evitar re-compilaciones (con timeout de 1.5s)
       try {
-        const configRes = await fetch('/api/config');
+        const controller = new AbortController();
+        const configTimeout = setTimeout(() => controller.abort(), 1500);
+        const configRes = await fetch('/api/config', { signal: controller.signal });
+        clearTimeout(configTimeout);
         if (configRes.ok) {
           const configData = await configRes.json();
           if (configData.supabaseUrl && configData.supabaseAnonKey) {
@@ -397,22 +400,33 @@ export default function App() {
         console.warn('Configuración dinámica no disponible, usando variables de entorno estáticas:', err);
       }
 
-      const fetchedDivisions = await db.fetchDivisions();
-      const fetchedWorkers = await db.fetchWorkers();
+      // Parallel fetch all data sources concurrently for maximum speed
+      const [
+        fetchedDivisions,
+        fetchedWorkers,
+        fetchedAssignments,
+        fetchedRequests,
+        fetchedFreeDayRequests,
+        fetchedTaskBoards,
+        fetchedTaskCards,
+        fetchedTaskNotifs
+      ] = await Promise.all([
+        db.fetchDivisions(),
+        db.fetchWorkers(),
+        db.fetchAssignments(),
+        db.fetchRequests(),
+        db.fetchFreeDayRequests(),
+        db.fetchTaskBoards(),
+        db.fetchTaskCards(),
+        db.fetchTaskNotifications()
+      ]);
+
       if (currentSession) {
         const activeW = fetchedWorkers.find(w => w.id === currentSession.userId);
         if (activeW && activeW.isLiteMode !== undefined) {
           setIsLiteMode(activeW.isLiteMode);
         }
       }
-      const fetchedAssignments = await db.fetchAssignments();
-      const fetchedRequests = await db.fetchRequests();
-      const fetchedFreeDayRequests = await db.fetchFreeDayRequests();
-
-      // Fetch Tasks System Data
-      const fetchedTaskBoards = await db.fetchTaskBoards();
-      const fetchedTaskCards = await db.fetchTaskCards();
-      const fetchedTaskNotifs = await db.fetchTaskNotifications();
 
       // Ensure default initial task boards exist if empty
       let finalBoards = fetchedTaskBoards;
@@ -624,6 +638,18 @@ export default function App() {
   const areEqualJson = (a: any, b: any): boolean => {
     if (a === b) return true;
     if (!a || !b) return false;
+    if (Array.isArray(a) && Array.isArray(b)) {
+      if (a.length !== b.length) return false;
+      if (a.length === 0) return true;
+      // Fast identity/timestamp comparison for first and last elements before stringifying
+      const firstA = a[0];
+      const firstB = b[0];
+      const lastA = a[a.length - 1];
+      const lastB = b[b.length - 1];
+      if (firstA?.id !== firstB?.id || lastA?.id !== lastB?.id) return false;
+      if ((firstA?.updatedAt || firstA?.updated_at) !== (firstB?.updatedAt || firstB?.updated_at)) return false;
+      if ((lastA?.updatedAt || lastA?.updated_at) !== (lastB?.updatedAt || lastB?.updated_at)) return false;
+    }
     return JSON.stringify(a) === JSON.stringify(b);
   };
 
@@ -696,21 +722,32 @@ export default function App() {
   useEffect(() => {
     syncData();
 
-    // Auto-polling interval (every 1 minute / 60000 ms) as requested
+    // Smart background polling interval (every 15 seconds when tab is active)
     const pollInterval = setInterval(() => {
-      syncDataSilent();
-    }, 60000);
+      if (document.visibilityState === 'visible') {
+        syncDataSilent();
+      }
+    }, 15000);
 
-    // Debouncer for Supabase Realtime channel events
+    // Debouncer for Supabase Realtime channel events (150ms for near-instant updates)
     let realtimeDebounceTimer: NodeJS.Timeout | null = null;
     const handleRealtimeEvent = () => {
       if (realtimeDebounceTimer) clearTimeout(realtimeDebounceTimer);
       realtimeDebounceTimer = setTimeout(() => {
         syncDataSilent();
-      }, 400);
+      }, 150);
     };
 
-    // Supabase Realtime channel subscription
+    // Immediate sync on tab focus or visibility change (device wake-up / unlock)
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        syncDataSilent();
+      }
+    };
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+
+    // Supabase Realtime channel subscription covering ALL tables for multi-device live sync
     let channel: any = null;
     if (supabase) {
       try {
@@ -718,6 +755,12 @@ export default function App() {
           .on('postgres_changes', { event: '*', schema: 'public', table: 'task_cards' }, handleRealtimeEvent)
           .on('postgres_changes', { event: '*', schema: 'public', table: 'task_boards' }, handleRealtimeEvent)
           .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_assignments' }, handleRealtimeEvent)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_change_requests' }, handleRealtimeEvent)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'free_day_requests' }, handleRealtimeEvent)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'workers' }, handleRealtimeEvent)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'divisions' }, handleRealtimeEvent)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'task_notifications' }, handleRealtimeEvent)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'physical_audiovisual_materials' }, handleRealtimeEvent)
           .subscribe();
       } catch (err) {
         console.warn('Realtime subscription error:', err);
@@ -727,6 +770,8 @@ export default function App() {
     return () => {
       clearInterval(pollInterval);
       if (realtimeDebounceTimer) clearTimeout(realtimeDebounceTimer);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       if (supabase && channel) {
         supabase.removeChannel(channel);
       }
@@ -1313,28 +1358,12 @@ export default function App() {
               </div>
             </div>
 
-            {/* Cloud Status */}
+            {/* Google Sheets Status */}
             <div className="flex flex-col items-center gap-2 w-full">
-              <div className="flex items-center justify-center gap-2 py-1.5 px-3 bg-slate-900/60 rounded-xl border border-white/5 font-mono text-[10px] uppercase font-bold text-center w-full">
-                <span className={`w-2 h-2 rounded-full ${
-                  dbStatus === 'connected' ? 'bg-cyan-400 animate-pulse' :
-                  dbStatus === 'error' ? 'bg-amber-400 animate-pulse' : 'bg-slate-600'
-                }`} />
-                {dbStatus === 'connected' ? (
-                  <span className="text-cyan-400">Canal Seguro Supabase Cloud Activo</span>
-                ) : dbStatus === 'error' ? (
-                  <span className="text-amber-400">Error de Conexión (Supabase con Error o Tablas faltantes)</span>
-                ) : (
-                  <span className="text-slate-400">Supabase Desconectado / Sin Configurar</span>
-                )}
+              <div className="flex items-center justify-center gap-2 py-1.5 px-3 bg-slate-900/60 rounded-xl border border-emerald-500/20 font-mono text-[10px] uppercase font-bold text-center w-full">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-emerald-400">Base de Datos Centralizada Google Sheets (Activa)</span>
               </div>
-              
-              {dbStatus === 'error' && (
-                <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-2xl text-[11px] text-slate-300 w-full text-center leading-normal">
-                  <span className="text-amber-400 font-bold block mb-1">⚠️ Error en la Base de Datos Supabase</span>
-                  Ocurrió un error de sincronización. Contacta al Administrador/Gerente para verificar la conexión.
-                </div>
-              )}
             </div>
 
             {/* Tabs Selector */}
