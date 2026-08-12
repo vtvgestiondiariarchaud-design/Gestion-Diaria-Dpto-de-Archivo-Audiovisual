@@ -21,9 +21,11 @@ import {
   fetchFromGoogleSheets,
   loadLocalUserPins,
   saveLocalUserPins,
-  deduplicatePersonnel
+  deduplicatePersonnel,
+  getFormattedDateTime
 } from './services/apiService';
 import { Navbar } from './components/Navbar';
+import { canUserFinalizeSignal } from './utils/permissions';
 import { UserRoleSelectorModal } from './components/UserRoleSelectorModal';
 import { MaterialListModule } from './components/MaterialListModule';
 import { MaterialModal } from './components/MaterialModal';
@@ -63,6 +65,7 @@ export default function App() {
   const [presetFamilyId, setPresetFamilyId] = useState<string | undefined>();
   const [presetTitle, setPresetTitle] = useState<string | undefined>();
   const [presetDivision, setPresetDivision] = useState<DivisionType | undefined>();
+  const [presetIsRequestTask, setPresetIsRequestTask] = useState<boolean | undefined>();
 
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
@@ -262,7 +265,13 @@ export default function App() {
 
   // Update Material Signal Status
   const handleUpdateSignalStatus = (signalId: string, newStatus: MaterialStatus) => {
-    const timestampStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const timestampStr = getFormattedDateTime();
+
+    const checkFin = canUserFinalizeSignal(state.currentUser);
+    if (newStatus === 'Finalizado' && !checkFin.allowed) {
+      showToast(checkFin.reason || 'Solo los Jefes y Coordinadores pueden marcar como Finalizado.', 'error');
+      return;
+    }
 
     setState((prev) => {
       const updatedMaterials = prev.materials.map((mat) => {
@@ -302,7 +311,17 @@ export default function App() {
 
   // Toggle single boolean field independently
   const handleToggleSignalBoolean = (signalId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized') => {
-    const timestampStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const timestampStr = getFormattedDateTime();
+
+    const matTarget = state.materials.find((m) => m.id === signalId);
+    const willBeFinalized = flag === 'isFinalized' && (!matTarget || !matTarget.isFinalized);
+    if (willBeFinalized) {
+      const checkFin = canUserFinalizeSignal(state.currentUser);
+      if (!checkFin.allowed) {
+        showToast(checkFin.reason || 'Solo los Jefes y Coordinadores pueden finalizar tareas.', 'error');
+        return;
+      }
+    }
 
     setState((prev) => {
       const updatedMaterials = prev.materials.map((mat) => {
@@ -351,7 +370,7 @@ export default function App() {
 
   // Assign or Unassign Signal to Documentalista
   const handleAssignSignal = (signalId: string, assignToUser: string | null) => {
-    const timestampStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const timestampStr = getFormattedDateTime();
 
     setState((prev) => {
       const updatedMaterials = prev.materials.map((mat) => {
@@ -388,9 +407,43 @@ export default function App() {
     }
   };
 
+  // Assign Multiple Persons to Signal or Task
+  const handleAssignMultiplePersons = (signalId: string, assignedPersons: string[]) => {
+    const timestampStr = getFormattedDateTime();
+
+    setState((prev) => {
+      const updatedMaterials = prev.materials.map((mat) => {
+        if (mat.id === signalId) {
+          const mainAssignee = assignedPersons.length > 0 ? assignedPersons[0] : undefined;
+          return {
+            ...mat,
+            assignedPersons,
+            assignedTo: mainAssignee || mat.assignedTo,
+            assignedAt: timestampStr,
+          };
+        }
+        return mat;
+      });
+
+      saveLocalMaterials(updatedMaterials);
+      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts);
+      return { ...prev, materials: updatedMaterials };
+    });
+
+    showToast(`Asignación de equipo actualizada (${assignedPersons.length} persona(s)).`);
+  };
+
   // Batch Toggle Family Boolean
   const handleBatchToggleFamilyBoolean = (familyId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized', value: boolean) => {
-    const timestampStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const timestampStr = getFormattedDateTime();
+
+    if (flag === 'isFinalized' && value) {
+      const checkFin = canUserFinalizeSignal(state.currentUser);
+      if (!checkFin.allowed) {
+        showToast(checkFin.reason || 'Solo los Jefes y Coordinadores pueden finalizar tareas.', 'error');
+        return;
+      }
+    }
 
     setState((prev) => {
       const updatedMaterials = prev.materials.map((mat) => {
@@ -426,7 +479,15 @@ export default function App() {
 
   // Batch Update Family Status
   const handleBatchUpdateFamilyStatus = (familyId: string, newStatus: MaterialStatus) => {
-    const timestampStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const timestampStr = getFormattedDateTime();
+
+    if (newStatus === 'Finalizado') {
+      const checkFin = canUserFinalizeSignal(state.currentUser);
+      if (!checkFin.allowed) {
+        showToast(checkFin.reason || 'Solo los Jefes y Coordinadores pueden marcar como Finalizado.', 'error');
+        return;
+      }
+    }
 
     setState((prev) => {
       const updatedMaterials = prev.materials.map((mat) => {
@@ -750,10 +811,16 @@ export default function App() {
   };
 
   // Open Material Modal with presets
-  const handleOpenMaterialModal = (familyId?: string, title?: string, division?: DivisionType) => {
+  const handleOpenMaterialModal = (
+    familyId?: string,
+    title?: string,
+    division?: DivisionType,
+    isRequestTask?: boolean
+  ) => {
     setPresetFamilyId(familyId);
     setPresetTitle(title);
     setPresetDivision(division);
+    setPresetIsRequestTask(isRequestTask);
     setIsMaterialModalOpen(true);
   };
 
@@ -821,12 +888,14 @@ export default function App() {
           <MaterialListModule
             materials={state.materials}
             currentUser={state.currentUser}
+            personnel={state.personnel}
             monthlyArchives={state.monthlyArchives}
             onUpdateSignalStatus={handleUpdateSignalStatus}
             onBatchUpdateFamilyStatus={handleBatchUpdateFamilyStatus}
             onToggleSignalBoolean={handleToggleSignalBoolean}
             onBatchToggleFamilyBoolean={handleBatchToggleFamilyBoolean}
             onAssignSignal={handleAssignSignal}
+            onAssignMultiplePersons={handleAssignMultiplePersons}
             onOpenNewMaterialModal={handleOpenMaterialModal}
             onDeleteSignal={handleDeleteSignal}
             onEditSignal={handleOpenEditSignal}
@@ -885,6 +954,7 @@ export default function App() {
         presetFamilyId={presetFamilyId}
         presetTitle={presetTitle}
         presetDivision={presetDivision}
+        presetIsRequestTask={presetIsRequestTask}
       />
 
       {editingSignal && (

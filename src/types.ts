@@ -39,6 +39,10 @@ export interface MaterialSignal {
   assignedTo?: string;       // User Name assigned to document the material
   assignedToRole?: string;   // Role of assigned user
   assignedAt?: string;       // Date/Time when assigned
+  assignedPersons?: string[]; // Array of multiple assigned user names
+
+  // Category & Requests
+  isRequestTask?: boolean;   // True if item belongs to "Solicitudes y otras tareas"
 
   // Independent Booleans
   isIngested: boolean;   // Ingestado

@@ -37,9 +37,11 @@ function initSheets() {
     sheetMat.appendRow([
       "ID", "ID Familia", "Tipo Señal", "Título / Descripción", "División", 
       "Duración", "Fecha Creación", "Creado Por", "Rol Creador", "Estado", 
+      "Es Solicitud", "Asignado A", "Rol Asignado", "Fecha Asignación",
+      "Ingestado", "Catalogado", "Finalizado",
       "Catalogado Por", "Fecha Catalogación", "Finalizado Por", "Fecha Finalizado", "Notas"
     ]);
-    sheetMat.getRange(1, 1, 1, 15).setFontWeight("bold").setBackground("#1e293b").setFontColor("#ffffff");
+    sheetMat.getRange(1, 1, 1, 22).setFontWeight("bold").setBackground("#1e293b").setFontColor("#ffffff");
   }
   
   // Hoja Personal

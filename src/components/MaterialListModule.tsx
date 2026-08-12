@@ -5,22 +5,28 @@ import {
   DivisionType, 
   SignalType, 
   UserProfile, 
+  Personnel,
   MonthlyArchiveLog 
 } from '../types';
 import { 
   groupMaterialsByFamily, 
   exportMaterialsToCSV, 
-  generateMonthlyArchiveLog 
+  generateMonthlyArchiveLog,
+  getFormattedDateTime,
+  formatDurationHHMMSS,
+  parseAnyDate
 } from '../services/apiService';
 import {
   canUserCreateMaterial,
   canUserAssignSignal,
   canUserUnassignSignal,
-  canUserCatalogSignal
+  canUserCatalogSignal,
+  canUserFinalizeSignal
 } from '../utils/permissions';
 import { MaterialContainerCard } from './MaterialContainerCard';
 import { ExportConfirmModal } from './ExportConfirmModal';
 import { MonthlyArchiveModal } from './MonthlyArchiveModal';
+import { MultiAssignModal } from './MultiAssignModal';
 import { 
   Film, 
   Search, 
@@ -40,19 +46,27 @@ import {
   Sparkles,
   UserCheck,
   UserX,
-  Lock
+  Lock,
+  Calendar,
+  Filter,
+  FileText,
+  ClipboardList,
+  Users,
+  X
 } from 'lucide-react';
 
 interface MaterialListModuleProps {
   materials: MaterialSignal[];
   currentUser: UserProfile;
+  personnel?: Personnel[];
   monthlyArchives?: MonthlyArchiveLog[];
   onUpdateSignalStatus: (signalId: string, newStatus: MaterialStatus) => void;
   onBatchUpdateFamilyStatus: (familyId: string, newStatus: MaterialStatus) => void;
   onToggleSignalBoolean?: (signalId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized') => void;
   onBatchToggleFamilyBoolean?: (familyId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized', value: boolean) => void;
   onAssignSignal?: (signalId: string, assignToUser: string | null) => void;
-  onOpenNewMaterialModal: (familyId?: string, title?: string, division?: DivisionType) => void;
+  onAssignMultiplePersons?: (signalId: string, assignedPersons: string[]) => void;
+  onOpenNewMaterialModal: (familyId?: string, title?: string, division?: DivisionType, isRequestTask?: boolean) => void;
   onDeleteSignal: (signalId: string) => void;
   onEditSignal?: (signal: MaterialSignal) => void;
   onPurgeFinalizedMaterials?: (signalIds: string[], monthlyLog: MonthlyArchiveLog) => void;
@@ -65,12 +79,14 @@ const ITEMS_PER_PAGE = 20;
 export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
   materials,
   currentUser,
+  personnel = [],
   monthlyArchives = [],
   onUpdateSignalStatus,
   onBatchUpdateFamilyStatus,
   onToggleSignalBoolean,
   onBatchToggleFamilyBoolean,
   onAssignSignal,
+  onAssignMultiplePersons,
   onOpenNewMaterialModal,
   onDeleteSignal,
   onEditSignal,
@@ -79,11 +95,15 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
   onClearMonthlyArchives,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  const [folderTab, setFolderTab] = useState<'active' | 'finalized' | 'all'>('active');
+  const [folderTab, setFolderTab] = useState<'active' | 'requests' | 'finalized' | 'all'>('active');
   const [selectedDivision, setSelectedDivision] = useState<DivisionType | 'Todas'>('Todas');
   const [selectedStatus, setSelectedStatus] = useState<MaterialStatus | 'Todos'>('Todos');
   const [selectedSignalType, setSelectedSignalType] = useState<SignalType | 'Todos'>('Todos');
+  const [selectedDate, setSelectedDate] = useState<string>(''); // YYYY-MM-DD
   const [viewMode, setViewMode] = useState<'families' | 'flat'>('families');
+
+  // Multi-person assign modal
+  const [multiAssignSignal, setMultiAssignSignal] = useState<MaterialSignal | null>(null);
 
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
@@ -98,19 +118,34 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
   // Permission check to add material
   const canCreate = canUserCreateMaterial(currentUser);
 
+  // Check if any filter is active
+  const hasActiveFilters = Boolean(
+    searchTerm.trim() ||
+    selectedDivision !== 'Todas' ||
+    selectedStatus !== 'Todos' ||
+    selectedSignalType !== 'Todos' ||
+    selectedDate !== ''
+  );
+
   // Filtered materials
   const filteredMaterials = useMemo(() => {
     return materials.filter((mat) => {
       // Folder Separation logic
-      if (folderTab === 'active' && mat.isFinalized) return false;
-      if (folderTab === 'finalized' && !mat.isFinalized) return false;
+      if (folderTab === 'active') {
+        if (mat.isFinalized || mat.isRequestTask) return false;
+      } else if (folderTab === 'requests') {
+        if (!mat.isRequestTask) return false;
+      } else if (folderTab === 'finalized') {
+        if (!mat.isFinalized) return false;
+      }
 
       // Search
       const matchesSearch =
         mat.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
         mat.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
         mat.familyId.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        mat.createdBy.toLowerCase().includes(searchTerm.toLowerCase());
+        mat.createdBy.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (mat.creationDate && mat.creationDate.toLowerCase().includes(searchTerm.toLowerCase()));
 
       // Division
       const matchesDivision =
@@ -124,9 +159,37 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
       const matchesSignalType =
         selectedSignalType === 'Todos' || mat.signalType === selectedSignalType;
 
-      return matchesSearch && matchesDivision && matchesStatus && matchesSignalType;
-    }).sort((a, b) => (b.creationDate || '').localeCompare(a.creationDate || ''));
-  }, [materials, folderTab, searchTerm, selectedDivision, selectedStatus, selectedSignalType]);
+      // Date Filter (matches creationDate, catalogedAt, or finalizedAt)
+      let matchesDate = true;
+      if (selectedDate) {
+        const [sYear, sMonth, sDay] = selectedDate.split('-').map(Number);
+        const matDate = parseAnyDate(mat.creationDate);
+        const catDate = mat.catalogedAt ? parseAnyDate(mat.catalogedAt) : null;
+        const finDate = mat.finalizedAt ? parseAnyDate(mat.finalizedAt) : null;
+
+        const isCreationMatch =
+          matDate.getFullYear() === sYear &&
+          matDate.getMonth() + 1 === sMonth &&
+          matDate.getDate() === sDay;
+
+        const isCatMatch = catDate ? (
+          catDate.getFullYear() === sYear &&
+          catDate.getMonth() + 1 === sMonth &&
+          catDate.getDate() === sDay
+        ) : false;
+
+        const isFinMatch = finDate ? (
+          finDate.getFullYear() === sYear &&
+          finDate.getMonth() + 1 === sMonth &&
+          finDate.getDate() === sDay
+        ) : false;
+
+        matchesDate = isCreationMatch || isCatMatch || isFinMatch;
+      }
+
+      return matchesSearch && matchesDivision && matchesStatus && matchesSignalType && matchesDate;
+    }).sort((a, b) => parseAnyDate(b.creationDate).getTime() - parseAnyDate(a.creationDate).getTime());
+  }, [materials, folderTab, searchTerm, selectedDivision, selectedStatus, selectedSignalType, selectedDate]);
 
   // Grouped into families
   const familyGroups = useMemo(() => {
@@ -136,7 +199,7 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
   // Whenever filters change, reset pagination to page 1
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, selectedDivision, selectedStatus, selectedSignalType, folderTab, viewMode]);
+  }, [searchTerm, selectedDivision, selectedStatus, selectedSignalType, selectedDate, folderTab, viewMode]);
 
   // Pagination Calculations
   const totalItems = viewMode === 'families' ? familyGroups.length : filteredMaterials.length;
@@ -155,8 +218,9 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
   // Metrics summary
   const totalCount = materials.length;
   const uniqueFamilyCount = groupMaterialsByFamily(materials).length;
-  const activeCount = materials.filter((m) => !m.isFinalized).length;
-  const porArchivarCount = materials.filter((m) => m.isCataloged && !m.isFinalized).length;
+  const activeCount = materials.filter((m) => !m.isFinalized && !m.isRequestTask).length;
+  const requestsCount = materials.filter((m) => m.isRequestTask).length;
+  const porArchivarCount = materials.filter((m) => (m.isCataloged || m.isRequestTask) && !m.isFinalized).length;
   const finalizadoCount = materials.filter((m) => m.isFinalized).length;
 
   // Handle Export Finalized Materials
@@ -255,6 +319,18 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Modals */}
+      <MultiAssignModal
+        isOpen={multiAssignSignal !== null}
+        onClose={() => setMultiAssignSignal(null)}
+        signal={multiAssignSignal}
+        personnel={personnel}
+        onSaveAssignments={(sigId, names) => {
+          if (onAssignMultiplePersons) {
+            onAssignMultiplePersons(sigId, names);
+          }
+        }}
+      />
+
       {pendingMonthlyLog && (
         <ExportConfirmModal
           isOpen={isExportConfirmOpen}
@@ -379,7 +455,7 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
 
       {/* Carpetas Separadas Header Selector */}
       <div className="flex flex-wrap items-center justify-between gap-3 p-2 bg-gradient-to-r from-slate-900 via-slate-850 to-slate-900 border border-slate-800 rounded-2xl">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center flex-wrap gap-2">
           <button
             onClick={() => setFolderTab('active')}
             className={`px-4 py-2.5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all ${
@@ -390,6 +466,18 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
           >
             <FolderOpen className="w-4 h-4 text-blue-300" />
             <span>Ingesta y Trabajo Activo ({activeCount})</span>
+          </button>
+
+          <button
+            onClick={() => setFolderTab('requests')}
+            className={`px-4 py-2.5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all ${
+              folderTab === 'requests'
+                ? 'bg-purple-600 text-white shadow-lg ring-1 ring-purple-400/50'
+                : 'bg-slate-950/60 text-purple-300 hover:text-white hover:bg-purple-950/60 border border-purple-800/60'
+            }`}
+          >
+            <ClipboardList className="w-4 h-4 text-purple-300" />
+            <span>Solicitudes y Otras Tareas ({requestsCount})</span>
           </button>
 
           <button
@@ -455,6 +543,44 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
 
           {/* Filters Row */}
           <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+            {/* Status Filter */}
+            <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5">
+              <Filter className="w-3.5 h-3.5 text-purple-400 mr-1.5 shrink-0" />
+              <select
+                value={selectedStatus}
+                onChange={(e) => setSelectedStatus(e.target.value as any)}
+                className="bg-transparent text-slate-300 text-xs focus:outline-none cursor-pointer pr-1"
+                title="Filtrar por Estatus"
+              >
+                <option value="Todos" className="bg-slate-900 text-white">Todos los Estatus</option>
+                <option value="Registrado" className="bg-slate-900 text-white">Registrado</option>
+                <option value="En Catalogación" className="bg-slate-900 text-white">En Catalogación</option>
+                <option value="Por Archivar" className="bg-slate-900 text-white">Por Archivar</option>
+                <option value="Finalizado" className="bg-slate-900 text-white">Finalizado</option>
+              </select>
+            </div>
+
+            {/* Date Filter */}
+            <div className="flex items-center gap-1 bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs">
+              <Calendar className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="bg-transparent text-slate-300 font-mono text-xs focus:outline-none cursor-pointer py-0.5"
+                title="Filtrar por fecha de registro/catalogación"
+              />
+              {selectedDate && (
+                <button
+                  onClick={() => setSelectedDate('')}
+                  className="p-0.5 hover:bg-slate-800 text-slate-400 hover:text-white rounded-lg transition-all ml-1"
+                  title="Limpiar fecha"
+                >
+                  <X className="w-3.5 h-3.5 text-rose-400" />
+                </button>
+              )}
+            </div>
+
             {/* Division Filter */}
             <select
               value={selectedDivision}
@@ -478,6 +604,24 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
               <option value="Insert">Insert</option>
               <option value="Master">Master</option>
             </select>
+
+            {/* Reset All Filters button */}
+            {hasActiveFilters && (
+              <button
+                onClick={() => {
+                  setSearchTerm('');
+                  setSelectedDivision('Todas');
+                  setSelectedStatus('Todos');
+                  setSelectedSignalType('Todos');
+                  setSelectedDate('');
+                }}
+                className="px-2.5 py-1.5 rounded-xl bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800 text-xs font-bold flex items-center gap-1 transition-all shadow-sm"
+                title="Limpiar todos los filtros aplicados"
+              >
+                <X className="w-3.5 h-3.5 text-rose-400" />
+                <span>Limpiar</span>
+              </button>
+            )}
 
             {/* View Mode Toggle */}
             <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 ml-auto md:ml-0">
@@ -517,18 +661,30 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
       {/* Materials Render Section */}
       <div className="p-5 sm:p-6 rounded-3xl bg-gradient-to-br from-[#050711] via-[#0B081A] to-[#1C0835] border border-purple-900/50 shadow-2xl space-y-4">
         {/* Section Header */}
-        <div className="flex items-center justify-between px-1 pb-3 border-b border-purple-900/40">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 px-1 pb-3 border-b border-purple-900/40">
           <div className="flex items-center gap-2.5">
             <div className="w-2.5 h-2.5 rounded-full bg-purple-500 animate-pulse shadow-[0_0_8px_rgba(168,85,247,0.8)]"></div>
             <h3 className="text-xs font-extrabold uppercase tracking-widest text-purple-200">
               {folderTab === 'active' && 'Bandeja de Ingesta y Trabajo Activo'}
+              {folderTab === 'requests' && 'Solicitudes y Otras Tareas (Contabilizan por archivar)'}
               {folderTab === 'finalized' && 'Carpeta Histórica (Acervo de Materiales Finalizados)'}
               {folderTab === 'all' && 'Repositorio General de Materiales'}
             </h3>
           </div>
-          <span className="text-[10px] font-mono font-bold text-purple-300 bg-purple-950/80 px-3 py-1 rounded-full border border-purple-800/60 shadow-inner">
-            Página {currentPage} de {totalPages} • {familyGroups.length} familias ({filteredMaterials.length} señales)
-          </span>
+          <div className="flex items-center gap-2 self-end sm:self-auto">
+            {folderTab === 'requests' && canCreate && (
+              <button
+                onClick={() => onOpenNewMaterialModal(undefined, undefined, undefined, true)}
+                className="px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-lg shadow-purple-950/80 transition-all"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Crear Solicitud / Otra Tarea</span>
+              </button>
+            )}
+            <span className="text-[10px] font-mono font-bold text-purple-300 bg-purple-950/80 px-3 py-1 rounded-full border border-purple-800/60 shadow-inner">
+              Página {currentPage} de {totalPages} • {familyGroups.length} familias ({filteredMaterials.length} señales)
+            </span>
+          </div>
         </div>
 
         {viewMode === 'families' ? (
@@ -553,6 +709,7 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                   onToggleSignalBoolean={onToggleSignalBoolean}
                   onBatchToggleFamilyBoolean={onBatchToggleFamilyBoolean}
                   onAssignSignal={onAssignSignal}
+                  onOpenMultiAssign={(sig) => setMultiAssignSignal(sig)}
                   onAddSignalToFamily={(fid, title, div) =>
                     onOpenNewMaterialModal(fid, title, div)
                   }
@@ -597,7 +754,7 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                       </td>
                       <td className="p-3.5">{mat.division}</td>
                       <td className="p-3.5 font-mono font-bold text-amber-300">
-                        {mat.duration}
+                        {formatDurationHHMMSS(mat.duration)}
                       </td>
                       <td className="p-3.5">
                         {mat.assignedTo ? (
@@ -653,7 +810,16 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                             CAT
                           </button>
                           <button
-                            onClick={() => onToggleSignalBoolean && onToggleSignalBoolean(mat.id, 'isFinalized')}
+                            onClick={() => {
+                              const check = canUserFinalizeSignal(currentUser);
+                              if (!check.allowed) {
+                                alert(check.reason);
+                                return;
+                              }
+                              if (onToggleSignalBoolean) {
+                                onToggleSignalBoolean(mat.id, 'isFinalized');
+                              }
+                            }}
                             className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
                               mat.isFinalized ? 'bg-emerald-600/30 text-emerald-300 border-emerald-500' : 'bg-slate-900 text-slate-600 border-slate-800'
                             }`}
@@ -664,7 +830,7 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                       </td>
                       <td className="p-3.5 text-slate-400">
                         <div>{mat.createdBy}</div>
-                        <div className="text-[10px]">{mat.creationDate}</div>
+                        <div className="text-[10px] font-mono">{getFormattedDateTime(mat.creationDate)}</div>
                       </td>
                       <td className="p-3.5 text-right">
                         <div className="flex items-center justify-end gap-1">
@@ -693,7 +859,16 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                             {mat.isCataloged ? 'Catalogado' : 'Para Archivar'}
                           </button>
                           <button
-                            onClick={() => onToggleSignalBoolean && onToggleSignalBoolean(mat.id, 'isFinalized')}
+                            onClick={() => {
+                              const check = canUserFinalizeSignal(currentUser);
+                              if (!check.allowed) {
+                                alert(check.reason);
+                                return;
+                              }
+                              if (onToggleSignalBoolean) {
+                                onToggleSignalBoolean(mat.id, 'isFinalized');
+                              }
+                            }}
                             className="px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px]"
                           >
                             {mat.isFinalized ? 'Cerrado' : 'Finalizar'}

@@ -109,3 +109,29 @@ export const canUserCatalogSignal = (
 
   return { allowed: true };
 };
+
+/**
+ * Verifica si el usuario puede marcar el material como "Finalizado".
+ * Únicamente los Jefes de División, Coordinadores, Gerente de Archivo y Adjunta de Gerencia pueden hacerlo.
+ */
+export const canUserFinalizeSignal = (
+  user: UserProfile
+): { allowed: boolean; reason?: string } => {
+  if (!user) return { allowed: false, reason: 'Usuario no autenticado.' };
+
+  const isManagerOrCoordinator =
+    user.role === 'Gerente de Archivo' ||
+    user.role === 'Adjunta de Gerencia' ||
+    user.role === 'Jefe de División' ||
+    user.role === 'Coordinador';
+
+  if (!isManagerOrCoordinator) {
+    return {
+      allowed: false,
+      reason: 'Acceso Restringido: Solo los Coordinadores, Jefes de División y Gerencia pueden marcar tareas como Finalizadas.',
+    };
+  }
+
+  return { allowed: true };
+};
+

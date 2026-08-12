@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { MaterialSignal, DivisionType, SignalType } from '../types';
 import { X, Edit3, Save, Clock, Film, AlertCircle } from 'lucide-react';
+import { formatDurationHHMMSS, durationToSeconds } from '../services/apiService';
 
 interface EditMaterialModalProps {
   isOpen: boolean;
@@ -30,14 +31,12 @@ export const EditMaterialModal: React.FC<EditMaterialModalProps> = ({
       setSignalType(signal.signalType);
       setNotes(signal.notes || '');
 
-      // Parse duration "HH:MM:SS"
+      // Parse duration safely using durationToSeconds
       if (signal.duration) {
-        const parts = signal.duration.split(':');
-        if (parts.length === 3) {
-          setHours(parseInt(parts[0], 10) || 0);
-          setMinutes(parseInt(parts[1], 10) || 0);
-          setSeconds(parseInt(parts[2], 10) || 0);
-        }
+        const secs = durationToSeconds(signal.duration);
+        setHours(Math.floor(secs / 3600));
+        setMinutes(Math.floor((secs % 3600) / 60));
+        setSeconds(secs % 60);
       }
     }
   }, [signal]);
@@ -49,7 +48,7 @@ export const EditMaterialModal: React.FC<EditMaterialModalProps> = ({
     if (!title.trim()) return;
 
     const pad = (num: number) => num.toString().padStart(2, '0');
-    const formattedDuration = `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+    const formattedDuration = formatDurationHHMMSS(`${pad(hours)}:${pad(minutes)}:${pad(seconds)}`);
 
     const updatedSignal: MaterialSignal = {
       ...signal,

@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { MaterialFamilyGroup, MaterialSignal, UserProfile } from '../types';
-import { durationToSeconds, formatHoursVerbose } from '../services/apiService';
+import { durationToSeconds, formatHoursVerbose, getFormattedDateTime, formatDurationHHMMSS } from '../services/apiService';
 import {
   canUserCreateMaterial,
   canUserAssignSignal,
   canUserUnassignSignal,
-  canUserCatalogSignal
+  canUserCatalogSignal,
+  canUserFinalizeSignal
 } from '../utils/permissions';
 import { 
   Film, 
@@ -34,6 +35,7 @@ interface MaterialContainerCardProps {
   onToggleSignalBoolean?: (signalId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized') => void;
   onBatchToggleFamilyBoolean?: (familyId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized', value: boolean) => void;
   onAssignSignal?: (signalId: string, assignToUser: string | null) => void;
+  onOpenMultiAssign?: (signal: MaterialSignal) => void;
   onAddSignalToFamily: (familyId: string, title: string, division: MaterialSignal['division']) => void;
   onDeleteSignal: (signalId: string) => void;
   onEditSignal?: (signal: MaterialSignal) => void;
@@ -47,6 +49,7 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
   onToggleSignalBoolean,
   onBatchToggleFamilyBoolean,
   onAssignSignal,
+  onOpenMultiAssign,
   onAddSignalToFamily,
   onDeleteSignal,
   onEditSignal,
@@ -132,7 +135,7 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
   );
 
   // Latest timestamp among signals for display
-  const latestCreationDate = group.signals[0]?.creationDate || group.creationDate;
+  const latestCreationDate = getFormattedDateTime(group.signals[0]?.creationDate || group.creationDate);
 
   return (
     <div className="bg-gradient-to-br from-[#1A2333] via-[#161F2E] to-[#0D131F] border border-slate-700/70 rounded-2xl shadow-xl hover:border-purple-800/60 transition-all overflow-hidden flex flex-col">
@@ -219,7 +222,7 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
                 title={`Haz clic para seleccionar ${sig.signalType}`}
               >
                 <span>{sig.signalType}</span>
-                <span className="font-mono text-[9px] opacity-80">({sig.duration})</span>
+                <span className="font-mono text-[9px] opacity-80">({formatDurationHHMMSS(sig.duration)})</span>
                 {sig.isFinalized && <CheckCircle2 className="w-3 h-3 text-emerald-300" />}
               </button>
             );
@@ -256,7 +259,14 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
             </button>
 
             <button
-              onClick={() => onBatchToggleFamilyBoolean(group.familyId, 'isFinalized', !group.isAllFinalized)}
+              onClick={() => {
+                const check = canUserFinalizeSignal(currentUser);
+                if (!check.allowed) {
+                  alert(check.reason);
+                  return;
+                }
+                onBatchToggleFamilyBoolean(group.familyId, 'isFinalized', !group.isAllFinalized);
+              }}
               className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all border flex items-center gap-1 ${
                 group.isAllFinalized
                   ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
@@ -304,17 +314,28 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
             )}
           </div>
 
-          {/* Assignment Bar for Documentalistas */}
+          {/* Assignment Bar for Documentalistas and Multi-person Assignment */}
           <div className="p-3 rounded-xl bg-slate-900/90 border border-slate-800/90 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 shadow-inner">
             <div className="flex items-center gap-2.5">
-              <div className={`p-2 rounded-xl border ${currentSignal.assignedTo ? 'bg-blue-600/20 text-blue-400 border-blue-500/40' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+              <div className={`p-2 rounded-xl border ${currentSignal.assignedTo || (currentSignal.assignedPersons && currentSignal.assignedPersons.length > 0) ? 'bg-blue-600/20 text-blue-400 border-blue-500/40' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
                 <UserCheck className="w-4 h-4" />
               </div>
               <div>
                 <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 block">
-                  Asignación de Tarjeta para Documentación:
+                  Asignación de Personal / Equipo:
                 </span>
-                {currentSignal.assignedTo ? (
+                {currentSignal.assignedPersons && currentSignal.assignedPersons.length > 0 ? (
+                  <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                    {currentSignal.assignedPersons.map((pName) => (
+                      <span key={pName} className="px-2 py-0.5 rounded-md bg-purple-950 text-purple-200 border border-purple-800 text-[11px] font-bold">
+                        {pName}
+                      </span>
+                    ))}
+                    {currentSignal.assignedAt && (
+                      <span className="text-[10px] font-mono text-slate-400 ml-1">• {currentSignal.assignedAt}</span>
+                    )}
+                  </div>
+                ) : currentSignal.assignedTo ? (
                   <p className="text-xs font-bold text-white flex items-center flex-wrap gap-1.5 mt-0.5">
                     <span className="text-blue-300 font-extrabold">{currentSignal.assignedTo}</span>
                     <span className="text-[10px] font-semibold text-blue-200 bg-blue-950 px-1.5 py-0.2 rounded border border-blue-800/80">
@@ -326,13 +347,25 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
                   </p>
                 ) : (
                   <p className="text-xs text-amber-300/90 font-semibold italic mt-0.5">
-                    Tarjeta libre sin asignar • Los documentalistas deben asignársela para iniciar documentación
+                    Sin asignación • Asigna a tu perfil o a múltiples trabajadores
                   </p>
                 )}
               </div>
             </div>
 
             <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+              {onOpenMultiAssign && (
+                <button
+                  type="button"
+                  onClick={() => onOpenMultiAssign(currentSignal)}
+                  className="px-3 py-1.5 rounded-xl bg-purple-900/80 hover:bg-purple-800 text-purple-200 border border-purple-700 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm"
+                  title="Asignar varias personas a esta tarea"
+                >
+                  <UserCheck className="w-3.5 h-3.5 text-purple-300" />
+                  <span>Asignar Equipo ({currentSignal.assignedPersons?.length || (currentSignal.assignedTo ? 1 : 0)})</span>
+                </button>
+              )}
+
               {currentSignal.assignedTo ? (
                 canUserUnassignSignal(currentUser, currentSignal) ? (
                   <button
@@ -342,12 +375,12 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
                     title="Desasignar tarjeta para que quede libre"
                   >
                     <UserX className="w-3.5 h-3.5" />
-                    <span>Liberar Tarjeta</span>
+                    <span>Liberar</span>
                   </button>
                 ) : (
                   <span className="px-2.5 py-1 rounded-xl bg-slate-800/90 border border-slate-700 text-slate-400 text-[11px] font-semibold flex items-center gap-1.5 shadow-sm">
                     <Lock className="w-3.5 h-3.5 text-amber-400" />
-                    <span>Tomada por {currentSignal.assignedTo}</span>
+                    <span>Tomada</span>
                   </span>
                 )
               ) : (
@@ -377,7 +410,7 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
 
             <div className="flex items-center gap-1 font-mono text-xs font-bold text-amber-300 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
               <Clock className="w-3.5 h-3.5 text-amber-400" />
-              <span>Duración: {currentSignal.duration}</span>
+              <span>Duración: {formatDurationHHMMSS(currentSignal.duration)}</span>
             </div>
           </div>
 
@@ -432,7 +465,16 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
               {/* Boolean 3: Finalizado */}
               <button
                 type="button"
-                onClick={() => onToggleSignalBoolean && onToggleSignalBoolean(currentSignal.id, 'isFinalized')}
+                onClick={() => {
+                  const check = canUserFinalizeSignal(currentUser);
+                  if (!check.allowed) {
+                    alert(check.reason);
+                    return;
+                  }
+                  if (onToggleSignalBoolean) {
+                    onToggleSignalBoolean(currentSignal.id, 'isFinalized');
+                  }
+                }}
                 className={`px-2.5 py-1.5 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
                   currentSignal.isFinalized
                     ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 ring-1 ring-emerald-500/30'
@@ -468,7 +510,7 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
                   1. Registro / Creación
                 </span>
                 <p className="font-bold text-white truncate">{currentSignal.createdBy}</p>
-                <p className="text-[10px] font-mono text-slate-400 mt-0.5">{currentSignal.creationDate}</p>
+                <p className="text-[10px] font-mono text-slate-400 mt-0.5">{getFormattedDateTime(currentSignal.creationDate)}</p>
               </div>
 
               {/* Step 2: Catalogación */}
@@ -479,7 +521,7 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
                 {currentSignal.catalogedBy ? (
                   <>
                     <p className="font-bold text-amber-300 truncate">{currentSignal.catalogedBy}</p>
-                    <p className="text-[10px] font-mono text-amber-400/80 mt-0.5">{currentSignal.catalogedAt}</p>
+                    <p className="text-[10px] font-mono text-amber-400/80 mt-0.5">{getFormattedDateTime(currentSignal.catalogedAt)}</p>
                   </>
                 ) : (
                   <p className="text-[11px] text-slate-500 italic">Pendiente de catalogar</p>
@@ -494,7 +536,7 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
                 {currentSignal.finalizedBy ? (
                   <>
                     <p className="font-bold text-emerald-300 truncate">{currentSignal.finalizedBy}</p>
-                    <p className="text-[10px] font-mono text-emerald-400/80 mt-0.5">{currentSignal.finalizedAt}</p>
+                    <p className="text-[10px] font-mono text-emerald-400/80 mt-0.5">{getFormattedDateTime(currentSignal.finalizedAt)}</p>
                   </>
                 ) : (
                   <p className="text-[11px] text-slate-500 italic">Pendiente de finalizar</p>

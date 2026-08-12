@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { MaterialSignal, DivisionType } from '../types';
-import { groupMaterialsByFamily, durationToSeconds, formatHoursVerbose, secondsToDuration } from '../services/apiService';
+import { groupMaterialsByFamily, durationToSeconds, formatHoursVerbose, secondsToDuration, parseAnyDate } from '../services/apiService';
 import { 
   BarChart, 
   Bar, 
@@ -63,7 +63,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ materials }) =
   const periodFilteredMaterials = useMemo(() => {
     return divisionFilteredMaterials.filter((m) => {
       if (!m.creationDate) return true;
-      const dateObj = new Date(m.creationDate);
+      const dateObj = parseAnyDate(m.creationDate);
       if (isNaN(dateObj.getTime())) return true;
 
       const now = new Date();
@@ -235,7 +235,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ materials }) =
     for (let d = 1; d <= daysInMonth; d++) {
       const dayMats = divisionFilteredMaterials.filter((m) => {
         if (!m.creationDate) return false;
-        const dateObj = new Date(m.creationDate);
+        const dateObj = parseAnyDate(m.creationDate);
         if (isNaN(dateObj.getTime())) return false;
         return (
           dateObj.getDate() === d &&

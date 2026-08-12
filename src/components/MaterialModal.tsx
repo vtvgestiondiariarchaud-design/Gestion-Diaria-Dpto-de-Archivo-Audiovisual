@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { MaterialSignal, DivisionType, SignalType, UserProfile } from '../types';
 import { X, Film, Layers, Clock, Calendar, User, FileText, CheckCircle2 } from 'lucide-react';
+import { getFormattedDateTime, formatDurationHHMMSS } from '../services/apiService';
 
 interface MaterialModalProps {
   isOpen: boolean;
@@ -10,6 +11,7 @@ interface MaterialModalProps {
   presetFamilyId?: string;
   presetTitle?: string;
   presetDivision?: DivisionType;
+  presetIsRequestTask?: boolean;
 }
 
 export const MaterialModal: React.FC<MaterialModalProps> = ({
@@ -20,12 +22,14 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
   presetFamilyId,
   presetTitle,
   presetDivision,
+  presetIsRequestTask = false,
 }) => {
   if (!isOpen) return null;
 
   const todayStr = new Date().toISOString().split('T')[0];
 
   const [mode, setMode] = useState<'batch' | 'single'>(presetFamilyId ? 'single' : 'batch');
+  const [isRequestTask, setIsRequestTask] = useState<boolean>(presetIsRequestTask);
   const [title, setTitle] = useState(presetTitle || '');
   const [division, setDivision] = useState<DivisionType>(
     presetDivision || currentUser.division || 'Prensa'
@@ -45,11 +49,12 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
     if (!title.trim()) return;
 
     const pad = (v: string) => v.padStart(2, '0');
-    const formattedDuration = `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+    const formattedDuration = formatDurationHHMMSS(`${pad(hours)}:${pad(minutes)}:${pad(seconds)}`);
 
     const familyId = presetFamilyId || `FAM-2026-${Math.floor(100 + Math.random() * 900)}`;
     const currentTime = new Date().toTimeString().split(' ')[0];
-    const fullCreationTimestamp = creationDate.includes(' ') ? creationDate : `${creationDate} ${currentTime}`;
+    const rawTimestamp = creationDate.includes(' ') ? creationDate : `${creationDate} ${currentTime}`;
+    const fullCreationTimestamp = getFormattedDateTime(rawTimestamp);
 
     const generatedSignals: MaterialSignal[] = [];
 
@@ -69,10 +74,13 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
           creationDate: fullCreationTimestamp,
           createdBy: currentUser.name,
           creatorRole: `${currentUser.role}${currentUser.division ? ` (${currentUser.division})` : ''}`,
-          status: 'Registrado',
+          status: isRequestTask ? 'Por Archivar' : 'Registrado',
           isIngested: true,
-          isCataloged: false,
+          isCataloged: isRequestTask ? true : false,
           isFinalized: false,
+          isRequestTask,
+          catalogedBy: isRequestTask ? currentUser.name : undefined,
+          catalogedAt: isRequestTask ? fullCreationTimestamp : undefined,
           notes: notes.trim() || `Señal ${stype} registrada automáticamente en familia.`,
         });
       });
@@ -89,10 +97,13 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
         creationDate: fullCreationTimestamp,
         createdBy: currentUser.name,
         creatorRole: `${currentUser.role}${currentUser.division ? ` (${currentUser.division})` : ''}`,
-        status: 'Registrado',
+        status: isRequestTask ? 'Por Archivar' : 'Registrado',
         isIngested: true,
-        isCataloged: false,
+        isCataloged: isRequestTask ? true : false,
         isFinalized: false,
+        isRequestTask,
+        catalogedBy: isRequestTask ? currentUser.name : undefined,
+        catalogedAt: isRequestTask ? fullCreationTimestamp : undefined,
         notes: notes.trim(),
       });
     }
@@ -129,6 +140,48 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
 
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="p-6 overflow-y-auto space-y-4">
+          {/* Category Selector (Material Audiovisual vs Solicitud / Otra Tarea) */}
+          {!presetFamilyId && (
+            <div>
+              <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
+                Categoría de Registro
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsRequestTask(false)}
+                  className={`p-2.5 rounded-xl border text-left flex items-center gap-2.5 transition-all ${
+                    !isRequestTask
+                      ? 'bg-blue-950/60 border-blue-500 text-white shadow-md ring-1 ring-blue-500/30'
+                      : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:bg-slate-800'
+                  }`}
+                >
+                  <Film className="w-4 h-4 text-blue-400 shrink-0" />
+                  <div>
+                    <p className="text-xs font-bold">Material Audiovisual Estándar</p>
+                    <p className="text-[10px] text-slate-400">Noticiero, programa, pauta audiovisual</p>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsRequestTask(true)}
+                  className={`p-2.5 rounded-xl border text-left flex items-center gap-2.5 transition-all ${
+                    isRequestTask
+                      ? 'bg-purple-950/60 border-purple-500 text-purple-200 shadow-md ring-1 ring-purple-500/30'
+                      : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:bg-slate-800'
+                  }`}
+                >
+                  <FileText className="w-4 h-4 text-purple-400 shrink-0" />
+                  <div>
+                    <p className="text-xs font-bold">Solicitud u Otra Tarea</p>
+                    <p className="text-[10px] text-purple-300/80">Asignable a varias personas (Contabiliza por archivar)</p>
+                  </div>
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Mode Selector (Batch 3 Signals vs Single) */}
           {!presetFamilyId && (
             <div>
