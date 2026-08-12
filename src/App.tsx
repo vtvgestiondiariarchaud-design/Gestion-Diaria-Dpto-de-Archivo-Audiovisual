@@ -1,991 +1,838 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import React, { useState, useEffect } from 'react';
+import { KeyRound, ShieldAlert, Lock, CheckCircle2 } from 'lucide-react';
 import { 
-  CheckSquare, Calendar, Database, Shield, AlertTriangle, Sparkles, 
-  Bell, CheckCircle2, Info, UserCircle, LogOut, Loader2, KeyRound, UserPlus, 
-  Plus, Umbrella, RefreshCw, FileSpreadsheet, ExternalLink, Sliders
-} from 'lucide-react';
-
-import { Division, Worker, ShiftAssignment, UserRole, TaskBoard, TaskCard, TaskNotification, FreeDayRequest } from './types';
-import { db, getLocalDb, DEFAULT_DIVISIONS } from './supabaseClient';
-import { pullLatestFromGoogleSheets, pushLatestToGoogleSheets, getCachedAccessToken, extractSpreadsheetId, getGoogleAppsScriptUrl } from './googleSheetsService';
-
-import TaskManager from './components/TaskManager';
-import VacationControl from './components/VacationControl';
-import DatabaseSchema from './components/DatabaseSchema';
-import AdminPanel from './components/AdminPanel';
-
-interface NotificationToast {
-  id: string;
-  title: string;
-  desc: string;
-  type: 'success' | 'info';
-}
+  UserProfile, 
+  MaterialSignal, 
+  Personnel, 
+  GuardShiftRecord, 
+  MaterialStatus, 
+  DivisionType 
+} from './types';
+import { 
+  loadInitialState, 
+  saveLocalMaterials, 
+  saveLocalPersonnel, 
+  saveLocalGuardShifts, 
+  saveLocalAppsScriptUrl, 
+  saveLocalActiveUser,
+  syncWithGoogleSheets,
+  fetchFromGoogleSheets,
+  loadLocalUserPins,
+  saveLocalUserPins,
+  deduplicatePersonnel
+} from './services/apiService';
+import { Navbar } from './components/Navbar';
+import { UserRoleSelectorModal } from './components/UserRoleSelectorModal';
+import { MaterialListModule } from './components/MaterialListModule';
+import { MaterialModal } from './components/MaterialModal';
+import { EditMaterialModal } from './components/EditMaterialModal';
+import { UserSecurityPinModal } from './components/UserSecurityPinModal';
+import { PinVerificationModal } from './components/PinVerificationModal';
+import { AdminPersonnelModule } from './components/AdminPersonnelModule';
+import { DashboardModule } from './components/DashboardModule';
+import { GoogleAppsScriptModal } from './components/GoogleAppsScriptModal';
 
 export default function App() {
-  const getTodayDateStr = () => {
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = String(now.getMonth() + 1).padStart(2, '0');
-    const d = String(now.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
+  const [state, setState] = useState(() => loadInitialState());
+  const [activeTab, setActiveTab] = useState<'materials' | 'personnel' | 'dashboard' | 'settings'>('materials');
+
+  // Modals state
+  const [isUserSelectorOpen, setIsUserSelectorOpen] = useState(false);
+  const [isMaterialModalOpen, setIsMaterialModalOpen] = useState(false);
+  
+  // Edit Material Modal State
+  const [editingSignal, setEditingSignal] = useState<MaterialSignal | null>(null);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+
+  // Security PIN State
+  const [userPins, setUserPins] = useState<Record<string, string>>(() => loadLocalUserPins());
+  const [isPinModalOpen, setIsPinModalOpen] = useState(false);
+  const [isPinVerificationOpen, setIsPinVerificationOpen] = useState(false);
+  const [pendingUserForSwitch, setPendingUserForSwitch] = useState<UserProfile | null>(null);
+
+  // Material Modal presets (when adding a signal to an existing family)
+  const [presetFamilyId, setPresetFamilyId] = useState<string | undefined>();
+  const [presetTitle, setPresetTitle] = useState<string | undefined>();
+  const [presetDivision, setPresetDivision] = useState<DivisionType | undefined>();
+
+  const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setNotification({ message, type });
+    setTimeout(() => setNotification(null), 4000);
   };
 
-  // State Management
-  const [divisions, setDivisions] = useState<Division[]>([]);
-  const [workers, setWorkers] = useState<Worker[]>([]);
-  const [assignments, setAssignments] = useState<ShiftAssignment[]>([]);
-  const [freeDayRequests, setFreeDayRequests] = useState<FreeDayRequest[]>([]);
+  // Google Sheets Auto Synchronization (Read & Write)
+  const loadDataFromSheets = async (isManual = false) => {
+    if (!state.appsScriptUrl) return;
 
-  // Task Management States
-  const [taskBoards, setTaskBoards] = useState<TaskBoard[]>([]);
-  const [taskCards, setTaskCards] = useState<TaskCard[]>([]);
-  const [taskNotifications, setTaskNotifications] = useState<TaskNotification[]>([]);
-
-  const [loading, setLoading] = useState<boolean>(true);
-  const [isSyncing, setIsSyncing] = useState<boolean>(false);
-  const [spreadsheetId, setSpreadsheetId] = useState<string | null>(() => localStorage.getItem('vtv_google_spreadsheet_id'));
-
-  // Mandatory Connection Guard State
-  const [isConnectedToSheet, setIsConnectedToSheet] = useState<boolean | null>(null);
-  const [connectionError, setConnectionError] = useState<string | null>(null);
-  const [reconnectUrlInput, setReconnectUrlInput] = useState(() => localStorage.getItem('vtv_google_spreadsheet_id') || '');
-  const [reconnectAppsScriptUrlInput, setReconnectAppsScriptUrlInput] = useState(() => getGoogleAppsScriptUrl() || '');
-
-  // Authentication & User Session
-  const [currentSession, setCurrentSession] = useState<{
-    userId: string;
-    name: string;
-    role: UserRole;
-    divisionId?: string;
-    email: string;
-    cargo: string;
-  } | null>(() => {
-    const saved = localStorage.getItem('vtv_real_session');
-    return saved ? JSON.parse(saved) : null;
-  });
-
-  // Navigation Tab ('tareas' | 'vacaciones' | 'perfil')
-  const [activeTab, setActiveTab] = useState<'tareas' | 'vacaciones' | 'perfil'>('tareas');
-  const [showBlueprintModal, setShowBlueprintModal] = useState<boolean>(false);
-
-  // Auth Form States
-  const [authTab, setAuthTab] = useState<'login' | 'register'>('login');
-  const [loginEmail, setLoginEmail] = useState('');
-  const [loginPassword, setLoginPassword] = useState('');
-  const [regName, setRegName] = useState('');
-  const [regEmail, setRegEmail] = useState('');
-  const [regPassword, setRegPassword] = useState('');
-  const [regCargo, setRegCargo] = useState('');
-  const [regCedula, setRegCedula] = useState('');
-  const [regDivisionId, setRegDivisionId] = useState('div_archivo_prensa');
-  const [regRole, setRegRole] = useState<UserRole>('worker');
-  const [authError, setAuthError] = useState<string | null>(null);
-
-  // Toast Notifications State
-  const [notifications, setNotifications] = useState<NotificationToast[]>([]);
-
-  const addNotification = (title: string, desc: string, type: 'success' | 'info' = 'info') => {
-    const uniqueId = `notif_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-    const newNotif: NotificationToast = { id: uniqueId, title, desc, type };
-    setNotifications(prev => [newNotif, ...prev]);
-    setTimeout(() => {
-      setNotifications(prev => prev.filter(n => n.id !== newNotif.id));
-    }, 4500);
-  };
-
-  // Sync data function with connection verification
-  const initConnectionAndLoadData = async (forcedId?: string) => {
-    setLoading(true);
-    setConnectionError(null);
-
-    const sheetIdToUse = forcedId || extractSpreadsheetId(localStorage.getItem('vtv_google_spreadsheet_id') || '');
-
-    if (!sheetIdToUse) {
-      setIsConnectedToSheet(false);
-      setConnectionError('Debe ingresar la URL o ID de su Hoja de Google Spreadsheet para conectar la aplicación.');
-      setLoading(false);
-      return false;
+    if (isManual) {
+      setState((prev) => ({ ...prev, isSyncing: true }));
     }
 
-    try {
-      localStorage.setItem('vtv_google_spreadsheet_id', sheetIdToUse);
-      setSpreadsheetId(sheetIdToUse);
+    const result = await fetchFromGoogleSheets(state.appsScriptUrl);
+    const timestamp = new Date().toLocaleTimeString();
 
-      // Mandatory pull from Google Sheets
-      await pullLatestFromGoogleSheets();
+    if (result.success && result.data) {
+      const { materials, personnel, guardShifts } = result.data;
 
-      const [
-        fetchedDivisions,
-        fetchedWorkers,
-        fetchedAssignments,
-        fetchedFreeDayRequests,
-        fetchedTaskBoards,
-        fetchedTaskCards,
-        fetchedTaskNotifs
-      ] = await Promise.all([
-        db.fetchDivisions(),
-        db.fetchWorkers(),
-        db.fetchAssignments(),
-        db.fetchFreeDayRequests(),
-        db.fetchTaskBoards(),
-        db.fetchTaskCards(),
-        db.fetchTaskNotifications()
-      ]);
+      setState((prev) => {
+        const newMaterials = materials.length > 0 ? materials : prev.materials;
+        const newPersonnel = personnel.length > 0 ? deduplicatePersonnel(personnel) : deduplicatePersonnel(prev.personnel);
+        const newShifts = guardShifts.length > 0 ? guardShifts : prev.guardShifts;
 
-      let finalBoards = fetchedTaskBoards;
-      if (finalBoards.length === 0) {
-        finalBoards = [
-          {
-            id: 'board_ingesta',
-            name: 'Ingesta',
-            description: 'Recepción, digitalización y control de calidad de materiales audiovisuales entrantes.',
-            color: 'cyan',
-            createdAt: new Date().toISOString()
-          },
-          {
-            id: 'board_prensa',
-            name: 'Prensa',
-            description: 'Redacción, cobertura periodística y notas informativas de canal VTV.',
-            color: 'blue',
-            createdAt: new Date().toISOString()
-          },
-          {
-            id: 'board_programacion',
-            name: 'Programación',
-            description: 'Planificación, escaletas y emisión de la parrilla de programación.',
-            color: 'indigo',
-            createdAt: new Date().toISOString()
-          },
-          {
-            id: 'board_mantenimiento',
-            name: 'Mantenimiento & Equipos Técnicos',
-            description: 'Soporte técnico, mantenimiento preventivo y supervisión de infraestructura.',
-            color: 'amber',
-            createdAt: new Date().toISOString()
-          },
-          {
-            id: 'board_digitalizacion',
-            name: 'Digitalización',
-            description: 'Migración y resguardo de cintas históricas y acervo audiovisual.',
-            color: 'purple',
-            createdAt: new Date().toISOString()
-          },
-          {
-            id: 'board_administracion',
-            name: 'Administración',
-            description: 'Logística, gestión de personal, asignaciones y procesos administrativos.',
-            color: 'emerald',
-            createdAt: new Date().toISOString()
-          }
-        ];
-        localStorage.setItem('vtv_task_boards', JSON.stringify(finalBoards));
-        for (const b of finalBoards) {
-          db.createTaskBoard(b);
-        }
+        saveLocalMaterials(newMaterials);
+        saveLocalPersonnel(newPersonnel);
+        saveLocalGuardShifts(newShifts);
+
+        return {
+          ...prev,
+          materials: newMaterials,
+          personnel: newPersonnel,
+          guardShifts: newShifts,
+          isSyncing: false,
+          lastSyncTime: timestamp,
+        };
+      });
+
+      if (isManual) {
+        showToast('Datos leídos y sincronizados desde Google Sheets.', 'success');
       }
-
-      setDivisions(fetchedDivisions.length > 0 ? fetchedDivisions : DEFAULT_DIVISIONS);
-      setWorkers(fetchedWorkers);
-      setAssignments(fetchedAssignments);
-      setFreeDayRequests(fetchedFreeDayRequests);
-      setTaskBoards(finalBoards);
-      setTaskCards(fetchedTaskCards);
-      setTaskNotifications(fetchedTaskNotifs);
-
-      setIsConnectedToSheet(true);
-      return true;
-    } catch (err: any) {
-      console.error('Error al conectar con Google Sheets:', err);
-      setIsConnectedToSheet(false);
-      setConnectionError(`No se pudo conectar a la Hoja de Google Sheet (${err?.message || 'Error de acceso'}). Verifica que la Hoja existe y es accesible.`);
-      return false;
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleReconnectSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const extractedId = extractSpreadsheetId(reconnectUrlInput);
-    if (!extractedId) {
-      setConnectionError('Ingresa una URL o ID de Google Spreadsheet válido.');
-      return;
-    }
-
-    if (reconnectAppsScriptUrlInput.trim()) {
-      localStorage.setItem('vtv_google_apps_script_url', reconnectAppsScriptUrlInput.trim());
     } else {
-      localStorage.removeItem('vtv_google_apps_script_url');
+      setState((prev) => ({ ...prev, isSyncing: false }));
+      if (isManual) {
+        showToast(result.message, 'error');
+      }
     }
-
-    await initConnectionAndLoadData(extractedId);
   };
 
-  useEffect(() => {
-    initConnectionAndLoadData();
-    const interval = setInterval(() => {
-      const sheetId = localStorage.getItem('vtv_google_spreadsheet_id');
-      if (sheetId && isConnectedToSheet) {
-        pullLatestFromGoogleSheets().catch(() => null);
-      }
-    }, 15000);
-    return () => clearInterval(interval);
-  }, []);
+  const autoPushToSheets = async (
+    mats?: MaterialSignal[],
+    pers?: Personnel[],
+    shifts?: GuardShiftRecord[]
+  ) => {
+    if (!state.appsScriptUrl) return;
 
-  const sortedWorkers = useMemo(() => {
-    return [...workers].sort((a, b) => {
-      const divA = divisions.find(d => d.id === a.divisionId);
-      const divB = divisions.find(d => d.id === b.divisionId);
-      const nameA = divA ? divA.name : 'Sin división';
-      const nameB = divB ? divB.name : 'Sin división';
-      const divCompare = nameA.localeCompare(nameB);
-      if (divCompare !== 0) return divCompare;
-      return a.name.localeCompare(b.name);
+    const targetMats = mats || state.materials;
+    const targetPers = pers || state.personnel;
+    const targetShifts = shifts || state.guardShifts;
+
+    await syncWithGoogleSheets(state.appsScriptUrl, {
+      materials: targetMats,
+      personnel: targetPers,
+      guardShifts: targetShifts,
     });
-  }, [workers, divisions]);
+  };
 
-  // Handle Standard Login
-  const handleCredentialsLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError(null);
-    const trimmedEmail = loginEmail.trim().toLowerCase();
-    const matchedWorker = workers.find(w => w.email.toLowerCase() === trimmedEmail);
+  // 1. Initial Load: Read Google Sheets database when app loads
+  useEffect(() => {
+    if (state.appsScriptUrl) {
+      loadDataFromSheets(false);
+    }
+  }, [state.appsScriptUrl]);
 
-    if (matchedWorker) {
-      if (matchedWorker.password && matchedWorker.password !== loginPassword) {
-        setAuthError('Contraseña incorrecta.');
-        return;
+  // 2. Real-time Polling: Read Google Sheets every 15 seconds
+  useEffect(() => {
+    if (!state.appsScriptUrl) return;
+
+    const intervalId = setInterval(() => {
+      loadDataFromSheets(false);
+    }, 15000);
+
+    return () => clearInterval(intervalId);
+  }, [state.appsScriptUrl]);
+
+  // Dynamically link user profiles to personnel list
+  const userProfiles: UserProfile[] = React.useMemo(() => {
+    if (!state.personnel || state.personnel.length === 0) return [];
+    const deduped = deduplicatePersonnel(state.personnel);
+    return deduped.map((p) => ({
+      id: p.id,
+      name: p.name,
+      role: p.role,
+      division: p.division,
+    }));
+  }, [state.personnel]);
+
+  // Combine local PIN dictionary with PINs stored in personnel records
+  const effectiveUserPins = React.useMemo(() => {
+    const map: Record<string, string> = { ...userPins };
+    state.personnel.forEach((p) => {
+      if (p.pin) {
+        map[p.id] = p.pin;
+        if (p.name) map[p.name] = p.pin;
       }
+    });
+    return map;
+  }, [state.personnel, userPins]);
 
-      const sessionData = {
-        userId: matchedWorker.id,
-        name: matchedWorker.name,
-        role: matchedWorker.role,
-        divisionId: matchedWorker.divisionId,
-        email: matchedWorker.email,
-        cargo: matchedWorker.cargo
-      };
+  const currentUserHasPin = Boolean(
+    effectiveUserPins[state.currentUser.id] ||
+    effectiveUserPins[state.currentUser.name] ||
+    state.personnel.find(p => p.id === state.currentUser.id || p.name === state.currentUser.name)?.pin
+  );
 
-      setCurrentSession(sessionData);
-      localStorage.setItem('vtv_real_session', JSON.stringify(sessionData));
-      addNotification('Sesión Iniciada', `Hola de nuevo, ${matchedWorker.name}`, 'success');
+  // Switch Active User (with PIN check)
+  const handleSelectUser = (user: UserProfile) => {
+    setState((prev) => ({ ...prev, currentUser: user }));
+    saveLocalActiveUser(user);
+    showToast(`Perfil cambiado a: ${user.name} (${user.role})`);
+  };
+
+  const handleRequestUserSwitch = (targetUser: UserProfile) => {
+    if (targetUser.id === state.currentUser.id || targetUser.name === state.currentUser.name) return;
+
+    const targetPin = effectiveUserPins[targetUser.id] || effectiveUserPins[targetUser.name];
+
+    if (targetPin) {
+      setPendingUserForSwitch(targetUser);
+      setIsPinVerificationOpen(true);
     } else {
-      setAuthError('Correo de usuario no encontrado en el sistema.');
+      handleSelectUser(targetUser);
     }
   };
 
-  // Handle Register
-  const handleRegisterWorker = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError(null);
-    if (!regName.trim() || !regEmail.trim()) {
-      setAuthError('Nombre y correo son campos obligatorios.');
-      return;
-    }
+  const handleSaveUserPin = (userId: string, pin: string | null) => {
+    setUserPins((prev) => {
+      const updated = { ...prev };
+      if (pin) {
+        updated[userId] = pin;
+        if (state.currentUser?.name) updated[state.currentUser.name] = pin;
+      } else {
+        delete updated[userId];
+        if (state.currentUser?.name) delete updated[state.currentUser.name];
+      }
+      saveLocalUserPins(updated);
+      return updated;
+    });
 
-    const newWorker: Worker = {
-      id: `w_${Date.now()}`,
-      name: regName.trim(),
-      email: regEmail.trim().toLowerCase(),
-      cedula: regCedula.trim(),
-      cargo: regCargo.trim() || 'Colaborador VTV',
-      divisionId: regDivisionId,
-      role: regRole,
-      password: regPassword.trim() || '12345678',
-      fixedShift: 'pool'
+    // Save PIN inside Personnel record and push to Google Sheets
+    setState((prev) => {
+      const updatedPersonnel = prev.personnel.map((p) => {
+        if (p.id === userId || p.name === prev.currentUser.name) {
+          return { ...p, pin: pin || undefined };
+        }
+        return p;
+      });
+      saveLocalPersonnel(updatedPersonnel);
+      autoPushToSheets(prev.materials, updatedPersonnel, prev.guardShifts);
+      return { ...prev, personnel: updatedPersonnel };
+    });
+
+    if (pin) {
+      showToast('PIN de seguridad guardado en el personal y sincronizado.');
+    } else {
+      showToast('PIN de seguridad eliminado.');
+    }
+  };
+
+  // Handle Edit Material Signal
+  const handleOpenEditSignal = (signal: MaterialSignal) => {
+    setEditingSignal(signal);
+    setIsEditModalOpen(true);
+  };
+
+  const handleSaveEditSignal = (updatedSignal: MaterialSignal) => {
+    setState((prev) => {
+      const updatedMaterials = prev.materials.map((m) =>
+        m.id === updatedSignal.id ? updatedSignal : m
+      );
+      saveLocalMaterials(updatedMaterials);
+      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts);
+      return { ...prev, materials: updatedMaterials };
+    });
+    showToast(`Material ${updatedSignal.id} modificado exitosamente.`);
+  };
+
+  // Update Material Signal Status
+  const handleUpdateSignalStatus = (signalId: string, newStatus: MaterialStatus) => {
+    const timestampStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+
+    setState((prev) => {
+      const updatedMaterials = prev.materials.map((mat) => {
+        if (mat.id === signalId) {
+          const isCataloged = newStatus === 'Por Archivar' || newStatus === 'Finalizado';
+          const isFinalized = newStatus === 'Finalizado';
+
+          const updated = {
+            ...mat,
+            status: newStatus,
+            isIngested: true,
+            isCataloged,
+            isFinalized,
+          };
+
+          if (isCataloged) {
+            updated.catalogedBy = updated.catalogedBy || prev.currentUser.name;
+            updated.catalogedAt = updated.catalogedAt || timestampStr;
+          }
+          if (isFinalized) {
+            updated.finalizedBy = updated.finalizedBy || prev.currentUser.name;
+            updated.finalizedAt = updated.finalizedAt || timestampStr;
+          }
+
+          return updated;
+        }
+        return mat;
+      });
+
+      saveLocalMaterials(updatedMaterials);
+      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts);
+      return { ...prev, materials: updatedMaterials };
+    });
+
+    showToast(`Señal ${signalId} actualizada a "${newStatus}".`);
+  };
+
+  // Toggle single boolean field independently
+  const handleToggleSignalBoolean = (signalId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized') => {
+    const timestampStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+
+    setState((prev) => {
+      const updatedMaterials = prev.materials.map((mat) => {
+        if (mat.id === signalId) {
+          const newVal = !mat[flag];
+          const updated = { ...mat, [flag]: newVal };
+
+          // Maintain audit metadata
+          if (flag === 'isCataloged' && newVal) {
+            updated.catalogedBy = prev.currentUser.name;
+            updated.catalogedAt = timestampStr;
+          }
+          if (flag === 'isFinalized' && newVal) {
+            updated.finalizedBy = prev.currentUser.name;
+            updated.finalizedAt = timestampStr;
+            updated.isCataloged = true; // Auto mark cataloged if finalized
+            if (!updated.catalogedBy) {
+              updated.catalogedBy = prev.currentUser.name;
+              updated.catalogedAt = timestampStr;
+            }
+          }
+
+          // Sync status text for consistency
+          if (updated.isFinalized) updated.status = 'Finalizado';
+          else if (updated.isCataloged) updated.status = 'Por Archivar';
+          else updated.status = 'Registrado';
+
+          return updated;
+        }
+        return mat;
+      });
+
+      saveLocalMaterials(updatedMaterials);
+      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts);
+      return { ...prev, materials: updatedMaterials };
+    });
+
+    showToast(`Señal ${signalId}: ${flag} actualizado.`);
+  };
+
+  // Batch Toggle Family Boolean
+  const handleBatchToggleFamilyBoolean = (familyId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized', value: boolean) => {
+    const timestampStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+
+    setState((prev) => {
+      const updatedMaterials = prev.materials.map((mat) => {
+        if (mat.familyId === familyId) {
+          const updated = { ...mat, [flag]: value };
+
+          if (flag === 'isCataloged' && value) {
+            updated.catalogedBy = updated.catalogedBy || prev.currentUser.name;
+            updated.catalogedAt = updated.catalogedAt || timestampStr;
+          }
+          if (flag === 'isFinalized' && value) {
+            updated.finalizedBy = updated.finalizedBy || prev.currentUser.name;
+            updated.finalizedAt = updated.finalizedAt || timestampStr;
+            updated.isCataloged = true;
+          }
+
+          if (updated.isFinalized) updated.status = 'Finalizado';
+          else if (updated.isCataloged) updated.status = 'Por Archivar';
+          else updated.status = 'Registrado';
+
+          return updated;
+        }
+        return mat;
+      });
+
+      saveLocalMaterials(updatedMaterials);
+      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts);
+      return { ...prev, materials: updatedMaterials };
+    });
+
+    showToast(`Familia ${familyId}: ${flag} = ${value ? 'Activado' : 'Desactivado'}.`);
+  };
+
+  // Batch Update Family Status
+  const handleBatchUpdateFamilyStatus = (familyId: string, newStatus: MaterialStatus) => {
+    const timestampStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+
+    setState((prev) => {
+      const updatedMaterials = prev.materials.map((mat) => {
+        if (mat.familyId === familyId) {
+          const isCataloged = newStatus === 'Por Archivar' || newStatus === 'Finalizado';
+          const isFinalized = newStatus === 'Finalizado';
+
+          const updated = {
+            ...mat,
+            status: newStatus,
+            isIngested: true,
+            isCataloged,
+            isFinalized,
+          };
+
+          if (isCataloged) {
+            updated.catalogedBy = updated.catalogedBy || prev.currentUser.name;
+            updated.catalogedAt = updated.catalogedAt || timestampStr;
+          }
+          if (isFinalized) {
+            updated.finalizedBy = updated.finalizedBy || prev.currentUser.name;
+            updated.finalizedAt = updated.finalizedAt || timestampStr;
+          }
+
+          return updated;
+        }
+        return mat;
+      });
+
+      saveLocalMaterials(updatedMaterials);
+      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts);
+      return { ...prev, materials: updatedMaterials };
+    });
+
+    showToast(`Familia ${familyId} actualizada a "${newStatus}".`);
+  };
+
+  // Add New Materials
+  const handleAddMaterials = (newSignals: MaterialSignal[]) => {
+    setState((prev) => {
+      const updatedMaterials = [...newSignals, ...prev.materials];
+      saveLocalMaterials(updatedMaterials);
+      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts);
+      return { ...prev, materials: updatedMaterials };
+    });
+
+    showToast(`Registrado(s) ${newSignals.length} elemento(s) audiovisual(es) con éxito.`);
+  };
+
+  // Delete Signal
+  const handleDeleteSignal = (signalId: string) => {
+    setState((prev) => {
+      const updatedMaterials = prev.materials.filter((m) => m.id !== signalId);
+      saveLocalMaterials(updatedMaterials);
+      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts);
+      return { ...prev, materials: updatedMaterials };
+    });
+
+    showToast(`Señal ${signalId} eliminada.`);
+  };
+
+  // Add Guard Shift & Update Personnel Balance (single or batch)
+  const handleAddBatchGuardShifts = (newShiftsData: Omit<GuardShiftRecord, 'id' | 'createdAt'>[]) => {
+    if (newShiftsData.length === 0) return;
+
+    const createdTimestamp = new Date().toISOString().split('T')[0];
+    const newShiftRecords: GuardShiftRecord[] = newShiftsData.map((s, idx) => ({
+      ...s,
+      id: `sh-${Date.now()}-${idx}`,
+      createdAt: createdTimestamp,
+    }));
+
+    setState((prev) => {
+      const updatedShifts = [...newShiftRecords, ...prev.guardShifts];
+
+      // Build map of balance adjustments per personnelId
+      const workedMap = new Map<string, number>();
+      const generatedMap = new Map<string, number>();
+      const takenMap = new Map<string, number>();
+
+      newShiftsData.forEach((s) => {
+        const pid = s.personnelId;
+        if (s.shiftType === 'Guardia (Fin de semana/Feriado)') {
+          workedMap.set(pid, (workedMap.get(pid) || 0) + 1);
+          generatedMap.set(pid, (generatedMap.get(pid) || 0) + 1);
+        } else if (s.shiftType === 'Día Libre') {
+          takenMap.set(pid, (takenMap.get(pid) || 0) + 1);
+        } else if (s.shiftType === 'Vacaciones') {
+          let days = 1;
+          if (s.endDate) {
+            const start = new Date(s.date);
+            const end = new Date(s.endDate);
+            const diffTime = Math.abs(end.getTime() - start.getTime());
+            days = Math.max(1, Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1);
+          }
+          takenMap.set(pid, (takenMap.get(pid) || 0) + days);
+        }
+      });
+
+      const updatedPersonnel = prev.personnel.map((per) => {
+        const addWorked = workedMap.get(per.id) || 0;
+        const addGenerated = generatedMap.get(per.id) || 0;
+        const addTaken = takenMap.get(per.id) || 0;
+
+        if (addWorked === 0 && addGenerated === 0 && addTaken === 0) {
+          return per;
+        }
+
+        const worked = per.guardDaysWorked + addWorked;
+        const generated = per.daysOffGenerated + addGenerated;
+        const taken = per.daysOffTaken + addTaken;
+        const balance = generated - taken;
+
+        return {
+          ...per,
+          guardDaysWorked: worked,
+          daysOffGenerated: generated,
+          daysOffTaken: taken,
+          balanceDays: balance,
+        };
+      });
+
+      saveLocalGuardShifts(updatedShifts);
+      saveLocalPersonnel(updatedPersonnel);
+      autoPushToSheets(prev.materials, updatedPersonnel, updatedShifts);
+
+      return {
+        ...prev,
+        guardShifts: updatedShifts,
+        personnel: updatedPersonnel,
+      };
+    });
+
+    showToast(`Asignación de turno(s) realizada con éxito (${newShiftsData.length}).`);
+  };
+
+  const handleAddGuardShift = (shiftData: Omit<GuardShiftRecord, 'id' | 'createdAt'>) => {
+    handleAddBatchGuardShifts([shiftData]);
+  };
+
+  // Delete Shift Record
+  const handleDeleteGuardShift = (shiftId: string) => {
+    setState((prev) => {
+      const targetShift = prev.guardShifts.find((s) => s.id === shiftId);
+      if (!targetShift) return prev;
+
+      const updatedShifts = prev.guardShifts.filter((s) => s.id !== shiftId);
+
+      const updatedPersonnel = prev.personnel.map((per) => {
+        if (per.id === targetShift.personnelId) {
+          let worked = per.guardDaysWorked;
+          let generated = per.daysOffGenerated;
+          let taken = per.daysOffTaken;
+
+          if (targetShift.shiftType === 'Guardia (Fin de semana/Feriado)') {
+            worked = Math.max(0, worked - 1);
+            generated = Math.max(0, generated - 1);
+          } else if (targetShift.shiftType === 'Día Libre') {
+            taken = Math.max(0, taken - 1);
+          } else if (targetShift.shiftType === 'Vacaciones') {
+            let days = 1;
+            if (targetShift.endDate) {
+              const start = new Date(targetShift.date);
+              const end = new Date(targetShift.endDate);
+              const diffTime = Math.abs(end.getTime() - start.getTime());
+              days = Math.max(1, Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1);
+            }
+            taken = Math.max(0, taken - days);
+          }
+
+          const balance = generated - taken;
+
+          return {
+            ...per,
+            guardDaysWorked: worked,
+            daysOffGenerated: generated,
+            daysOffTaken: taken,
+            balanceDays: balance,
+          };
+        }
+        return per;
+      });
+
+      saveLocalGuardShifts(updatedShifts);
+      saveLocalPersonnel(updatedPersonnel);
+      autoPushToSheets(prev.materials, updatedPersonnel, updatedShifts);
+
+      return {
+        ...prev,
+        guardShifts: updatedShifts,
+        personnel: updatedPersonnel,
+      };
+    });
+
+    showToast('Asignación eliminada.');
+  };
+
+  // Add New Personnel
+  const handleAddPersonnel = (
+    personData: Omit<Personnel, 'id' | 'guardDaysWorked' | 'daysOffGenerated' | 'daysOffTaken' | 'balanceDays'>
+  ) => {
+    const newPerson: Personnel = {
+      ...personData,
+      id: `per-${Date.now()}`,
+      guardDaysWorked: 0,
+      daysOffGenerated: 0,
+      daysOffTaken: 0,
+      balanceDays: 0,
     };
 
-    try {
-      await db.registerWorker(newWorker);
-      setWorkers(prev => [...prev, newWorker]);
-      const sessionData = {
-        userId: newWorker.id,
-        name: newWorker.name,
-        role: newWorker.role,
-        divisionId: newWorker.divisionId,
-        email: newWorker.email,
-        cargo: newWorker.cargo
-      };
-      setCurrentSession(sessionData);
-      localStorage.setItem('vtv_real_session', JSON.stringify(sessionData));
-      addNotification('Cuenta Creada', `Registro exitoso como ${newWorker.name}`, 'success');
-      pushLatestToGoogleSheets().catch(() => null);
-    } catch (err) {
-      setAuthError('Error al crear la cuenta. Intenta de nuevo.');
-    }
-  };
-
-  // Handle Logout
-  const handleLogout = () => {
-    setCurrentSession(null);
-    localStorage.removeItem('vtv_real_session');
-    addNotification('Sesión Cerrada', 'Has salido del sistema.', 'info');
-  };
-
-  // Task Handlers
-  const handleSaveCard = async (card: TaskCard) => {
-    const existingIdx = taskCards.findIndex(c => c.id === card.id);
-    let updated: TaskCard[];
-    if (existingIdx >= 0) {
-      updated = [...taskCards];
-      updated[existingIdx] = card;
-    } else {
-      updated = [card, ...taskCards];
-    }
-    setTaskCards(updated);
-    localStorage.setItem('vtv_task_cards', JSON.stringify(updated));
-    await db.upsertTaskCard(card);
-    pushLatestToGoogleSheets().catch(() => null);
-  };
-
-  const handleDeleteCard = async (cardId: string) => {
-    const updated = taskCards.filter(c => c.id !== cardId);
-    setTaskCards(updated);
-    localStorage.setItem('vtv_task_cards', JSON.stringify(updated));
-    await db.deleteTaskCard(cardId);
-    pushLatestToGoogleSheets().catch(() => null);
-  };
-
-  const handleAddBoard = async (board: TaskBoard) => {
-    const updated = [...taskBoards, board];
-    setTaskBoards(updated);
-    localStorage.setItem('vtv_task_boards', JSON.stringify(updated));
-    await db.createTaskBoard(board);
-    pushLatestToGoogleSheets().catch(() => null);
-  };
-
-  const handleDeleteBoard = async (boardId: string) => {
-    const updated = taskBoards.filter(b => b.id !== boardId);
-    setTaskBoards(updated);
-    localStorage.setItem('vtv_task_boards', JSON.stringify(updated));
-    await db.deleteTaskBoard(boardId);
-    pushLatestToGoogleSheets().catch(() => null);
-  };
-
-  // Notification Handlers
-  const handleMarkNotificationRead = (id: string) => {
-    const updated = taskNotifications.map(n => n.id === id ? { ...n, read: true } : n);
-    setTaskNotifications(updated);
-    localStorage.setItem('vtv_task_notifications', JSON.stringify(updated));
-  };
-
-  const handleMarkAllNotificationsRead = (workerId?: string) => {
-    const updated = taskNotifications.map(n => {
-      if (!workerId || n.workerId === workerId) return { ...n, read: true };
-      return n;
+    setState((prev) => {
+      const updatedPersonnel = [...prev.personnel, newPerson];
+      saveLocalPersonnel(updatedPersonnel);
+      autoPushToSheets(prev.materials, updatedPersonnel, prev.guardShifts);
+      return { ...prev, personnel: updatedPersonnel };
     });
-    setTaskNotifications(updated);
-    localStorage.setItem('vtv_task_notifications', JSON.stringify(updated));
+
+    showToast(`Personal registrado: ${newPerson.name}`);
   };
 
-  const handleClearAllNotifications = (workerId?: string) => {
-    const updated = workerId ? taskNotifications.filter(n => n.workerId !== workerId) : [];
-    setTaskNotifications(updated);
-    localStorage.setItem('vtv_task_notifications', JSON.stringify(updated));
+  // Quick Adjust Days for Personnel
+  const handleQuickAdjustDays = (personnelId: string, type: 'guard' | 'dayOff') => {
+    setState((prev) => {
+      const updatedPersonnel = prev.personnel.map((per) => {
+        if (per.id === personnelId) {
+          let worked = per.guardDaysWorked;
+          let generated = per.daysOffGenerated;
+          let taken = per.daysOffTaken;
+
+          if (type === 'guard') {
+            worked += 1;
+            generated += 1;
+          } else {
+            taken += 1;
+          }
+
+          const balance = generated - taken;
+
+          return {
+            ...per,
+            guardDaysWorked: worked,
+            daysOffGenerated: generated,
+            daysOffTaken: taken,
+            balanceDays: balance,
+          };
+        }
+        return per;
+      });
+
+      saveLocalPersonnel(updatedPersonnel);
+      autoPushToSheets(prev.materials, updatedPersonnel, prev.guardShifts);
+      return { ...prev, personnel: updatedPersonnel };
+    });
+
+    showToast('Balance de personal actualizado.');
   };
 
-  const handleDeleteNotification = (id: string) => {
-    const updated = taskNotifications.filter(n => n.id !== id);
-    setTaskNotifications(updated);
-    localStorage.setItem('vtv_task_notifications', JSON.stringify(updated));
+  // Save Apps Script URL
+  const handleSaveAppsScriptUrl = (url: string) => {
+    setState((prev) => ({ ...prev, appsScriptUrl: url }));
+    saveLocalAppsScriptUrl(url);
+    showToast('URL de Google Apps Script actualizada.');
   };
 
-  const handleManualSync = async () => {
-    setIsSyncing(true);
-    try {
-      await initConnectionAndLoadData();
-      addNotification('Sincronización Completa', 'Datos actualizados desde Google Sheets.', 'success');
-    } catch (err) {
-      addNotification('Sincronización Interrumpida', 'Verifica tu conexión a Google Sheets.', 'info');
-    } finally {
-      setIsSyncing(false);
+  // Trigger Sync (Push local state then fetch latest state from Google Sheets)
+  const handleSyncNow = async () => {
+    if (!state.appsScriptUrl) {
+      showToast('Por favor configure la URL de Google Apps Script en la pestaña de Configuración.', 'error');
+      setActiveTab('settings');
+      return;
     }
+
+    setState((prev) => ({ ...prev, isSyncing: true }));
+    await syncWithGoogleSheets(state.appsScriptUrl, {
+      materials: state.materials,
+      personnel: state.personnel,
+      guardShifts: state.guardShifts,
+    });
+    await loadDataFromSheets(true);
   };
 
-  const handleUpdateWorkers = (updated: Worker[]) => {
-    setWorkers(updated);
-    localStorage.setItem('vtv_workers', JSON.stringify(updated));
-    pushLatestToGoogleSheets().catch(() => null);
+  // Open Material Modal with presets
+  const handleOpenMaterialModal = (familyId?: string, title?: string, division?: DivisionType) => {
+    setPresetFamilyId(familyId);
+    setPresetTitle(title);
+    setPresetDivision(division);
+    setIsMaterialModalOpen(true);
   };
-
-  const handleUpdateDivisions = (updated: Division[]) => {
-    setDivisions(updated);
-    localStorage.setItem('vtv_divisions', JSON.stringify(updated));
-    pushLatestToGoogleSheets().catch(() => null);
-  };
-
-  const handleUpdateAssignments = (updated: ShiftAssignment[]) => {
-    setAssignments(updated);
-    localStorage.setItem('vtv_assignments', JSON.stringify(updated));
-    pushLatestToGoogleSheets().catch(() => null);
-  };
-
-  // 1. Initial Loading Screen
-  if (loading && isConnectedToSheet === null) {
-    return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4">
-        <Loader2 size={40} className="text-cyan-400 animate-spin mb-4" />
-        <h2 className="text-base font-black text-white">Conectando con Google Sheets</h2>
-        <p className="text-xs text-slate-400 mt-1">Cargando registros centralizados de VTV...</p>
-      </div>
-    );
-  }
-
-  // 2. Mandatory Blocking Connection Guard Screen if Connection Fails or Not Set
-  if (isConnectedToSheet === false) {
-    return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4 relative overflow-hidden font-sans">
-        <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-red-600/10 rounded-full blur-[140px] pointer-events-none" />
-        <div className="absolute bottom-10 right-10 w-72 h-72 bg-amber-500/10 rounded-full blur-[120px] pointer-events-none" />
-
-        <motion.div 
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="w-full max-w-xl bg-slate-900/90 border border-white/10 backdrop-blur-2xl p-6 sm:p-8 rounded-3xl shadow-[0_0_50px_rgba(0,0,0,0.8)] space-y-6 relative z-10"
-        >
-          <div className="flex items-center gap-4">
-            <div className="p-3.5 bg-red-500/20 text-red-400 border border-red-500/30 rounded-2xl shrink-0">
-              <FileSpreadsheet size={32} />
-            </div>
-            <div>
-              <h1 className="text-xl font-black text-white tracking-tight">Conexión a Google Sheets Requerida</h1>
-              <p className="text-xs text-slate-400 font-medium">Canal Venezolana de Televisión • Sistema Integrado</p>
-            </div>
-          </div>
-
-          <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-2xl text-amber-200/90 text-xs leading-relaxed flex items-start gap-3">
-            <AlertTriangle className="text-amber-400 shrink-0 mt-0.5" size={18} />
-            <div>
-              <strong className="font-bold text-amber-300 block mb-0.5">La aplicación opera en vivo con tu Hoja de Google Sheet</strong>
-              No es posible iniciar la plataforma sin una conexión activa a Google Sheets. Si la conexión falla, debes reconectar la Hoja para asegurar que cada cambio se guarde directamente.
-            </div>
-          </div>
-
-          {connectionError && (
-            <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-2xl text-red-300 text-xs leading-relaxed font-mono">
-              <strong className="text-red-400 block mb-1">Estado de Conexión:</strong>
-              {connectionError}
-            </div>
-          )}
-
-          <form onSubmit={handleReconnectSubmit} className="space-y-4 pt-1">
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-200 block">
-                1. URL o ID de la Hoja de Google Spreadsheet (Obligatorio) *
-              </label>
-              <input
-                type="text"
-                required
-                value={reconnectUrlInput}
-                onChange={(e) => setReconnectUrlInput(e.target.value)}
-                placeholder="https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit"
-                className="w-full px-4 py-3 bg-slate-950 border border-white/10 rounded-2xl text-xs text-white placeholder-slate-600 focus:outline-none focus:border-red-500/50 font-mono"
-              />
-              <p className="text-[11px] text-slate-400">
-                Pega el enlace completo de tu Hoja de Cálculo. Debe tener permisos de lectura ("Cualquier persona con el enlace").
-              </p>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-200 block">
-                2. URL de Google Apps Script Web App (Recomendado para Escritura en Tiempo Real)
-              </label>
-              <input
-                type="text"
-                value={reconnectAppsScriptUrlInput}
-                onChange={(e) => setReconnectAppsScriptUrlInput(e.target.value)}
-                placeholder="https://script.google.com/macros/s/.../exec"
-                className="w-full px-4 py-3 bg-slate-950 border border-white/10 rounded-2xl text-xs text-white placeholder-slate-600 focus:outline-none focus:border-red-500/50 font-mono"
-              />
-              <p className="text-[11px] text-slate-400">
-                Opcional. Habilita el guardado de vuelta directo a Google Sheets sin cuentas ni ventanas emergentes.
-              </p>
-            </div>
-
-            <div className="pt-2 flex flex-col sm:flex-row gap-3">
-              <button
-                type="submit"
-                disabled={loading}
-                className="flex-1 py-3.5 px-5 bg-gradient-to-r from-red-600 to-rose-500 hover:from-red-500 hover:to-rose-400 text-white font-bold text-xs rounded-2xl transition-all shadow-lg shadow-red-900/30 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-              >
-                {loading ? (
-                  <>
-                    <Loader2 className="animate-spin" size={16} />
-                    <span>Verificando Conexión a Google Sheets...</span>
-                  </>
-                ) : (
-                  <>
-                    <RefreshCw size={16} />
-                    <span>Probar y Reconectar a Google Sheet</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </form>
-        </motion.div>
-      </div>
-    );
-  }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-cyan-500 selection:text-slate-950 pb-20 md:pb-8">
-      
-      {/* If No Session -> Render Auth Page */}
-      {!currentSession ? (
-        <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
-          <motion.div 
-            initial={{ opacity: 0, y: 15 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="w-full max-w-md bg-slate-900/90 border border-white/10 rounded-3xl p-6 sm:p-8 shadow-[0_0_40px_rgba(0,0,0,0.8)] backdrop-blur-xl"
-          >
-            {/* Header / Logo */}
-            <div className="text-center mb-6 space-y-2">
-              <div className="inline-flex p-3 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 mb-1">
-                <CheckSquare size={32} />
-              </div>
-              <h1 className="text-2xl font-black text-white tracking-tight">VTV - Gestión & Vacaciones</h1>
-              <p className="text-xs text-slate-400">Canal Venezolana de Televisión • Sistema Integrado</p>
-            </div>
-
-            {/* Tabs for Credentials / Register */}
-            <div className="grid grid-cols-2 bg-slate-950 p-1 rounded-2xl border border-white/5 mb-4 text-xs font-bold">
-              <button
-                onClick={() => { setAuthTab('login'); setAuthError(null); }}
-                className={`py-2 rounded-xl transition-all ${authTab === 'login' ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' : 'text-slate-400 hover:text-white'}`}
-              >
-                Ingresar
-              </button>
-              <button
-                onClick={() => { setAuthTab('register'); setAuthError(null); }}
-                className={`py-2 rounded-xl transition-all ${authTab === 'register' ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' : 'text-slate-400 hover:text-white'}`}
-              >
-                Registrarse
-              </button>
-            </div>
-
-            {authError && (
-              <div className="mb-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs font-medium flex items-center gap-2">
-                <AlertTriangle size={16} className="shrink-0" />
-                <span>{authError}</span>
-              </div>
-            )}
-
-            {authTab === 'login' ? (
-              <form onSubmit={handleCredentialsLogin} className="space-y-3">
-                <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Correo Electrónico</label>
-                  <input
-                    type="email"
-                    required
-                    value={loginEmail}
-                    onChange={(e) => setLoginEmail(e.target.value)}
-                    placeholder="usuario@vtv.gob.ve"
-                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Contraseña</label>
-                  <input
-                    type="password"
-                    required
-                    value={loginPassword}
-                    onChange={(e) => setLoginPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50"
-                  />
-                </div>
-                <button
-                  type="submit"
-                  className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black rounded-xl text-xs transition-all shadow-lg cursor-pointer mt-2"
-                >
-                  Iniciar Sesión
-                </button>
-              </form>
-            ) : (
-              <form onSubmit={handleRegisterWorker} className="space-y-3">
-                <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Nombre Completo</label>
-                  <input
-                    type="text"
-                    required
-                    value={regName}
-                    onChange={(e) => setRegName(e.target.value)}
-                    placeholder="Juan Pérez"
-                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Cédula</label>
-                    <input
-                      type="text"
-                      value={regCedula}
-                      onChange={(e) => setRegCedula(e.target.value)}
-                      placeholder="V-12345678"
-                      className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Cargo</label>
-                    <input
-                      type="text"
-                      value={regCargo}
-                      onChange={(e) => setRegCargo(e.target.value)}
-                      placeholder="Productor / Operador"
-                      className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50"
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Correo Electrónico</label>
-                  <input
-                    type="email"
-                    required
-                    value={regEmail}
-                    onChange={(e) => setRegEmail(e.target.value)}
-                    placeholder="correo@vtv.gob.ve"
-                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">División</label>
-                  <select
-                    value={regDivisionId}
-                    onChange={(e) => setRegDivisionId(e.target.value)}
-                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500/50"
-                  >
-                    {divisions.map(d => (
-                      <option key={d.id} value={d.id}>{d.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Contraseña</label>
-                  <input
-                    type="password"
-                    required
-                    value={regPassword}
-                    onChange={(e) => setRegPassword(e.target.value)}
-                    placeholder="Mínimo 6 caracteres"
-                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50"
-                  />
-                </div>
-                <button
-                  type="submit"
-                  className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black rounded-xl text-xs transition-all shadow-lg cursor-pointer mt-2"
-                >
-                  Registrar Cuenta
-                </button>
-              </form>
-            )}
-          </motion.div>
-        </div>
-      ) : (
-        /* Authenticated Main App Interface */
-        <div className="min-h-screen flex flex-col">
-          
-          {/* Header Bar */}
-          <header className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-white/10 px-4 py-3">
-            <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
-              
-              {/* App Brand */}
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-xl bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">
-                  <CheckSquare size={20} />
-                </div>
-                <div>
-                  <h1 className="text-sm font-black text-white tracking-tight leading-tight">VTV Gestión & Vacaciones</h1>
-                  <p className="text-[10px] text-slate-400 font-medium">Google Sheets Database • Tiempo Real</p>
-                </div>
-              </div>
-
-              {/* Google Sheets Status Badge & Header Controls */}
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setShowBlueprintModal(true)}
-                  className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                    spreadsheetId 
-                      ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25'
-                      : 'bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-amber-500/25'
-                  }`}
-                  title="Gestionar Base de Datos en Google Sheets"
-                >
-                  <FileSpreadsheet size={14} />
-                  <span className="hidden sm:inline">
-                    {spreadsheetId ? '🟢 Google Sheets Conectado' : '🟡 Modo Local (Conectar)'}
-                  </span>
-                  <span className="sm:hidden">
-                    {spreadsheetId ? '🟢 Sheets' : '🟡 Conectar'}
-                  </span>
-                </button>
-
-                <button
-                  onClick={handleManualSync}
-                  disabled={isSyncing}
-                  className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-white/10 transition-all cursor-pointer"
-                  title="Sincronizar ahora con Google Sheets"
-                >
-                  <RefreshCw size={14} className={isSyncing ? 'animate-spin text-cyan-400' : ''} />
-                </button>
-
-                {/* User Session Dropdown / Logout */}
-                <div className="flex items-center gap-2 pl-2 border-l border-white/10">
-                  <div className="hidden sm:block text-right">
-                    <span className="text-xs font-bold text-white block">{currentSession.name}</span>
-                    <span className="text-[10px] text-cyan-400 uppercase font-semibold block">{currentSession.cargo}</span>
-                  </div>
-                  <button
-                    onClick={handleLogout}
-                    className="p-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 transition-all cursor-pointer"
-                    title="Cerrar Sesión"
-                  >
-                    <LogOut size={16} />
-                  </button>
-                </div>
-              </div>
-
-            </div>
-
-            {/* Desktop Navigation Tabs */}
-            <div className="hidden sm:flex items-center justify-center gap-2 mt-3 pt-2 border-t border-white/5">
-              <button
-                onClick={() => setActiveTab('tareas')}
-                className={`px-5 py-2 rounded-xl text-xs font-extrabold transition-all flex items-center gap-2 cursor-pointer ${
-                  activeTab === 'tareas'
-                    ? 'bg-cyan-500 text-slate-950 shadow-lg shadow-cyan-500/20'
-                    : 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-white'
-                }`}
-              >
-                <CheckSquare size={16} />
-                <span>Gestión de Tareas</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('vacaciones')}
-                className={`px-5 py-2 rounded-xl text-xs font-extrabold transition-all flex items-center gap-2 cursor-pointer ${
-                  activeTab === 'vacaciones'
-                    ? 'bg-purple-500 text-white shadow-lg shadow-purple-500/20'
-                    : 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-white'
-                }`}
-              >
-                <Umbrella size={16} />
-                <span>Vacaciones y Días Libres</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('perfil')}
-                className={`px-5 py-2 rounded-xl text-xs font-extrabold transition-all flex items-center gap-2 cursor-pointer ${
-                  activeTab === 'perfil'
-                    ? 'bg-indigo-500 text-white shadow-lg shadow-indigo-500/20'
-                    : 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-white'
-                }`}
-              >
-                <UserCircle size={16} />
-                <span>Mi Perfil & Personal</span>
-              </button>
-            </div>
-          </header>
-
-          {/* Main View Container */}
-          <main className="max-w-7xl w-full mx-auto p-3 sm:p-6 flex-grow">
-            {loading ? (
-              <div className="min-h-[400px] flex items-center justify-center">
-                <div className="flex flex-col items-center gap-3">
-                  <Loader2 size={36} className="text-cyan-400 animate-spin" />
-                  <p className="text-xs text-slate-400 font-medium">Sincronizando registros con Google Sheets...</p>
-                </div>
-              </div>
-            ) : (
-              <AnimatePresence mode="wait">
-                <motion.div
-                  key={activeTab}
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  transition={{ duration: 0.15 }}
-                >
-                  {activeTab === 'tareas' && (
-                    <TaskManager
-                      boards={taskBoards}
-                      cards={taskCards}
-                      notifications={taskNotifications}
-                      workers={sortedWorkers}
-                      divisions={divisions}
-                      currentSession={currentSession}
-                      onAddBoard={handleAddBoard}
-                      onDeleteBoard={handleDeleteBoard}
-                      onSaveCard={handleSaveCard}
-                      onDeleteCard={handleDeleteCard}
-                      onMarkNotificationRead={handleMarkNotificationRead}
-                      onMarkAllNotificationsRead={handleMarkAllNotificationsRead}
-                      onClearAllNotifications={handleClearAllNotifications}
-                      onDeleteNotification={handleDeleteNotification}
-                      onAddNotificationToast={addNotification}
-                      onManualSync={handleManualSync}
-                      isSyncing={isSyncing}
-                    />
-                  )}
-
-                  {activeTab === 'vacaciones' && (
-                    <VacationControl
-                      divisions={divisions}
-                      workers={sortedWorkers}
-                      assignments={assignments}
-                      onUpdateWorkers={handleUpdateWorkers}
-                      userRole={currentSession.role}
-                      userDivisionId={currentSession.divisionId}
-                      currentSession={currentSession}
-                      freeDayRequests={freeDayRequests}
-                      onUpdateFreeDayRequests={(updatedReqs) => {
-                        setFreeDayRequests(updatedReqs);
-                        getLocalDb.saveFreeDayRequests(updatedReqs);
-                        pushLatestToGoogleSheets().catch(() => null);
-                      }}
-                      onUpdateAssignments={handleUpdateAssignments}
-                      onAddNotification={addNotification}
-                    />
-                  )}
-
-                  {activeTab === 'perfil' && (
-                    <div className="space-y-6">
-                      {/* Profile Overview Card */}
-                      <div className="bg-slate-900 border border-white/10 rounded-3xl p-6 space-y-4">
-                        <div className="flex items-center gap-4">
-                          <div className="w-14 h-14 rounded-2xl bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 flex items-center justify-center text-xl font-bold">
-                            {currentSession.name.charAt(0).toUpperCase()}
-                          </div>
-                          <div>
-                            <h2 className="text-lg font-bold text-white">{currentSession.name}</h2>
-                            <p className="text-xs text-slate-400">{currentSession.email}</p>
-                            <span className="inline-block mt-1 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
-                              {currentSession.cargo} • Rol: {currentSession.role}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="pt-4 border-t border-white/10 flex flex-wrap gap-3">
-                          <button
-                            onClick={() => setShowBlueprintModal(true)}
-                            className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold border border-white/10 flex items-center gap-2 cursor-pointer transition-all"
-                          >
-                            <FileSpreadsheet size={16} className="text-emerald-400" />
-                            <span>Configurar Google Sheets</span>
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Admin Panel for Superadmin / Gerencia */}
-                      {(currentSession.role === 'superadmin' || currentSession.cargo.toLowerCase().includes('gerente')) && (
-                        <AdminPanel
-                          divisions={divisions}
-                          workers={sortedWorkers}
-                          onUpdateDivisions={handleUpdateDivisions}
-                          onUpdateWorkers={handleUpdateWorkers}
-                          onAddNotification={addNotification}
-                          onOpenBlueprint={() => setShowBlueprintModal(true)}
-                        />
-                      )}
-                    </div>
-                  )}
-                </motion.div>
-              </AnimatePresence>
-            )}
-          </main>
-
-          {/* Mobile Bottom Navigation Bar */}
-          <nav className="sm:hidden fixed bottom-0 left-0 right-0 z-50 bg-slate-900/95 backdrop-blur-lg border-t border-white/10 px-3 py-2 flex items-center justify-around text-[10px] font-bold">
-            <button
-              onClick={() => setActiveTab('tareas')}
-              className={`flex flex-col items-center gap-1 transition-all ${
-                activeTab === 'tareas' ? 'text-cyan-400' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <CheckSquare size={18} />
-              <span>Tareas</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('vacaciones')}
-              className={`flex flex-col items-center gap-1 transition-all ${
-                activeTab === 'vacaciones' ? 'text-purple-400' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Umbrella size={18} />
-              <span>Vacaciones</span>
-            </button>
-
-            <button
-              onClick={() => setShowBlueprintModal(true)}
-              className="flex flex-col items-center gap-1 text-emerald-400 hover:text-emerald-300"
-            >
-              <FileSpreadsheet size={18} />
-              <span>Sheets</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('perfil')}
-              className={`flex flex-col items-center gap-1 transition-all ${
-                activeTab === 'perfil' ? 'text-indigo-400' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <UserCircle size={18} />
-              <span>Perfil</span>
-            </button>
-          </nav>
-
+    <div className="min-h-screen bg-[#0F172A] text-slate-100 font-sans flex flex-col selection:bg-blue-600 selection:text-white">
+      {/* Toast Notification */}
+      {notification && (
+        <div
+          className={`fixed bottom-5 right-5 z-50 px-4 py-3 rounded-xl shadow-2xl border text-xs font-bold flex items-center gap-2 animate-bounce ${
+            notification.type === 'success'
+              ? 'bg-emerald-950 border-emerald-500 text-emerald-200'
+              : 'bg-red-950 border-red-500 text-red-200'
+          }`}
+        >
+          <span>{notification.message}</span>
         </div>
       )}
 
-      {/* Blueprint / Google Sheets Modal Overlay */}
-      <AnimatePresence>
-        {showBlueprintModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 overflow-hidden">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setShowBlueprintModal(false)}
-              className="absolute inset-0 bg-slate-950/85 backdrop-blur-md cursor-pointer"
-            />
-            
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 15 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 15 }}
-              className="relative w-full max-w-4xl max-h-[90vh] overflow-y-auto bg-slate-900 border border-white/10 rounded-3xl p-4 sm:p-8 shadow-[0_0_50px_rgba(34,211,238,0.15)] space-y-6"
+      {/* Main Top Navigation */}
+      <Navbar
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        currentUser={state.currentUser}
+        onOpenUserSelector={() => setIsUserSelectorOpen(true)}
+        onOpenPinModal={() => setIsPinModalOpen(true)}
+        userHasPin={currentUserHasPin}
+        appsScriptUrl={state.appsScriptUrl}
+        isSyncing={state.isSyncing}
+        onSyncNow={handleSyncNow}
+      />
+
+      {/* Main Content Area */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+        {/* Solicitation Banner for Users without a Security PIN */}
+        {!currentUserHasPin && (
+          <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-950/80 via-slate-900 to-amber-950/60 border border-amber-500/50 text-amber-200 text-xs shadow-xl flex flex-col sm:flex-row items-center justify-between gap-3 animate-fade-in">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/40 shrink-0">
+                <KeyRound className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="font-bold text-amber-100 text-sm flex items-center gap-2">
+                  <span>Seguridad de Perfil: Crea tu PIN Personal</span>
+                  <span className="px-2 py-0.5 rounded bg-amber-500/30 text-amber-300 text-[10px] uppercase font-mono">
+                    RECOMENDADO
+                  </span>
+                </h4>
+                <p className="text-slate-300 mt-0.5">
+                  Hola <strong className="text-white">{state.currentUser.name}</strong>, asigna un PIN numérico para proteger el acceso a tu perfil y prevenir cambios no autorizados.
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setIsPinModalOpen(true)}
+              className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs transition-all shadow-md flex items-center gap-2 shrink-0 hover:scale-105"
             >
-              <DatabaseSchema onClose={() => setShowBlueprintModal(false)} />
-            </motion.div>
+              <KeyRound className="w-4 h-4" />
+              <span>Crear mi PIN Ahora</span>
+            </button>
           </div>
         )}
-      </AnimatePresence>
 
-      {/* Toast Notifications */}
-      <div className="fixed bottom-16 sm:bottom-5 right-3 sm:right-5 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none">
-        <AnimatePresence>
-          {notifications.map((notif, idx) => (
-            <motion.div
-              key={notif.id || `toast_${idx}`}
-              initial={{ opacity: 0, x: 50, scale: 0.9 }}
-              animate={{ opacity: 1, x: 0, scale: 1 }}
-              exit={{ opacity: 0, x: 50, scale: 0.9 }}
-              className="p-3.5 bg-slate-950/95 border border-cyan-500/20 shadow-xl rounded-2xl flex items-start gap-3 pointer-events-auto backdrop-blur-lg"
-            >
-              {notif.type === 'success' ? (
-                <CheckCircle2 size={18} className="text-cyan-400 shrink-0 mt-0.5" />
-              ) : (
-                <Info size={18} className="text-violet-400 shrink-0 mt-0.5" />
-              )}
-              <div className="space-y-0.5">
-                <h5 className="font-bold text-xs text-white leading-tight">{notif.title}</h5>
-                <p className="text-[11px] text-slate-300 leading-normal">{notif.desc}</p>
-              </div>
-            </motion.div>
-          ))}
-        </AnimatePresence>
-      </div>
+        {activeTab === 'materials' && (
+          <MaterialListModule
+            materials={state.materials}
+            currentUser={state.currentUser}
+            onUpdateSignalStatus={handleUpdateSignalStatus}
+            onBatchUpdateFamilyStatus={handleBatchUpdateFamilyStatus}
+            onToggleSignalBoolean={handleToggleSignalBoolean}
+            onBatchToggleFamilyBoolean={handleBatchToggleFamilyBoolean}
+            onOpenNewMaterialModal={handleOpenMaterialModal}
+            onDeleteSignal={handleDeleteSignal}
+            onEditSignal={handleOpenEditSignal}
+          />
+        )}
 
+        {activeTab === 'personnel' && (
+          <AdminPersonnelModule
+            personnel={state.personnel}
+            guardShifts={state.guardShifts}
+            currentUser={state.currentUser}
+            onAddGuardShift={handleAddGuardShift}
+            onAddBatchGuardShifts={handleAddBatchGuardShifts}
+            onDeleteGuardShift={handleDeleteGuardShift}
+            onAddPersonnel={handleAddPersonnel}
+            onQuickAdjustDays={handleQuickAdjustDays}
+            onOpenPinModal={() => setIsPinModalOpen(true)}
+            userHasPin={currentUserHasPin}
+          />
+        )}
+
+        {activeTab === 'dashboard' && (
+          <DashboardModule materials={state.materials} />
+        )}
+
+        {activeTab === 'settings' && (
+          <GoogleAppsScriptModal
+            appsScriptUrl={state.appsScriptUrl}
+            onSaveUrl={handleSaveAppsScriptUrl}
+            onSyncNow={handleSyncNow}
+            isSyncing={state.isSyncing}
+            lastSyncTime={state.lastSyncTime}
+          />
+        )}
+      </main>
+
+      {/* Modals */}
+      <UserRoleSelectorModal
+        isOpen={isUserSelectorOpen}
+        onClose={() => setIsUserSelectorOpen(false)}
+        currentUser={state.currentUser}
+        users={userProfiles}
+        userPins={effectiveUserPins}
+        onSelectUser={handleRequestUserSwitch}
+        onOpenPinConfig={() => setIsPinModalOpen(true)}
+      />
+
+      <MaterialModal
+        isOpen={isMaterialModalOpen}
+        onClose={() => setIsMaterialModalOpen(false)}
+        currentUser={state.currentUser}
+        onSave={handleAddMaterials}
+        presetFamilyId={presetFamilyId}
+        presetTitle={presetTitle}
+        presetDivision={presetDivision}
+      />
+
+      {editingSignal && (
+        <EditMaterialModal
+          isOpen={isEditModalOpen}
+          onClose={() => {
+            setIsEditModalOpen(false);
+            setEditingSignal(null);
+          }}
+          signal={editingSignal}
+          onSave={handleSaveEditSignal}
+        />
+      )}
+
+      <UserSecurityPinModal
+        isOpen={isPinModalOpen}
+        onClose={() => setIsPinModalOpen(false)}
+        currentUser={state.currentUser}
+        userPins={effectiveUserPins}
+        onSavePin={(userId, pin) => handleSaveUserPin(userId, pin)}
+      />
+
+      {pendingUserForSwitch && (
+        <PinVerificationModal
+          isOpen={isPinVerificationOpen}
+          onClose={() => {
+            setIsPinVerificationOpen(false);
+            setPendingUserForSwitch(null);
+          }}
+          targetUser={pendingUserForSwitch}
+          correctPin={
+            effectiveUserPins[pendingUserForSwitch.id] ||
+            effectiveUserPins[pendingUserForSwitch.name] ||
+            ''
+          }
+          onSuccess={() => {
+            const userToSwitch = pendingUserForSwitch;
+            setIsPinVerificationOpen(false);
+            setPendingUserForSwitch(null);
+            handleSelectUser(userToSwitch);
+          }}
+        />
+      )}
+
+      {/* Footer */}
+      <footer className="bg-slate-900 border-t border-slate-800/80 py-4 text-center text-xs text-slate-500">
+        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
+          <span>
+            © 2026 <strong>Venezolana de Televisión (VTV)</strong> • Departamento de Archivo Audiovisual
+          </span>
+          <span className="text-[11px] text-slate-600">
+            Prensa • Programación • Ingesta
+          </span>
+        </div>
+      </footer>
     </div>
   );
 }

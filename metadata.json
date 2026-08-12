@@ -1,6 +1,6 @@
 {
-  "name": "VTV - Gestión de Turnos y Logística",
-  "description": "Sistema de gestión, organización de personal, tableros estilo Trello y logística de comedor para Venezolana de Televisión (VTV).",
+  "name": "Control de Archivo Audiovisual VTV",
+  "description": "Sistema de gestión, catalogación de material audiovisual y control de personal y guardias para VTV.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

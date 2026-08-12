@@ -1,222 +1,103 @@
-export type UserRole = 'superadmin' | 'coordinator' | 'worker' | 'deputy';
+export type DivisionType = 'Prensa' | 'Programación' | 'Ingesta' | 'Gerencia';
 
-export interface Division {
+export type SignalType = 'Limpio' | 'Insert' | 'Master';
+
+export type MaterialStatus = 'Registrado' | 'Por Archivar' | 'Finalizado';
+
+export type RoleType = 
+  | 'Gerente de Archivo'
+  | 'Adjunta de Gerencia'
+  | 'Asistente Administrativa'
+  | 'Jefe de División'
+  | 'Coordinador';
+
+export interface UserProfile {
   id: string;
   name: string;
-  description: string;
-  coordinatorId: string | null;
-  coordinatorName: string | null;
+  role: RoleType;
+  division?: DivisionType;
+  avatar?: string;
 }
 
-export interface Worker {
-  id: string;
-  name: string;
-  email: string;
-  cargo: string;
-  divisionId: string;
-  role: UserRole;
-  cedula?: string;
-  password?: string;
-  mustChangePassword?: boolean;
-  fixedShift?: ShiftType;
-  vacationStart?: string; // YYYY-MM-DD
-  vacationEnd?: string; // YYYY-MM-DD
-  manualFreeDaysAdjustment?: number;
-  isLiteMode?: boolean;
-  mealsPreference?: {
-    desayuno: boolean;
-    almuerzo: boolean;
-    cena: boolean;
-  };
-}
-
-export type ShiftType = 'pool' | 'manana' | 'tarde' | 'noche' | 'libre';
-
-export interface ShiftAssignment {
-  id: string;
-  workerId: string;
-  divisionId: string;
-  date: string; // YYYY-MM-DD
-  shiftType: ShiftType;
-}
-
-export interface ShiftTemplate {
-  id: string;
-  name: string;
-  divisionId: string;
-  // Map of workerId to their shift type
-  assignments: Record<string, ShiftType>;
-}
-
-export interface ShiftChangeRequest {
-  id: string;
-  requesterId: string;
-  requesterName: string;
-  targetWorkerId: string;
-  targetWorkerName: string;
-  divisionId: string;
-  date: string; // YYYY-MM-DD
-  reason: string;
-  status: 'pending' | 'approved' | 'rejected';
-  createdAt: string;
-}
-
-export interface ComedorCount {
-  desayuno: number;
-  almuerzo: number;
-  cena: number;
-}
-
-export interface DivisionComedorDetails extends ComedorCount {
-  divisionName: string;
-  workers: Array<{
-    name: string;
-    cargo: string;
-    currentShift: ShiftType;
-    previousShift: ShiftType;
-    meals: {
-      desayuno: boolean;
-      almuerzo: boolean;
-      cena: boolean;
-    };
-  }>;
-}
-
-// Task System Types
-export type TaskStatus = 'Ingestado' | 'Editado' | 'Archivando' | 'Evaluacion Pendiente' | 'Pendiente' | 'Finalizado';
-
-export interface TaskChecklistItem {
-  id: string;
-  text: string;
-  completed: boolean;
-}
-
-export interface TaskHistoryItem {
-  id: string;
-  fromStatus?: TaskStatus;
-  toStatus: TaskStatus;
-  changedByWorkerId?: string;
-  changedByName?: string;
-  timestamp: string;
-}
-
-export interface TaskCard {
-  id: string;
-  boardId: string;
-  divisionId?: string;
+export interface MaterialSignal {
+  id: string; // e.g., MAT-2026-001
+  familyId: string; // e.g., FAM-2026-101
+  signalType: SignalType;
   title: string;
-  description: string;
-  status: TaskStatus;
-  startDate: string; // YYYY-MM-DD
-  dueDate: string;   // YYYY-MM-DD
-  assignedWorkerIds: string[];
-  checklist: TaskChecklistItem[];
-  createdAt: string;
-  createdByWorkerId?: string;
-  createdByName?: string;
-  priority?: 'baja' | 'media' | 'alta' | 'urgente';
-  isGerenciaOnly?: boolean;
-  duration?: string; // Duración original del material en formato HH:MM:SS
-  editedDuration?: string; // Duración del material editado en formato HH:MM:SS
+  division: DivisionType;
+  duration: string; // HH:MM:SS format
+  creationDate: string; // YYYY-MM-DD
+  createdBy: string;
+  creatorRole: string;
+  status: MaterialStatus;
+
+  // Independent Booleans
+  isIngested: boolean;   // Ingestado
+  isCataloged: boolean;  // Para Archivar / Catalogado
+  isFinalized: boolean;  // Finalizado
+
+  notes?: string;
   
-  // Etapas del flujo de trabajo (Booleans, Timestamps & Personal Responsable)
-  isIngested?: boolean;
-  ingestedAt?: string;
-  ingestedByWorkerId?: string;
-  ingestedByWorkerName?: string;
-
-  isEdited?: boolean;
-  editedAt?: string;
-  editedByWorkerId?: string;
-  editedByWorkerName?: string;
-
-  isDocumented?: boolean;
-  documentedAt?: string;
-  documentedByWorkerId?: string;
-  documentedByWorkerName?: string;
-
-  isFinalized?: boolean;
-  finalizedAt?: string;
-  finalizedByWorkerId?: string;
-  finalizedByWorkerName?: string;
-
-  // Clasificación para Otras Solicitudes, Logros y Material Descartado
-  isOtherRequest?: boolean;
-  isDepartmentAchievement?: boolean; // Determina si la tarea cuenta como logro del departamento (excluye gerencia y administración)
-  isDiscarded?: boolean; // Determina si el material fue descartado (sigue contando horas ingestadas pero no en archivados)
-  discardedAt?: string;
-  discardedByWorkerId?: string;
-  discardedByWorkerName?: string;
-
-  history?: TaskHistoryItem[];
-  linkedTaskIds?: string[];
+  // Cataloging Audit
+  catalogedBy?: string;
+  catalogedAt?: string; // ISO string or timestamp
+  
+  // Finalized Audit
+  finalizedBy?: string;
+  finalizedAt?: string; // ISO string or timestamp
 }
 
-export interface TaskBoard {
-  id: string;
-  name: string;
-  description?: string;
-  color?: string;
-  divisionId?: string;
-  createdAt: string;
-}
-
-export interface TaskNotification {
-  id: string;
-  workerId: string; // Recipient worker ID
-  taskId: string;
-  taskTitle: string;
-  boardName: string;
-  message: string;
-  createdAt: string;
-  read: boolean;
-}
-
-export interface FreeDayRequest {
-  id: string;
-  workerId: string;
-  workerName: string;
-  divisionId: string;
-  requestedDate: string; // YYYY-MM-DD
-  reason?: string;
-  status: 'pending' | 'approved' | 'rejected';
-  createdAt: string;
-  reviewedByWorkerId?: string;
-  reviewedByName?: string;
-  reviewedAt?: string;
-}
-
-// Physical Archive (Archivo Físico) Types
-export interface PhysicalFormat {
-  id: string;
-  name: string;
-}
-
-export interface PhysicalProgram {
-  id: string;
-  name: string;
-  releaseDate?: string; // YYYY-MM-DD
-}
-
-export interface PhysicalLocation {
-  id: string;
-  name: string;
-}
-
-export interface PhysicalAudiovisualMaterial {
-  id: string;
-  code: number; // Código entero progresivo para ubicación física
-  formatId: string;
-  programId?: string;
+export interface MaterialFamilyGroup {
+  familyId: string;
   title: string;
-  recordingDate?: string; // YYYY-MM-DD
-  airDate?: string;       // YYYY-MM-DD
-  segmentNumber?: number;
-  totalTime?: string;     // HH:MM:SS
-  locationId: string;
-  synopsis?: string;
-  observations?: string;
-  createdAt: string;
-  createdByWorkerId?: string;
+  division: DivisionType;
+  creationDate: string;
+  createdBy: string;
+  signals: MaterialSignal[];
+  totalDurationSeconds: number;
+  overallStatus: MaterialStatus;
+  
+  // Aggregated Booleans
+  hasIngested: boolean;
+  hasCataloged: boolean;
+  isAllFinalized: boolean;
+  hasFinalizedSignal: boolean;
 }
 
+export type ShiftType = 'Guardia (Fin de semana/Feriado)' | 'Día Libre' | 'Vacaciones';
+
+export interface GuardShiftRecord {
+  id: string;
+  personnelId: string;
+  personnelName: string;
+  division: DivisionType;
+  date: string; // YYYY-MM-DD (Start date or single date)
+  endDate?: string; // YYYY-MM-DD (End date for vacation range)
+  shiftType: ShiftType;
+  assignedBy: string;
+  isLead?: boolean; // True if designated as Encargado/Lead of the shift
+  notes?: string;
+  createdAt: string;
+}
+
+export interface Personnel {
+  id: string;
+  name: string;
+  role: RoleType;
+  division: DivisionType;
+  guardDaysWorked: number;
+  daysOffGenerated: number;
+  daysOffTaken: number;
+  balanceDays: number;
+  pin?: string;
+}
+
+export interface AppState {
+  currentUser: UserProfile;
+  materials: MaterialSignal[];
+  personnel: Personnel[];
+  guardShifts: GuardShiftRecord[];
+  appsScriptUrl: string;
+  isSyncing: boolean;
+  lastSyncTime?: string;
+}
