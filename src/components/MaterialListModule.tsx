@@ -12,6 +12,12 @@ import {
   exportMaterialsToCSV, 
   generateMonthlyArchiveLog 
 } from '../services/apiService';
+import {
+  canUserCreateMaterial,
+  canUserAssignSignal,
+  canUserUnassignSignal,
+  canUserCatalogSignal
+} from '../utils/permissions';
 import { MaterialContainerCard } from './MaterialContainerCard';
 import { ExportConfirmModal } from './ExportConfirmModal';
 import { MonthlyArchiveModal } from './MonthlyArchiveModal';
@@ -31,7 +37,10 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
-  Sparkles
+  Sparkles,
+  UserCheck,
+  UserX,
+  Lock
 } from 'lucide-react';
 
 interface MaterialListModuleProps {
@@ -42,6 +51,7 @@ interface MaterialListModuleProps {
   onBatchUpdateFamilyStatus: (familyId: string, newStatus: MaterialStatus) => void;
   onToggleSignalBoolean?: (signalId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized') => void;
   onBatchToggleFamilyBoolean?: (familyId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized', value: boolean) => void;
+  onAssignSignal?: (signalId: string, assignToUser: string | null) => void;
   onOpenNewMaterialModal: (familyId?: string, title?: string, division?: DivisionType) => void;
   onDeleteSignal: (signalId: string) => void;
   onEditSignal?: (signal: MaterialSignal) => void;
@@ -60,6 +70,7 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
   onBatchUpdateFamilyStatus,
   onToggleSignalBoolean,
   onBatchToggleFamilyBoolean,
+  onAssignSignal,
   onOpenNewMaterialModal,
   onDeleteSignal,
   onEditSignal,
@@ -85,11 +96,7 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
   const [pendingFinalizedIds, setPendingFinalizedIds] = useState<string[]>([]);
 
   // Permission check to add material
-  const canCreate =
-    currentUser.role === 'Gerente de Archivo' ||
-    currentUser.role === 'Adjunta de Gerencia' ||
-    currentUser.role === 'Jefe de División' ||
-    currentUser.role === 'Coordinador';
+  const canCreate = canUserCreateMaterial(currentUser);
 
   // Filtered materials
   const filteredMaterials = useMemo(() => {
@@ -545,6 +552,7 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                   onBatchUpdateFamilyStatus={onBatchUpdateFamilyStatus}
                   onToggleSignalBoolean={onToggleSignalBoolean}
                   onBatchToggleFamilyBoolean={onBatchToggleFamilyBoolean}
+                  onAssignSignal={onAssignSignal}
                   onAddSignalToFamily={(fid, title, div) =>
                     onOpenNewMaterialModal(fid, title, div)
                   }
@@ -566,6 +574,7 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                     <th className="p-3.5">Título / Descripción</th>
                     <th className="p-3.5">División</th>
                     <th className="p-3.5">Duración</th>
+                    <th className="p-3.5">Asignado A</th>
                     <th className="p-3.5">Booleans (Estado)</th>
                     <th className="p-3.5">Creado Por</th>
                     <th className="p-3.5 text-right">Acciones</th>
@@ -591,6 +600,32 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                         {mat.duration}
                       </td>
                       <td className="p-3.5">
+                        {mat.assignedTo ? (
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-bold text-blue-300 bg-blue-950/80 px-2 py-0.5 rounded border border-blue-800/60 text-[11px]">
+                              {mat.assignedTo}
+                            </span>
+                            {canUserUnassignSignal(currentUser, mat) && (
+                              <button
+                                onClick={() => onAssignSignal && onAssignSignal(mat.id, null)}
+                                className="p-1 rounded bg-slate-800 hover:bg-red-950 text-red-300 hover:text-white border border-slate-700"
+                                title="Liberar Tarjeta"
+                              >
+                                <UserX className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => onAssignSignal && onAssignSignal(mat.id, currentUser.name)}
+                            className="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-extrabold text-[10px] flex items-center gap-1"
+                          >
+                            <UserCheck className="w-3 h-3" />
+                            <span>Asignármela</span>
+                          </button>
+                        )}
+                      </td>
+                      <td className="p-3.5">
                         <div className="flex items-center gap-1">
                           <button
                             onClick={() => onToggleSignalBoolean && onToggleSignalBoolean(mat.id, 'isIngested')}
@@ -601,7 +636,16 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                             ING
                           </button>
                           <button
-                            onClick={() => onToggleSignalBoolean && onToggleSignalBoolean(mat.id, 'isCataloged')}
+                            onClick={() => {
+                              const check = canUserCatalogSignal(currentUser, mat);
+                              if (!check.allowed) {
+                                alert(check.reason);
+                                return;
+                              }
+                              if (onToggleSignalBoolean) {
+                                onToggleSignalBoolean(mat.id, 'isCataloged');
+                              }
+                            }}
                             className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
                               mat.isCataloged ? 'bg-amber-600/30 text-amber-300 border-amber-500' : 'bg-slate-900 text-slate-600 border-slate-800'
                             }`}
@@ -634,7 +678,16 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                             </button>
                           )}
                           <button
-                            onClick={() => onToggleSignalBoolean && onToggleSignalBoolean(mat.id, 'isCataloged')}
+                            onClick={() => {
+                              const check = canUserCatalogSignal(currentUser, mat);
+                              if (!check.allowed) {
+                                alert(check.reason);
+                                return;
+                              }
+                              if (onToggleSignalBoolean) {
+                                onToggleSignalBoolean(mat.id, 'isCataloged');
+                              }
+                            }}
                             className="px-2 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white font-bold text-[10px]"
                           >
                             {mat.isCataloged ? 'Catalogado' : 'Para Archivar'}

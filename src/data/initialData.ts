@@ -76,6 +76,38 @@ export const DEFAULT_USERS: UserProfile[] = [
     role: 'Coordinador',
     division: 'Ingesta',
   },
+  {
+    id: 'usr-13',
+    name: 'Carlos Alberto Ruiz',
+    role: 'Ingestador',
+    division: 'Ingesta',
+  },
+  // Documentalistas - Archivo de Prensa
+  {
+    id: 'usr-14',
+    name: 'Lcda. Patricia Rivas',
+    role: 'Documentalista',
+    division: 'Prensa',
+  },
+  {
+    id: 'usr-15',
+    name: 'Manuel Bermúdez',
+    role: 'Documentalista',
+    division: 'Prensa',
+  },
+  // Documentalistas - Archivo de Programación
+  {
+    id: 'usr-16',
+    name: 'Lcdo. Javier Méndez',
+    role: 'Documentalista',
+    division: 'Programación',
+  },
+  {
+    id: 'usr-17',
+    name: 'Beatriz Salazar',
+    role: 'Documentalista',
+    division: 'Programación',
+  },
 ];
 
 export const INITIAL_PERSONNEL: Personnel[] = [

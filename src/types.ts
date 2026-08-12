@@ -9,7 +9,10 @@ export type RoleType =
   | 'Adjunta de Gerencia'
   | 'Asistente Administrativa'
   | 'Jefe de División'
-  | 'Coordinador';
+  | 'Coordinador'
+  | 'Documentalista'
+  | 'Ingestador'
+  | 'Operador de Ingesta';
 
 export interface UserProfile {
   id: string;
@@ -28,8 +31,14 @@ export interface MaterialSignal {
   duration: string; // HH:MM:SS format
   creationDate: string; // YYYY-MM-DD
   createdBy: string;
-  creatorRole: string;
+  createdByRole?: string;
+  creatorRole?: string;
   status: MaterialStatus;
+
+  // Assignment fields
+  assignedTo?: string;       // User Name assigned to document the material
+  assignedToRole?: string;   // Role of assigned user
+  assignedAt?: string;       // Date/Time when assigned
 
   // Independent Booleans
   isIngested: boolean;   // Ingestado

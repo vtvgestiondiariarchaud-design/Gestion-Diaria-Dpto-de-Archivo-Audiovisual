@@ -39,7 +39,14 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'materials' | 'personnel' | 'dashboard' | 'settings'>('materials');
 
   // Modals state
-  const [isUserSelectorOpen, setIsUserSelectorOpen] = useState(false);
+  const [isUserSelectorOpen, setIsUserSelectorOpen] = useState(() => {
+    try {
+      const activeUserSaved = localStorage.getItem('vtv_archivo_active_user_v1');
+      return !activeUserSaved;
+    } catch (e) {
+      return true;
+    }
+  });
   const [isMaterialModalOpen, setIsMaterialModalOpen] = useState(false);
   
   // Edit Material Modal State
@@ -188,9 +195,10 @@ export default function App() {
   };
 
   const handleRequestUserSwitch = (targetUser: UserProfile) => {
-    if (targetUser.id === state.currentUser.id || targetUser.name === state.currentUser.name) return;
-
-    const targetPin = effectiveUserPins[targetUser.id] || effectiveUserPins[targetUser.name];
+    const targetPin =
+      effectiveUserPins[targetUser.id] ||
+      effectiveUserPins[targetUser.name] ||
+      state.personnel.find((p) => p.id === targetUser.id || p.name === targetUser.name)?.pin;
 
     if (targetPin) {
       setPendingUserForSwitch(targetUser);
@@ -306,6 +314,12 @@ export default function App() {
           if (flag === 'isCataloged' && newVal) {
             updated.catalogedBy = prev.currentUser.name;
             updated.catalogedAt = timestampStr;
+            // Auto assign if not assigned
+            if (!updated.assignedTo) {
+              updated.assignedTo = prev.currentUser.name;
+              updated.assignedToRole = prev.currentUser.role;
+              updated.assignedAt = timestampStr;
+            }
           }
           if (flag === 'isFinalized' && newVal) {
             updated.finalizedBy = prev.currentUser.name;
@@ -333,6 +347,45 @@ export default function App() {
     });
 
     showToast(`Señal ${signalId}: ${flag} actualizado.`);
+  };
+
+  // Assign or Unassign Signal to Documentalista
+  const handleAssignSignal = (signalId: string, assignToUser: string | null) => {
+    const timestampStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+
+    setState((prev) => {
+      const updatedMaterials = prev.materials.map((mat) => {
+        if (mat.id === signalId) {
+          if (assignToUser) {
+            const targetUser = prev.personnel.find((u) => u.name === assignToUser) || prev.currentUser;
+            return {
+              ...mat,
+              assignedTo: assignToUser,
+              assignedToRole: targetUser.role,
+              assignedAt: timestampStr,
+            };
+          } else {
+            return {
+              ...mat,
+              assignedTo: undefined,
+              assignedToRole: undefined,
+              assignedAt: undefined,
+            };
+          }
+        }
+        return mat;
+      });
+
+      saveLocalMaterials(updatedMaterials);
+      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts);
+      return { ...prev, materials: updatedMaterials };
+    });
+
+    if (assignToUser) {
+      showToast(`Señal ${signalId} asignada a ${assignToUser}.`);
+    } else {
+      showToast(`Señal ${signalId} liberada (sin asignación).`);
+    }
   };
 
   // Batch Toggle Family Boolean
@@ -773,6 +826,7 @@ export default function App() {
             onBatchUpdateFamilyStatus={handleBatchUpdateFamilyStatus}
             onToggleSignalBoolean={handleToggleSignalBoolean}
             onBatchToggleFamilyBoolean={handleBatchToggleFamilyBoolean}
+            onAssignSignal={handleAssignSignal}
             onOpenNewMaterialModal={handleOpenMaterialModal}
             onDeleteSignal={handleDeleteSignal}
             onEditSignal={handleOpenEditSignal}

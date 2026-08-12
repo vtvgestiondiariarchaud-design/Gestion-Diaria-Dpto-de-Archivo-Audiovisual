@@ -1,6 +1,12 @@
 import React, { useState } from 'react';
 import { MaterialFamilyGroup, MaterialSignal, UserProfile } from '../types';
 import { durationToSeconds, formatHoursVerbose } from '../services/apiService';
+import {
+  canUserCreateMaterial,
+  canUserAssignSignal,
+  canUserUnassignSignal,
+  canUserCatalogSignal
+} from '../utils/permissions';
 import { 
   Film, 
   CheckCircle2, 
@@ -14,7 +20,10 @@ import {
   Info,
   Calendar,
   User,
-  Edit3
+  Edit3,
+  UserCheck,
+  UserX,
+  Lock
 } from 'lucide-react';
 
 interface MaterialContainerCardProps {
@@ -24,6 +33,7 @@ interface MaterialContainerCardProps {
   onBatchUpdateFamilyStatus: (familyId: string, newStatus: MaterialSignal['status']) => void;
   onToggleSignalBoolean?: (signalId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized') => void;
   onBatchToggleFamilyBoolean?: (familyId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized', value: boolean) => void;
+  onAssignSignal?: (signalId: string, assignToUser: string | null) => void;
   onAddSignalToFamily: (familyId: string, title: string, division: MaterialSignal['division']) => void;
   onDeleteSignal: (signalId: string) => void;
   onEditSignal?: (signal: MaterialSignal) => void;
@@ -36,6 +46,7 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
   onBatchUpdateFamilyStatus,
   onToggleSignalBoolean,
   onBatchToggleFamilyBoolean,
+  onAssignSignal,
   onAddSignalToFamily,
   onDeleteSignal,
   onEditSignal,
@@ -43,12 +54,15 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
   const [activeSignalIndex, setActiveSignalIndex] = useState<number>(0);
 
-  // Permission check
+  // Permission checks from permissions utility
+  const canCreate = canUserCreateMaterial(currentUser);
+
   const canCatalogOrFinalize =
     currentUser.role === 'Gerente de Archivo' ||
     currentUser.role === 'Adjunta de Gerencia' ||
     currentUser.role === 'Jefe de División' ||
-    currentUser.role === 'Coordinador';
+    currentUser.role === 'Coordinador' ||
+    currentUser.role === 'Documentalista';
 
   const canDelete =
     currentUser.role === 'Gerente de Archivo' ||
@@ -279,7 +293,7 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
               </div>
             </div>
 
-            {missingTypes.length > 0 && canCatalogOrFinalize && (
+            {missingTypes.length > 0 && canCreate && (
               <button
                 onClick={() => onAddSignalToFamily(group.familyId, group.title, group.division)}
                 className="px-2.5 py-1 rounded-lg bg-purple-950/80 hover:bg-purple-600 hover:text-white border border-purple-800 text-purple-200 text-xs font-bold flex items-center gap-1 transition-all shrink-0"
@@ -288,6 +302,66 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
                 <span>Añadir Señal</span>
               </button>
             )}
+          </div>
+
+          {/* Assignment Bar for Documentalistas */}
+          <div className="p-3 rounded-xl bg-slate-900/90 border border-slate-800/90 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 shadow-inner">
+            <div className="flex items-center gap-2.5">
+              <div className={`p-2 rounded-xl border ${currentSignal.assignedTo ? 'bg-blue-600/20 text-blue-400 border-blue-500/40' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+                <UserCheck className="w-4 h-4" />
+              </div>
+              <div>
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 block">
+                  Asignación de Tarjeta para Documentación:
+                </span>
+                {currentSignal.assignedTo ? (
+                  <p className="text-xs font-bold text-white flex items-center flex-wrap gap-1.5 mt-0.5">
+                    <span className="text-blue-300 font-extrabold">{currentSignal.assignedTo}</span>
+                    <span className="text-[10px] font-semibold text-blue-200 bg-blue-950 px-1.5 py-0.2 rounded border border-blue-800/80">
+                      {currentSignal.assignedToRole || 'Documentalista'}
+                    </span>
+                    {currentSignal.assignedAt && (
+                      <span className="text-[10px] font-mono text-slate-400">• {currentSignal.assignedAt}</span>
+                    )}
+                  </p>
+                ) : (
+                  <p className="text-xs text-amber-300/90 font-semibold italic mt-0.5">
+                    Tarjeta libre sin asignar • Los documentalistas deben asignársela para iniciar documentación
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+              {currentSignal.assignedTo ? (
+                canUserUnassignSignal(currentUser, currentSignal) ? (
+                  <button
+                    type="button"
+                    onClick={() => onAssignSignal && onAssignSignal(currentSignal.id, null)}
+                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-red-950/90 text-red-300 hover:text-white border border-slate-700 hover:border-red-700 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm"
+                    title="Desasignar tarjeta para que quede libre"
+                  >
+                    <UserX className="w-3.5 h-3.5" />
+                    <span>Liberar Tarjeta</span>
+                  </button>
+                ) : (
+                  <span className="px-2.5 py-1 rounded-xl bg-slate-800/90 border border-slate-700 text-slate-400 text-[11px] font-semibold flex items-center gap-1.5 shadow-sm">
+                    <Lock className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Tomada por {currentSignal.assignedTo}</span>
+                  </span>
+                )
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onAssignSignal && onAssignSignal(currentSignal.id, currentUser.name)}
+                  className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white border border-blue-400 text-xs font-extrabold flex items-center gap-1.5 transition-all shadow-md shadow-blue-950/60"
+                  title="Asignarme esta tarjeta a mi perfil activo"
+                >
+                  <UserCheck className="w-3.5 h-3.5" />
+                  <span>Asignármela</span>
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Active Signal Main Meta Header */}
@@ -327,15 +401,29 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
                 <span>Ingestado</span>
               </button>
 
-              {/* Boolean 2: Para Archivar */}
+              {/* Boolean 2: Para Archivar (Catalogado) */}
               <button
                 type="button"
-                onClick={() => onToggleSignalBoolean && onToggleSignalBoolean(currentSignal.id, 'isCataloged')}
+                onClick={() => {
+                  const check = canUserCatalogSignal(currentUser, currentSignal);
+                  if (!check.allowed) {
+                    alert(check.reason);
+                    return;
+                  }
+                  if (onToggleSignalBoolean) {
+                    onToggleSignalBoolean(currentSignal.id, 'isCataloged');
+                  }
+                }}
                 className={`px-2.5 py-1.5 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
                   currentSignal.isCataloged
                     ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 ring-1 ring-amber-500/30'
                     : 'bg-slate-900 border-slate-800 text-slate-500 hover:text-slate-300'
                 }`}
+                title={
+                  currentSignal.assignedTo && currentSignal.assignedTo !== currentUser.name
+                    ? `Asignado a ${currentSignal.assignedTo}`
+                    : 'Marcar como documentado / Para Archivar'
+                }
               >
                 <Archive className={`w-3.5 h-3.5 ${currentSignal.isCataloged ? 'text-amber-400' : 'text-slate-600'}`} />
                 <span>Para Archivar</span>
