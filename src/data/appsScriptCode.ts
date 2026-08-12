@@ -22,6 +22,7 @@ export const GOOGLE_APPS_SCRIPT_CODE = `/**
 const SHEET_MATERIALES = "MATERIALES";
 const SHEET_PERSONAL = "PERSONAL";
 const SHEET_GUARDIAS = "GUARDIAS";
+const SHEET_CIERRES = "CIERRES_MENSUALES";
 
 /**
  * Función que inicializa las hojas y sus encabezados si no existen
@@ -61,6 +62,17 @@ function initSheets() {
     ]);
     sheetGuard.getRange(1, 1, 1, 9).setFontWeight("bold").setBackground("#1e293b").setFontColor("#ffffff");
   }
+
+  // Hoja Cierres Mensuales
+  let sheetCierres = ss.getSheetByName(SHEET_CIERRES);
+  if (!sheetCierres) {
+    sheetCierres = ss.insertSheet(SHEET_CIERRES);
+    sheetCierres.appendRow([
+      "ID Cierre", "Período", "Fecha Exportación", "Exportado Por", "Rol Exporter",
+      "Cantidad Materiales", "Total Horas Formato", "Total Segundos", "Detalle Desglose", "Materiales Exportados"
+    ]);
+    sheetCierres.getRange(1, 1, 1, 10).setFontWeight("bold").setBackground("#1e293b").setFontColor("#ffffff");
+  }
 }
 
 /**
@@ -76,10 +88,11 @@ function doGet(e) {
       const materials = getSheetData(ss.getSheetByName(SHEET_MATERIALES));
       const personnel = getSheetData(ss.getSheetByName(SHEET_PERSONAL));
       const guardShifts = getSheetData(ss.getSheetByName(SHEET_GUARDIAS));
+      const monthlyArchives = getSheetData(ss.getSheetByName(SHEET_CIERRES));
       
       return responseJSON({
         success: true,
-        data: { materials, personnel, guardShifts }
+        data: { materials, personnel, guardShifts, monthlyArchives }
       });
     }
     
@@ -103,10 +116,11 @@ function doPost(e) {
       const materials = getSheetData(ss.getSheetByName(SHEET_MATERIALES));
       const personnel = getSheetData(ss.getSheetByName(SHEET_PERSONAL));
       const guardShifts = getSheetData(ss.getSheetByName(SHEET_GUARDIAS));
+      const monthlyArchives = getSheetData(ss.getSheetByName(SHEET_CIERRES));
       
       return responseJSON({
         success: true,
-        data: { materials, personnel, guardShifts }
+        data: { materials, personnel, guardShifts, monthlyArchives }
       });
     }
 
@@ -115,6 +129,7 @@ function doPost(e) {
       if (body.materials) saveListToSheet(ss.getSheetByName(SHEET_MATERIALES), body.materials);
       if (body.personnel) saveListToSheet(ss.getSheetByName(SHEET_PERSONAL), body.personnel);
       if (body.guardShifts) saveListToSheet(ss.getSheetByName(SHEET_GUARDIAS), body.guardShifts);
+      if (body.monthlyArchives) saveListToSheet(ss.getSheetByName(SHEET_CIERRES), body.monthlyArchives);
       
       return responseJSON({ success: true, message: "Sincronización completada con éxito." });
     }

@@ -1,5 +1,5 @@
-import { MaterialSignal, Personnel, GuardShiftRecord, MaterialFamilyGroup, AppState, MaterialStatus } from '../types';
-import { INITIAL_MATERIALS, INITIAL_PERSONNEL, INITIAL_GUARD_SHIFTS, DEFAULT_USERS } from '../data/initialData';
+import { MaterialSignal, Personnel, GuardShiftRecord, MaterialFamilyGroup, AppState, MaterialStatus, MonthlyArchiveLog, UserProfile } from '../types';
+import { INITIAL_MATERIALS, INITIAL_PERSONNEL, INITIAL_GUARD_SHIFTS, DEFAULT_USERS, DEFAULT_APPS_SCRIPT_URL } from '../data/initialData';
 
 const LOCAL_STORAGE_KEY_MATERIALS = 'vtv_archivo_materials_v1';
 const LOCAL_STORAGE_KEY_PERSONNEL = 'vtv_archivo_personnel_v1';
@@ -7,6 +7,7 @@ const LOCAL_STORAGE_KEY_SHIFTS = 'vtv_archivo_shifts_v1';
 const LOCAL_STORAGE_KEY_APPS_SCRIPT_URL = 'vtv_archivo_apps_script_url_v1';
 const LOCAL_STORAGE_KEY_USER = 'vtv_archivo_active_user_v1';
 const LOCAL_STORAGE_KEY_PINS = 'vtv_archivo_user_pins_v1';
+const LOCAL_STORAGE_KEY_MONTHLY_ARCHIVES = 'vtv_archivo_monthly_archives_v1';
 
 // Helper for duration conversions
 export function durationToSeconds(duration: string): number {
@@ -136,8 +137,9 @@ export function loadInitialState(): AppState {
   let materials: MaterialSignal[] = INITIAL_MATERIALS;
   let personnel: Personnel[] = INITIAL_PERSONNEL;
   let guardShifts: GuardShiftRecord[] = INITIAL_GUARD_SHIFTS;
-  let appsScriptUrl = '';
+  let appsScriptUrl = DEFAULT_APPS_SCRIPT_URL;
   let currentUser = DEFAULT_USERS[0];
+  let monthlyArchives: MonthlyArchiveLog[] = [];
 
   try {
     const localMats = localStorage.getItem(LOCAL_STORAGE_KEY_MATERIALS);
@@ -164,10 +166,18 @@ export function loadInitialState(): AppState {
     if (localShifts) guardShifts = JSON.parse(localShifts);
 
     const localUrl = localStorage.getItem(LOCAL_STORAGE_KEY_APPS_SCRIPT_URL);
-    if (localUrl) appsScriptUrl = localUrl;
+    if (localUrl && localUrl.trim()) {
+      appsScriptUrl = localUrl.trim();
+    } else {
+      appsScriptUrl = DEFAULT_APPS_SCRIPT_URL;
+      saveLocalAppsScriptUrl(DEFAULT_APPS_SCRIPT_URL);
+    }
 
     const localUser = localStorage.getItem(LOCAL_STORAGE_KEY_USER);
     if (localUser) currentUser = JSON.parse(localUser);
+
+    const localArchives = localStorage.getItem(LOCAL_STORAGE_KEY_MONTHLY_ARCHIVES);
+    if (localArchives) monthlyArchives = JSON.parse(localArchives);
   } catch (err) {
     console.error('Error loading local state:', err);
   }
@@ -177,9 +187,132 @@ export function loadInitialState(): AppState {
     materials,
     personnel,
     guardShifts,
+    monthlyArchives,
     appsScriptUrl,
     isSyncing: false,
   };
+}
+
+export function loadLocalMonthlyArchives(): MonthlyArchiveLog[] {
+  try {
+    const local = localStorage.getItem(LOCAL_STORAGE_KEY_MONTHLY_ARCHIVES);
+    return local ? JSON.parse(local) : [];
+  } catch (e) {
+    console.error(e);
+    return [];
+  }
+}
+
+export function saveLocalMonthlyArchives(archives: MonthlyArchiveLog[]) {
+  try {
+    localStorage.setItem(LOCAL_STORAGE_KEY_MONTHLY_ARCHIVES, JSON.stringify(archives));
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+export function generateMonthlyArchiveLog(materials: MaterialSignal[], user: UserProfile): MonthlyArchiveLog {
+  const now = new Date();
+  const monthNames = [
+    'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+  ];
+  const monthPeriod = `${monthNames[now.getMonth()]} ${now.getFullYear()}`;
+  const exportDate = now.toISOString().replace('T', ' ').substring(0, 16);
+
+  let totalSecs = 0;
+  const divisionMap: Record<string, { count: number; seconds: number }> = {};
+
+  const exportedItems = materials.map((m) => {
+    const secs = durationToSeconds(m.duration);
+    totalSecs += secs;
+
+    if (!divisionMap[m.division]) {
+      divisionMap[m.division] = { count: 0, seconds: 0 };
+    }
+    divisionMap[m.division].count += 1;
+    divisionMap[m.division].seconds += secs;
+
+    return {
+      id: m.id,
+      familyId: m.familyId,
+      title: m.title,
+      division: m.division,
+      signalType: m.signalType,
+      duration: m.duration,
+    };
+  });
+
+  return {
+    id: `MAR-${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}-${Math.floor(Math.random() * 899 + 100)}`,
+    monthPeriod,
+    exportDate,
+    exportedBy: user.name,
+    exporterRole: user.role,
+    materialsCount: materials.length,
+    totalDurationSeconds: totalSecs,
+    formattedDuration: formatHoursVerbose(totalSecs),
+    divisionBreakdown: divisionMap,
+    exportedItems,
+  };
+}
+
+export function exportMaterialsToCSV(materials: MaterialSignal[], customFilename?: string): void {
+  const dateStr = new Date().toISOString().substring(0, 10);
+  const filename = customFilename || `VTV_Materiales_Finalizados_Export_${dateStr}.csv`;
+
+  const headers = [
+    'ID Señal',
+    'ID Familia',
+    'Tipo Señal',
+    'Título / Descripción',
+    'División',
+    'Duración',
+    'Estado',
+    'Fecha Creación',
+    'Creado Por',
+    'Rol Creador',
+    'Catalogado Por',
+    'Fecha Catalogación',
+    'Finalizado Por',
+    'Fecha Finalización',
+    'Notas'
+  ];
+
+  const escapeCSV = (val: string | undefined | null) => {
+    if (!val) return '""';
+    const clean = String(val).replace(/"/g, '""');
+    return `"${clean}"`;
+  };
+
+  const rows = materials.map((m) => [
+    escapeCSV(m.id),
+    escapeCSV(m.familyId),
+    escapeCSV(m.signalType),
+    escapeCSV(m.title),
+    escapeCSV(m.division),
+    escapeCSV(m.duration),
+    escapeCSV(m.status),
+    escapeCSV(m.creationDate),
+    escapeCSV(m.createdBy),
+    escapeCSV(m.creatorRole),
+    escapeCSV(m.catalogedBy || 'N/A'),
+    escapeCSV(m.catalogedAt || 'N/A'),
+    escapeCSV(m.finalizedBy || 'N/A'),
+    escapeCSV(m.finalizedAt || 'N/A'),
+    escapeCSV(m.notes || ''),
+  ]);
+
+  const csvContent = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  
+  const link = document.createElement('a');
+  link.setAttribute('href', url);
+  link.setAttribute('download', filename);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
 }
 
 export function saveLocalMaterials(materials: MaterialSignal[]) {
@@ -250,6 +383,7 @@ export async function fetchFromGoogleSheets(
     materials: MaterialSignal[];
     personnel: Personnel[];
     guardShifts: GuardShiftRecord[];
+    monthlyArchives?: MonthlyArchiveLog[];
   };
 }> {
   if (!url || !url.startsWith('http')) {
@@ -328,6 +462,38 @@ export async function fetchFromGoogleSheets(
         createdDate: String(s['Fecha Registro'] || s.createdDate || ''),
       })).filter((s) => s.id);
 
+      const rawArchives = Array.isArray(resData.data.monthlyArchives) 
+        ? resData.data.monthlyArchives 
+        : (Array.isArray(resData.data.cierresMensuales) ? resData.data.cierresMensuales : []);
+      const parsedArchives: MonthlyArchiveLog[] = rawArchives.map((a: any) => {
+        let breakdown = {};
+        if (typeof a.divisionBreakdown === 'object' && a.divisionBreakdown) {
+          breakdown = a.divisionBreakdown;
+        } else if (a['Detalle Desglose']) {
+          try { breakdown = typeof a['Detalle Desglose'] === 'string' ? JSON.parse(a['Detalle Desglose']) : a['Detalle Desglose']; } catch (e) {}
+        }
+
+        let items = [];
+        if (Array.isArray(a.exportedItems)) {
+          items = a.exportedItems;
+        } else if (a['Materiales Exportados']) {
+          try { items = typeof a['Materiales Exportados'] === 'string' ? JSON.parse(a['Materiales Exportados']) : a['Materiales Exportados']; } catch (e) {}
+        }
+
+        return {
+          id: String(a['ID Cierre'] || a.id || ''),
+          monthPeriod: String(a['Período'] || a.monthPeriod || ''),
+          exportDate: String(a['Fecha Exportación'] || a.exportDate || ''),
+          exportedBy: String(a['Exportado Por'] || a.exportedBy || ''),
+          exporterRole: String(a['Rol Exporter'] || a.exporterRole || ''),
+          materialsCount: Number(a['Cantidad Materiales'] ?? a.materialsCount) || 0,
+          totalDurationSeconds: Number(a['Total Segundos'] ?? a.totalDurationSeconds) || 0,
+          formattedDuration: String(a['Total Horas Formato'] || a.formattedDuration || ''),
+          divisionBreakdown: breakdown,
+          exportedItems: items,
+        };
+      }).filter((a) => a.id);
+
       return {
         success: true,
         message: 'Datos sincronizados desde Google Sheets.',
@@ -335,6 +501,7 @@ export async function fetchFromGoogleSheets(
           materials: parsedMaterials,
           personnel: parsedPersonnel,
           guardShifts: parsedShifts,
+          monthlyArchives: parsedArchives,
         },
       };
     } else {
@@ -348,7 +515,12 @@ export async function fetchFromGoogleSheets(
 
 export async function syncWithGoogleSheets(
   url: string,
-  state: { materials: MaterialSignal[]; personnel: Personnel[]; guardShifts: GuardShiftRecord[] }
+  state: { 
+    materials: MaterialSignal[]; 
+    personnel: Personnel[]; 
+    guardShifts: GuardShiftRecord[];
+    monthlyArchives?: MonthlyArchiveLog[];
+  }
 ): Promise<{ success: boolean; message: string }> {
   if (!url || !url.startsWith('http')) {
     return { success: false, message: 'URL de Google Apps Script no configurada o inválida.' };
@@ -367,6 +539,19 @@ export async function syncWithGoogleSheets(
       'PIN': p.pin || '',
     }));
 
+    const formattedArchives = (state.monthlyArchives || []).map((a) => ({
+      'ID Cierre': a.id,
+      'Período': a.monthPeriod,
+      'Fecha Exportación': a.exportDate,
+      'Exportado Por': a.exportedBy,
+      'Rol Exporter': a.exporterRole,
+      'Cantidad Materiales': a.materialsCount,
+      'Total Horas Formato': a.formattedDuration,
+      'Total Segundos': a.totalDurationSeconds,
+      'Detalle Desglose': JSON.stringify(a.divisionBreakdown || {}),
+      'Materiales Exportados': JSON.stringify(a.exportedItems || []),
+    }));
+
     const response = await fetch(url, {
       method: 'POST',
       mode: 'cors',
@@ -378,6 +563,7 @@ export async function syncWithGoogleSheets(
         materials: state.materials,
         personnel: formattedPersonnel,
         guardShifts: state.guardShifts,
+        monthlyArchives: formattedArchives,
       }),
     });
 

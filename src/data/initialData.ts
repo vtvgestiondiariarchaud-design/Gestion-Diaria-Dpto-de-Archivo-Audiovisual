@@ -470,3 +470,6 @@ export const INITIAL_GUARD_SHIFTS: GuardShiftRecord[] = [
     createdAt: '2026-08-10',
   },
 ];
+
+export const DEFAULT_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby2Vn7FENScbW6HQpNcyQ8SIeOl-w--rheWaC9AF04mmyq6DCJENAG8yB1ySOii_AfcvA/exec';
+

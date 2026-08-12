@@ -92,11 +92,32 @@ export interface Personnel {
   pin?: string;
 }
 
+export interface MonthlyArchiveLog {
+  id: string; // e.g. MAR-2026-08-001
+  monthPeriod: string; // e.g. "Agosto 2026"
+  exportDate: string; // ISO or YYYY-MM-DD HH:mm
+  exportedBy: string; // User Name
+  exporterRole: string; // User Role
+  materialsCount: number;
+  totalDurationSeconds: number;
+  formattedDuration: string;
+  divisionBreakdown: Record<string, { count: number; seconds: number }>;
+  exportedItems: {
+    id: string;
+    familyId: string;
+    title: string;
+    division: string;
+    signalType: string;
+    duration: string;
+  }[];
+}
+
 export interface AppState {
   currentUser: UserProfile;
   materials: MaterialSignal[];
   personnel: Personnel[];
   guardShifts: GuardShiftRecord[];
+  monthlyArchives?: MonthlyArchiveLog[];
   appsScriptUrl: string;
   isSyncing: boolean;
   lastSyncTime?: string;

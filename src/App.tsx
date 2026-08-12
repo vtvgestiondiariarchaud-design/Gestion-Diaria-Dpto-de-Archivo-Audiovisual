@@ -6,7 +6,8 @@ import {
   Personnel, 
   GuardShiftRecord, 
   MaterialStatus, 
-  DivisionType 
+  DivisionType,
+  MonthlyArchiveLog
 } from './types';
 import { 
   loadInitialState, 
@@ -15,6 +16,7 @@ import {
   saveLocalGuardShifts, 
   saveLocalAppsScriptUrl, 
   saveLocalActiveUser,
+  saveLocalMonthlyArchives,
   syncWithGoogleSheets,
   fetchFromGoogleSheets,
   loadLocalUserPins,
@@ -74,22 +76,25 @@ export default function App() {
     const timestamp = new Date().toLocaleTimeString();
 
     if (result.success && result.data) {
-      const { materials, personnel, guardShifts } = result.data;
+      const { materials, personnel, guardShifts, monthlyArchives } = result.data;
 
       setState((prev) => {
         const newMaterials = materials.length > 0 ? materials : prev.materials;
         const newPersonnel = personnel.length > 0 ? deduplicatePersonnel(personnel) : deduplicatePersonnel(prev.personnel);
         const newShifts = guardShifts.length > 0 ? guardShifts : prev.guardShifts;
+        const newArchives = monthlyArchives && monthlyArchives.length > 0 ? monthlyArchives : (prev.monthlyArchives || []);
 
         saveLocalMaterials(newMaterials);
         saveLocalPersonnel(newPersonnel);
         saveLocalGuardShifts(newShifts);
+        saveLocalMonthlyArchives(newArchives);
 
         return {
           ...prev,
           materials: newMaterials,
           personnel: newPersonnel,
           guardShifts: newShifts,
+          monthlyArchives: newArchives,
           isSyncing: false,
           lastSyncTime: timestamp,
         };
@@ -109,18 +114,21 @@ export default function App() {
   const autoPushToSheets = async (
     mats?: MaterialSignal[],
     pers?: Personnel[],
-    shifts?: GuardShiftRecord[]
+    shifts?: GuardShiftRecord[],
+    archives?: MonthlyArchiveLog[]
   ) => {
     if (!state.appsScriptUrl) return;
 
     const targetMats = mats || state.materials;
     const targetPers = pers || state.personnel;
     const targetShifts = shifts || state.guardShifts;
+    const targetArchives = archives || state.monthlyArchives || [];
 
     await syncWithGoogleSheets(state.appsScriptUrl, {
       materials: targetMats,
       personnel: targetPers,
       guardShifts: targetShifts,
+      monthlyArchives: targetArchives,
     });
   };
 
@@ -427,6 +435,47 @@ export default function App() {
     showToast(`Señal ${signalId} eliminada.`);
   };
 
+  // Purge Finalized Materials after Export & Save Monthly Log
+  const handlePurgeFinalizedMaterials = (signalIdsToPurge: string[], monthlyLog: MonthlyArchiveLog) => {
+    setState((prev) => {
+      const updatedMaterials = prev.materials.filter((m) => !signalIdsToPurge.includes(m.id));
+      const updatedArchives = [monthlyLog, ...(prev.monthlyArchives || [])];
+
+      saveLocalMaterials(updatedMaterials);
+      saveLocalMonthlyArchives(updatedArchives);
+      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts, updatedArchives);
+
+      return {
+        ...prev,
+        materials: updatedMaterials,
+        monthlyArchives: updatedArchives,
+      };
+    });
+
+    showToast(`Depuración completada: ${signalIdsToPurge.length} materiales eliminados y estatus mensual guardado en Google Sheets (${monthlyLog.formattedDuration}).`, 'success');
+  };
+
+  const handleSaveMonthlyLogOnly = (monthlyLog: MonthlyArchiveLog) => {
+    setState((prev) => {
+      const updatedArchives = [monthlyLog, ...(prev.monthlyArchives || [])];
+      saveLocalMonthlyArchives(updatedArchives);
+      autoPushToSheets(prev.materials, prev.personnel, prev.guardShifts, updatedArchives);
+      return { ...prev, monthlyArchives: updatedArchives };
+    });
+    showToast('Resumen mensual registrado y respaldado en Google Sheets exitosamente.', 'success');
+  };
+
+  const handleClearMonthlyArchives = () => {
+    if (window.confirm('¿Está seguro de eliminar el historial de reportes mensuales de cierres?')) {
+      setState((prev) => {
+        saveLocalMonthlyArchives([]);
+        autoPushToSheets(prev.materials, prev.personnel, prev.guardShifts, []);
+        return { ...prev, monthlyArchives: [] };
+      });
+      showToast('Historial de cierres mensuales limpiado.');
+    }
+  };
+
   // Add Guard Shift & Update Personnel Balance (single or batch)
   const handleAddBatchGuardShifts = (newShiftsData: Omit<GuardShiftRecord, 'id' | 'createdAt'>[]) => {
     if (newShiftsData.length === 0) return;
@@ -719,6 +768,7 @@ export default function App() {
           <MaterialListModule
             materials={state.materials}
             currentUser={state.currentUser}
+            monthlyArchives={state.monthlyArchives}
             onUpdateSignalStatus={handleUpdateSignalStatus}
             onBatchUpdateFamilyStatus={handleBatchUpdateFamilyStatus}
             onToggleSignalBoolean={handleToggleSignalBoolean}
@@ -726,6 +776,9 @@ export default function App() {
             onOpenNewMaterialModal={handleOpenMaterialModal}
             onDeleteSignal={handleDeleteSignal}
             onEditSignal={handleOpenEditSignal}
+            onPurgeFinalizedMaterials={handlePurgeFinalizedMaterials}
+            onSaveMonthlyLogOnly={handleSaveMonthlyLogOnly}
+            onClearMonthlyArchives={handleClearMonthlyArchives}
           />
         )}
 
