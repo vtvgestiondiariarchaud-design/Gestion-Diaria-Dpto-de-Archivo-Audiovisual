@@ -67,15 +67,31 @@ export function formatDurationHHMMSS(durationInput?: string | number | null): st
   return secondsToDuration(secs);
 }
 
+export function getLocalDateISOString(d = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+export function format12HourTime(h: number, m: number, includeSeconds = false, s = 0): string {
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  let h12 = h % 12;
+  if (h12 === 0) h12 = 12;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  if (includeSeconds) {
+    return `${pad(h12)}:${pad(m)}:${pad(s)} ${ampm}`;
+  }
+  return `${pad(h12)}:${pad(m)} ${ampm}`;
+}
+
 export function normalizeDateString(val: any): string {
   if (!val) return '';
   const str = String(val).trim();
   if (!str) return '';
 
   // 1. If string starts with YYYY-MM-DD
-  const isoMatch = str.match(/^(\d{4}-\d{2}-\d{2})/);
+  const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (isoMatch) {
-    return isoMatch[1];
+    return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
   }
 
   // 2. If DD/MM/YYYY or D/M/YYYY or DD-MM-YYYY
@@ -90,8 +106,7 @@ export function normalizeDateString(val: any): string {
   if (!isNaN(d.getTime())) {
     const year = d.getFullYear();
     if (year >= 2000) {
-      const pad = (n: number) => n.toString().padStart(2, '0');
-      return `${year}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      return getLocalDateISOString(d);
     }
   }
 
@@ -102,18 +117,28 @@ export function parseAnyDate(dateInput?: string): Date {
   if (!dateInput) return new Date();
   const str = dateInput.trim();
 
-  // If DD/MM/YYYY or DD/MM/YYYY HH:mm
-  const ddmmyyyyMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{1,2}))?/);
+  // Check for AM/PM suffix
+  const isPM = /PM$/i.test(str) || /p\.?\s*m\.?$/i.test(str);
+  const isAM = /AM$/i.test(str) || /a\.?\s*m\.?$/i.test(str);
+
+  // Match DD/MM/YYYY hh:mm:ss or DD/MM/YYYY hh:mm
+  const ddmmyyyyMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
   if (ddmmyyyyMatch) {
-    const [, day, month, year, hh = '0', mm = '0'] = ddmmyyyyMatch;
-    return new Date(Number(year), Number(month) - 1, Number(day), Number(hh), Number(mm));
+    const [, day, month, year, rawHh, mm = '0', ss = '0'] = ddmmyyyyMatch;
+    let hh = rawHh !== undefined ? Number(rawHh) : 0;
+    if (isPM && hh < 12) hh += 12;
+    if (isAM && hh === 12) hh = 0;
+    return new Date(Number(year), Number(month) - 1, Number(day), hh, Number(mm), Number(ss));
   }
 
-  // If YYYY-MM-DD or YYYY-MM-DD HH:mm:ss or YYYY-MM-DDTHH:mm
-  const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{1,2}):(\d{1,2}))?/);
+  // Match YYYY-MM-DD hh:mm:ss or YYYY-MM-DD
+  const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
   if (isoMatch) {
-    const [, year, month, day, hh = '0', mm = '0'] = isoMatch;
-    return new Date(Number(year), Number(month) - 1, Number(day), Number(hh), Number(mm));
+    const [, year, month, day, rawHh, mm = '0', ss = '0'] = isoMatch;
+    let hh = rawHh !== undefined ? Number(rawHh) : 0;
+    if (isPM && hh < 12) hh += 12;
+    if (isAM && hh === 12) hh = 0;
+    return new Date(Number(year), Number(month) - 1, Number(day), hh, Number(mm), Number(ss));
   }
 
   const d = new Date(str);
@@ -123,39 +148,58 @@ export function parseAnyDate(dateInput?: string): Date {
 }
 
 export function getFormattedDateTime(dateInput?: Date | string | number): string {
-  if (!dateInput) {
-    const now = new Date();
+  const formatObj = (d: Date) => {
     const pad = (n: number) => String(n).padStart(2, '0');
-    return `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    const day = pad(d.getDate());
+    const month = pad(d.getMonth() + 1);
+    const year = d.getFullYear();
+    const timeStr = format12HourTime(d.getHours(), d.getMinutes());
+    return `${day}/${month}/${year} ${timeStr}`;
+  };
+
+  if (!dateInput) {
+    return formatObj(new Date());
   }
 
   if (dateInput instanceof Date) {
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${pad(dateInput.getDate())}/${pad(dateInput.getMonth() + 1)}/${dateInput.getFullYear()} ${pad(dateInput.getHours())}:${pad(dateInput.getMinutes())}`;
+    return formatObj(dateInput);
   }
 
   if (typeof dateInput === 'string') {
     const str = dateInput.trim();
     if (!str) return getFormattedDateTime();
 
-    const ddmmyyyyMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{1,2}))?/);
-    if (ddmmyyyyMatch) {
-      const [, day, month, year, hh = '00', mm = '00'] = ddmmyyyyMatch;
+    // Match DD/MM/YYYY with AM/PM already present
+    const ddmmyyyyAmPmMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM|am|pm)$/i);
+    if (ddmmyyyyAmPmMatch) {
+      const [, day, month, year, rawHh, mm, , ampm] = ddmmyyyyAmPmMatch;
       const pad = (n: string) => n.padStart(2, '0');
-      return `${pad(day)}/${pad(month)}/${year} ${pad(hh)}:${pad(mm)}`;
+      let hh = Number(rawHh);
+      if (hh === 0) hh = 12;
+      return `${pad(day)}/${pad(month)}/${year} ${pad(String(hh))}:${pad(mm)} ${ampm.toUpperCase()}`;
     }
 
+    // Match DD/MM/YYYY HH:mm without AM/PM
+    const ddmmyyyyMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{1,2}))?/);
+    if (ddmmyyyyMatch) {
+      const [, day, month, year, rawHh = '0', mm = '0'] = ddmmyyyyMatch;
+      const pad = (n: string) => n.padStart(2, '0');
+      const timeStr = format12HourTime(Number(rawHh), Number(mm));
+      return `${pad(day)}/${pad(month)}/${year} ${timeStr}`;
+    }
+
+    // Match YYYY-MM-DD HH:mm or ISO
     const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{1,2}):(\d{1,2}))?/);
     if (isoMatch) {
-      const [, year, month, day, hh = '00', mm = '00'] = isoMatch;
+      const [, year, month, day, rawHh = '0', mm = '0'] = isoMatch;
       const pad = (n: string) => n.padStart(2, '0');
-      return `${pad(day)}/${pad(month)}/${year} ${pad(hh)}:${pad(mm)}`;
+      const timeStr = format12HourTime(Number(rawHh), Number(mm));
+      return `${pad(day)}/${pad(month)}/${year} ${timeStr}`;
     }
 
     const parsedDate = new Date(str);
     if (!isNaN(parsedDate.getTime())) {
-      const pad = (n: number) => String(n).padStart(2, '0');
-      return `${pad(parsedDate.getDate())}/${pad(parsedDate.getMonth() + 1)}/${parsedDate.getFullYear()} ${pad(parsedDate.getHours())}:${pad(parsedDate.getMinutes())}`;
+      return formatObj(parsedDate);
     }
 
     return str;
@@ -163,8 +207,7 @@ export function getFormattedDateTime(dateInput?: Date | string | number): string
 
   const parsedDate = new Date(dateInput);
   if (!isNaN(parsedDate.getTime())) {
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${pad(parsedDate.getDate())}/${pad(parsedDate.getMonth() + 1)}/${parsedDate.getFullYear()} ${pad(parsedDate.getHours())}:${pad(parsedDate.getMinutes())}`;
+    return formatObj(parsedDate);
   }
 
   return String(dateInput);
@@ -419,7 +462,7 @@ export function generateMonthlyArchiveLog(materials: MaterialSignal[], user: Use
     'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
   ];
   const monthPeriod = `${monthNames[now.getMonth()]} ${now.getFullYear()}`;
-  const exportDate = now.toISOString().replace('T', ' ').substring(0, 16);
+  const exportDate = getFormattedDateTime(now);
 
   let totalSecs = 0;
   const divisionMap: Record<string, { count: number; seconds: number }> = {};
@@ -459,7 +502,7 @@ export function generateMonthlyArchiveLog(materials: MaterialSignal[], user: Use
 }
 
 export function exportMaterialsToCSV(materials: MaterialSignal[], customFilename?: string): void {
-  const dateStr = new Date().toISOString().substring(0, 10);
+  const dateStr = getLocalDateISOString();
   const filename = customFilename || `VTV_Materiales_Finalizados_Export_${dateStr}.csv`;
 
   const headers = [

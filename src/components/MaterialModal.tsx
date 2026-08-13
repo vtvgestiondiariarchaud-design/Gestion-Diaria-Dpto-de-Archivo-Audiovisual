@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { MaterialSignal, DivisionType, SignalType, UserProfile } from '../types';
 import { X, Film, Layers, Clock, Calendar, User, FileText, CheckCircle2 } from 'lucide-react';
-import { getFormattedDateTime, formatDurationHHMMSS } from '../services/apiService';
+import { getFormattedDateTime, formatDurationHHMMSS, getLocalDateISOString } from '../services/apiService';
 
 interface MaterialModalProps {
   isOpen: boolean;
@@ -26,7 +26,7 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
 }) => {
   if (!isOpen) return null;
 
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getLocalDateISOString();
 
   const [mode, setMode] = useState<'batch' | 'single'>(presetFamilyId ? 'single' : 'batch');
   const [isRequestTask, setIsRequestTask] = useState<boolean>(presetIsRequestTask);
@@ -52,7 +52,9 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
     const formattedDuration = formatDurationHHMMSS(`${pad(hours)}:${pad(minutes)}:${pad(seconds)}`);
 
     const familyId = presetFamilyId || `FAM-2026-${Math.floor(100 + Math.random() * 900)}`;
-    const currentTime = new Date().toTimeString().split(' ')[0];
+    const now = new Date();
+    const numPad = (v: number) => String(v).padStart(2, '0');
+    const currentTime = `${numPad(now.getHours())}:${numPad(now.getMinutes())}`;
     const rawTimestamp = creationDate.includes(' ') ? creationDate : `${creationDate} ${currentTime}`;
     const fullCreationTimestamp = getFormattedDateTime(rawTimestamp);
 

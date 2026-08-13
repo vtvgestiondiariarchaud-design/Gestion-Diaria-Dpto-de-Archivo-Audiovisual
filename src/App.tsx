@@ -24,7 +24,8 @@ import {
   deduplicatePersonnel,
   deduplicateGuardShifts,
   getFormattedDateTime,
-  normalizeDateString
+  normalizeDateString,
+  getLocalDateISOString
 } from './services/apiService';
 import { Navbar } from './components/Navbar';
 import { canUserFinalizeSignal } from './utils/permissions';
@@ -85,7 +86,7 @@ export default function App() {
     }
 
     const result = await fetchFromGoogleSheets(state.appsScriptUrl);
-    const timestamp = new Date().toLocaleTimeString();
+    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
 
     if (result.success && result.data) {
       const { materials, personnel, guardShifts, monthlyArchives } = result.data;
@@ -615,7 +616,7 @@ export default function App() {
     newShiftsData: Omit<GuardShiftRecord, 'id' | 'createdAt'>[],
     replaceTargetDate?: string
   ) => {
-    const createdTimestamp = new Date().toISOString().split('T')[0];
+    const createdTimestamp = getLocalDateISOString();
     const newShiftRecords: GuardShiftRecord[] = newShiftsData.map((s, idx) => ({
       ...s,
       date: normalizeDateString(s.date),
