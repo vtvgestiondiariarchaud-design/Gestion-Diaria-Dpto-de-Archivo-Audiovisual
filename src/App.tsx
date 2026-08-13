@@ -22,7 +22,9 @@ import {
   loadLocalUserPins,
   saveLocalUserPins,
   deduplicatePersonnel,
-  getFormattedDateTime
+  deduplicateGuardShifts,
+  getFormattedDateTime,
+  normalizeDateString
 } from './services/apiService';
 import { Navbar } from './components/Navbar';
 import { canUserFinalizeSignal } from './utils/permissions';
@@ -91,7 +93,13 @@ export default function App() {
       setState((prev) => {
         const newMaterials = materials.length > 0 ? materials : prev.materials;
         const newPersonnel = personnel.length > 0 ? deduplicatePersonnel(personnel) : deduplicatePersonnel(prev.personnel);
-        const newShifts = guardShifts.length > 0 ? guardShifts : prev.guardShifts;
+        
+        // Use guardShifts array from Google Sheets directly (normalized & deduplicated)
+        let newShifts = prev.guardShifts;
+        if (Array.isArray(guardShifts)) {
+          newShifts = deduplicateGuardShifts(guardShifts);
+        }
+
         const newArchives = monthlyArchives && monthlyArchives.length > 0 ? monthlyArchives : (prev.monthlyArchives || []);
 
         saveLocalMaterials(newMaterials);
@@ -590,19 +598,45 @@ export default function App() {
     }
   };
 
-  // Add Guard Shift & Update Personnel Balance (single or batch)
-  const handleAddBatchGuardShifts = (newShiftsData: Omit<GuardShiftRecord, 'id' | 'createdAt'>[]) => {
-    if (newShiftsData.length === 0) return;
+  // Clear All Guard Shifts
+  const handleClearAllGuardShifts = () => {
+    if (window.confirm('¿Está seguro de que desea eliminar TODAS las guardias del calendario? Esta acción no se puede deshacer.')) {
+      setState((prev) => {
+        saveLocalGuardShifts([]);
+        autoPushToSheets(prev.materials, prev.personnel, []);
+        return { ...prev, guardShifts: [] };
+      });
+      showToast('Se han eliminado todas las guardias del calendario.');
+    }
+  };
 
+  // Add Guard Shift & Update Personnel Balance (single or batch with optional date overwrite)
+  const handleAddBatchGuardShifts = (
+    newShiftsData: Omit<GuardShiftRecord, 'id' | 'createdAt'>[],
+    replaceTargetDate?: string
+  ) => {
     const createdTimestamp = new Date().toISOString().split('T')[0];
     const newShiftRecords: GuardShiftRecord[] = newShiftsData.map((s, idx) => ({
       ...s,
-      id: `sh-${Date.now()}-${idx}`,
+      date: normalizeDateString(s.date),
+      endDate: s.endDate ? normalizeDateString(s.endDate) : undefined,
+      id: `sh-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 6)}`,
       createdAt: createdTimestamp,
     }));
 
     setState((prev) => {
-      const updatedShifts = [...newShiftRecords, ...prev.guardShifts];
+      let baseShifts = prev.guardShifts;
+
+      // If replacing a specific date's guard roster, clear old guard shifts for that date first
+      if (replaceTargetDate) {
+        const normTarget = normalizeDateString(replaceTargetDate);
+        baseShifts = baseShifts.filter((s) => {
+          const sDate = s.date ? normalizeDateString(s.date) : '';
+          return !(sDate === normTarget && s.shiftType === 'Guardia (Fin de semana/Feriado)');
+        });
+      }
+
+      const updatedShifts = deduplicateGuardShifts([...newShiftRecords, ...baseShifts]);
 
       // Build map of balance adjustments per personnelId
       const workedMap = new Map<string, number>();
@@ -662,7 +696,7 @@ export default function App() {
       };
     });
 
-    showToast(`Asignación de turno(s) realizada con éxito (${newShiftsData.length}).`);
+    showToast(`Asignación de turno(s) guardada con éxito (${newShiftsData.length}).`);
   };
 
   const handleAddGuardShift = (shiftData: Omit<GuardShiftRecord, 'id' | 'createdAt'>) => {
@@ -913,6 +947,7 @@ export default function App() {
             onAddGuardShift={handleAddGuardShift}
             onAddBatchGuardShifts={handleAddBatchGuardShifts}
             onDeleteGuardShift={handleDeleteGuardShift}
+            onClearAllGuardShifts={handleClearAllGuardShifts}
             onAddPersonnel={handleAddPersonnel}
             onQuickAdjustDays={handleQuickAdjustDays}
             onOpenPinModal={() => setIsPinModalOpen(true)}

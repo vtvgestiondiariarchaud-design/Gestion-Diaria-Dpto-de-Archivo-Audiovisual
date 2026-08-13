@@ -60,9 +60,9 @@ function initSheets() {
   if (!sheetGuard) {
     sheetGuard = ss.insertSheet(SHEET_GUARDIAS);
     sheetGuard.appendRow([
-      "ID", "ID Personal", "Nombre Personal", "División", "Fecha", "Tipo Turno", "Asignado Por", "Notas", "Fecha Registro"
+      "ID", "ID Personal", "Nombre Personal", "División", "Fecha", "Fecha Fin", "Tipo Turno", "Es Encargado", "Asignado Por", "Notas", "Fecha Registro"
     ]);
-    sheetGuard.getRange(1, 1, 1, 9).setFontWeight("bold").setBackground("#1e293b").setFontColor("#ffffff");
+    sheetGuard.getRange(1, 1, 1, 11).setFontWeight("bold").setBackground("#1e293b").setFontColor("#ffffff");
   }
 
   // Hoja Cierres Mensuales

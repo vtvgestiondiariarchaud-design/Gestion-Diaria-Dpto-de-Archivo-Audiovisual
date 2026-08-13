@@ -431,77 +431,7 @@ export const INITIAL_MATERIALS: MaterialSignal[] = [
   },
 ];
 
-export const INITIAL_GUARD_SHIFTS: GuardShiftRecord[] = [
-  {
-    id: 'sh-1',
-    personnelId: 'per-2',
-    personnelName: 'Carmen Rodríguez',
-    division: 'Prensa',
-    date: '2026-08-01',
-    shiftType: 'Guardia (Fin de semana/Feriado)',
-    assignedBy: 'Ana Patricia Silva',
-    notes: 'Guardia Sábado prensa transmisión en vivo.',
-    createdAt: '2026-07-30',
-  },
-  {
-    id: 'sh-2',
-    personnelId: 'per-2',
-    personnelName: 'Carmen Rodríguez',
-    division: 'Prensa',
-    date: '2026-08-02',
-    shiftType: 'Guardia (Fin de semana/Feriado)',
-    assignedBy: 'Ana Patricia Silva',
-    notes: 'Guardia Domingo noticiero.',
-    createdAt: '2026-07-30',
-  },
-  {
-    id: 'sh-3',
-    personnelId: 'per-2',
-    personnelName: 'Carmen Rodríguez',
-    division: 'Prensa',
-    date: '2026-08-05',
-    shiftType: 'Día Libre',
-    assignedBy: 'Ana Patricia Silva',
-    notes: 'Día libre por guardia del 01/08.',
-    createdAt: '2026-08-03',
-  },
-  {
-    id: 'sh-4',
-    personnelId: 'per-8',
-    personnelName: 'Gabriel Medina',
-    division: 'Ingesta',
-    date: '2026-08-08',
-    shiftType: 'Guardia (Fin de semana/Feriado)',
-    isLead: true,
-    assignedBy: 'Ana Patricia Silva',
-    notes: 'Guardia de Ingesta nocturna (Encargado).',
-    createdAt: '2026-08-06',
-  },
-  {
-    id: 'sh-5',
-    personnelId: 'per-5',
-    personnelName: 'Pedro Infante',
-    division: 'Programación',
-    date: '2026-08-09',
-    shiftType: 'Guardia (Fin de semana/Feriado)',
-    isLead: false,
-    assignedBy: 'Ana Patricia Silva',
-    notes: 'Guardia Domingo Programación.',
-    createdAt: '2026-08-07',
-  },
-  {
-    id: 'sh-6',
-    personnelId: 'per-3',
-    personnelName: 'José Luis Morales',
-    division: 'Prensa',
-    date: '2026-08-15',
-    endDate: '2026-08-25',
-    shiftType: 'Vacaciones',
-    assignedBy: 'Ana Patricia Silva',
-    notes: 'Periodo de Vacaciones 2025-2026',
-    createdAt: '2026-08-10',
-  },
-];
+export const INITIAL_GUARD_SHIFTS: GuardShiftRecord[] = [];
 
 export const DEFAULT_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby2Vn7FENScbW6HQpNcyQ8SIeOl-w--rheWaC9AF04mmyq6DCJENAG8yB1ySOii_AfcvA/exec';
 

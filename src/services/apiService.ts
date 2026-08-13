@@ -67,6 +67,37 @@ export function formatDurationHHMMSS(durationInput?: string | number | null): st
   return secondsToDuration(secs);
 }
 
+export function normalizeDateString(val: any): string {
+  if (!val) return '';
+  const str = String(val).trim();
+  if (!str) return '';
+
+  // 1. If string starts with YYYY-MM-DD
+  const isoMatch = str.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoMatch) {
+    return isoMatch[1];
+  }
+
+  // 2. If DD/MM/YYYY or D/M/YYYY or DD-MM-YYYY
+  const dmyMatch = str.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/);
+  if (dmyMatch) {
+    const pad = (n: string) => n.padStart(2, '0');
+    return `${dmyMatch[3]}-${pad(dmyMatch[2])}-${pad(dmyMatch[1])}`;
+  }
+
+  // 3. Try parsing JS Date
+  const d = new Date(val);
+  if (!isNaN(d.getTime())) {
+    const year = d.getFullYear();
+    if (year >= 2000) {
+      const pad = (n: number) => n.toString().padStart(2, '0');
+      return `${year}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    }
+  }
+
+  return str.substring(0, 10);
+}
+
 export function parseAnyDate(dateInput?: string): Date {
   if (!dateInput) return new Date();
   const str = dateInput.trim();
@@ -240,6 +271,41 @@ export function deduplicatePersonnel(list: Personnel[]): Personnel[] {
   return result;
 }
 
+export function deduplicateGuardShifts(list: GuardShiftRecord[]): GuardShiftRecord[] {
+  if (!Array.isArray(list)) return [];
+  const seenIds = new Set<string>();
+  const seenCombos = new Set<string>();
+  const result: GuardShiftRecord[] = [];
+
+  for (let i = 0; i < list.length; i++) {
+    const s = list[i];
+    if (!s) continue;
+
+    const normDate = normalizeDateString(s.date);
+    const comboKey = `${s.personnelId}_${normDate}_${s.shiftType}`;
+
+    if (comboKey && seenCombos.has(comboKey)) {
+      continue; // Skip duplicate shift assignments for same person and date
+    }
+    if (comboKey) seenCombos.add(comboKey);
+
+    let cleanId = String(s.id || '').trim();
+    if (!cleanId || seenIds.has(cleanId)) {
+      cleanId = `sh-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`;
+    }
+    seenIds.add(cleanId);
+
+    result.push({
+      ...s,
+      id: cleanId,
+      date: normDate,
+      endDate: s.endDate ? normalizeDateString(s.endDate) : undefined,
+    });
+  }
+
+  return result;
+}
+
 // Local Storage API methods
 export function loadInitialState(): AppState {
   let materials: MaterialSignal[] = INITIAL_MATERIALS;
@@ -285,7 +351,16 @@ export function loadInitialState(): AppState {
     saveLocalPersonnel(personnel);
 
     const localShifts = localStorage.getItem(LOCAL_STORAGE_KEY_SHIFTS);
-    if (localShifts) guardShifts = JSON.parse(localShifts);
+    if (localShifts) {
+      try {
+        const parsed = JSON.parse(localShifts);
+        if (Array.isArray(parsed)) {
+          guardShifts = deduplicateGuardShifts(parsed);
+        }
+      } catch (e) {
+        guardShifts = [];
+      }
+    }
 
     const localUrl = localStorage.getItem(LOCAL_STORAGE_KEY_APPS_SCRIPT_URL);
     if (localUrl && localUrl.trim()) {
@@ -613,17 +688,32 @@ export async function fetchFromGoogleSheets(
       }).filter((p) => p.name));
 
       const rawShifts = Array.isArray(resData.data.guardShifts) ? resData.data.guardShifts : [];
-      const parsedShifts: GuardShiftRecord[] = rawShifts.map((s: any) => ({
-        id: String(s.ID || s.id || ''),
-        personnelId: String(s['ID Personal'] || s.personnelId || ''),
-        personnelName: String(s['Nombre Personal'] || s.personnelName || ''),
-        division: (s['División'] || s.division || 'Prensa') as any,
-        date: String(s['Fecha'] || s.date || ''),
-        shiftType: (s['Tipo Turno'] || s.shiftType || '24h') as any,
-        assignedBy: String(s['Asignado Por'] || s.assignedBy || ''),
-        notes: s['Notas'] || s.notes || undefined,
-        createdDate: String(s['Fecha Registro'] || s.createdDate || ''),
-      })).filter((s) => s.id);
+      const parsedShiftsList: GuardShiftRecord[] = rawShifts.map((s: any, idx: number) => {
+        const rawDate = s['Fecha'] || s.date || '';
+        const rawEndDate = s['Fecha Fin'] || s.endDate || undefined;
+        const rawCreated = s['Fecha Registro'] || s.createdAt || s.createdDate || '';
+        const rawIsLead = s['Es Encargado'] !== undefined
+          ? (s['Es Encargado'] === 'SI' || s['Es Encargado'] === true || s['Es Encargado'] === 'true')
+          : (s.isLead === true || s.isLead === 'true');
+
+        const shiftId = String(s.ID || s.id || `sh-${Date.now()}-${idx}`);
+
+        return {
+          id: shiftId,
+          personnelId: String(s['ID Personal'] || s.personnelId || ''),
+          personnelName: String(s['Nombre Personal'] || s.personnelName || ''),
+          division: (s['División'] || s.division || 'Prensa') as any,
+          date: normalizeDateString(rawDate),
+          endDate: rawEndDate ? normalizeDateString(rawEndDate) : undefined,
+          shiftType: (s['Tipo Turno'] || s.shiftType || 'Guardia (Fin de semana/Feriado)') as any,
+          assignedBy: String(s['Asignado Por'] || s.assignedBy || ''),
+          isLead: rawIsLead,
+          notes: s['Notas'] || s.notes || undefined,
+          createdAt: String(rawCreated || getFormattedDateTime()),
+        };
+      }).filter((s) => s.personnelId);
+
+      const parsedShifts = deduplicateGuardShifts(parsedShiftsList);
 
       const rawArchives = Array.isArray(resData.data.monthlyArchives) 
         ? resData.data.monthlyArchives 
@@ -736,6 +826,20 @@ export async function syncWithGoogleSheets(
       'PIN': p.pin || '',
     }));
 
+    const formattedShifts = (state.guardShifts || []).map((s) => ({
+      'ID': s.id,
+      'ID Personal': s.personnelId,
+      'Nombre Personal': s.personnelName,
+      'División': s.division,
+      'Fecha': normalizeDateString(s.date) || '',
+      'Fecha Fin': s.endDate ? normalizeDateString(s.endDate) : '',
+      'Tipo Turno': s.shiftType,
+      'Es Encargado': s.isLead ? 'SI' : 'NO',
+      'Asignado Por': s.assignedBy || '',
+      'Notas': s.notes || '',
+      'Fecha Registro': s.createdAt || (s as any).createdDate || '',
+    }));
+
     const formattedArchives = (state.monthlyArchives || []).map((a) => ({
       'ID Cierre': a.id,
       'Período': a.monthPeriod,
@@ -759,7 +863,7 @@ export async function syncWithGoogleSheets(
         action: 'syncAllData',
         materials: formattedMaterials,
         personnel: formattedPersonnel,
-        guardShifts: state.guardShifts,
+        guardShifts: formattedShifts,
         monthlyArchives: formattedArchives,
       }),
     });

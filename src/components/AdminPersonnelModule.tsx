@@ -24,7 +24,8 @@ import {
   CalendarPlus,
   Sparkles,
   KeyRound,
-  Lock
+  Lock,
+  Search
 } from 'lucide-react';
 
 interface AdminPersonnelModuleProps {
@@ -32,8 +33,9 @@ interface AdminPersonnelModuleProps {
   guardShifts: GuardShiftRecord[];
   currentUser: UserProfile;
   onAddGuardShift: (shift: Omit<GuardShiftRecord, 'id' | 'createdAt'>) => void;
-  onAddBatchGuardShifts?: (shifts: Omit<GuardShiftRecord, 'id' | 'createdAt'>[]) => void;
+  onAddBatchGuardShifts?: (shifts: Omit<GuardShiftRecord, 'id' | 'createdAt'>[], replaceTargetDate?: string) => void;
   onDeleteGuardShift?: (shiftId: string) => void;
+  onClearAllGuardShifts?: () => void;
   onAddPersonnel: (person: Omit<Personnel, 'id' | 'guardDaysWorked' | 'daysOffGenerated' | 'daysOffTaken' | 'balanceDays'>) => void;
   onQuickAdjustDays: (personnelId: string, type: 'guard' | 'dayOff') => void;
   onOpenPinModal?: () => void;
@@ -47,6 +49,7 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
   onAddGuardShift,
   onAddBatchGuardShifts,
   onDeleteGuardShift,
+  onClearAllGuardShifts,
   onAddPersonnel,
   onQuickAdjustDays,
   onOpenPinModal,
@@ -98,6 +101,57 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
   // Feedback Toast
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
 
+  // Panel Search & Division Filter
+  const [panelSearchQuery, setPanelSearchQuery] = useState('');
+  const [panelDivisionFilter, setPanelDivisionFilter] = useState<string>('all');
+
+  // Assignment Modal Personnel Search
+  const [assignSearchQuery, setAssignSearchQuery] = useState('');
+
+  // Filtered personnel for Panel de Saldos
+  const filteredPanelPersonnel = useMemo(() => {
+    return personnel.filter((p) => {
+      const matchesDivision =
+        panelDivisionFilter === 'all' || p.division === panelDivisionFilter;
+      const matchesSearch =
+        !panelSearchQuery.trim() ||
+        p.name.toLowerCase().includes(panelSearchQuery.toLowerCase().trim()) ||
+        p.role.toLowerCase().includes(panelSearchQuery.toLowerCase().trim()) ||
+        p.division.toLowerCase().includes(panelSearchQuery.toLowerCase().trim());
+      return matchesDivision && matchesSearch;
+    });
+  }, [personnel, panelSearchQuery, panelDivisionFilter]);
+
+  // Filtered personnel for Assignment Modal
+  const filteredPersonnelForAssign = useMemo(() => {
+    if (!assignSearchQuery.trim()) return personnel;
+    const q = assignSearchQuery.toLowerCase().trim();
+    return personnel.filter(
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        p.division.toLowerCase().includes(q) ||
+        p.role.toLowerCase().includes(q)
+    );
+  }, [personnel, assignSearchQuery]);
+
+  // Grouped personnel by division for Assignment Modal
+  const groupedPersonnelForAssign = useMemo<Record<string, Personnel[]>>(() => {
+    const knownDivisions: DivisionType[] = ['Prensa', 'Programación', 'Ingesta', 'Gerencia'];
+    const groups: Record<string, Personnel[]> = {};
+
+    knownDivisions.forEach((div) => {
+      groups[div] = [];
+    });
+
+    filteredPersonnelForAssign.forEach((p) => {
+      const divKey = p.division || 'Gerencia';
+      if (!groups[divKey]) groups[divKey] = [];
+      groups[divKey].push(p);
+    });
+
+    return groups;
+  }, [filteredPersonnelForAssign]);
+
   const monthNames = [
     'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
     'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
@@ -118,10 +172,12 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
   // Helper to find shifts active on a given date (including vacation ranges)
   const getShiftsForDate = (dateStr: string) => {
     return guardShifts.filter((s) => {
-      if (s.shiftType === 'Vacaciones' && s.endDate) {
-        return dateStr >= s.date && dateStr <= s.endDate;
+      const sDate = s.date ? s.date.substring(0, 10) : '';
+      const sEndDate = s.endDate ? s.endDate.substring(0, 10) : '';
+      if (s.shiftType === 'Vacaciones' && sEndDate) {
+        return dateStr >= sDate && dateStr <= sEndDate;
       }
-      return s.date === dateStr;
+      return sDate === dateStr;
     });
   };
 
@@ -129,6 +185,7 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
     const pad = (n: number) => n.toString().padStart(2, '0');
     const dateStr = `${year}-${pad(month + 1)}-${pad(dayNum)}`;
     setSelectedCalendarDate(dateStr);
+    setAssignSearchQuery('');
     
     // Default vacation start/end dates
     setVacationStartDate(dateStr);
@@ -175,8 +232,6 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
     if (!selectedCalendarDate) return;
 
     if (assignmentMode === 'guardia') {
-      if (selectedWorkerIds.length === 0) return;
-
       const newShifts = selectedWorkerIds.map((pid) => {
         const p = personnel.find((per) => per.id === pid);
         return {
@@ -192,7 +247,7 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
       });
 
       if (onAddBatchGuardShifts) {
-        onAddBatchGuardShifts(newShifts);
+        onAddBatchGuardShifts(newShifts, selectedCalendarDate);
       } else {
         newShifts.forEach((s) => onAddGuardShift(s));
       }
@@ -315,7 +370,7 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
     if (!duplicateFromDate || !duplicateTargetDate) return;
 
     const existingOnDate = guardShifts.filter(
-      (s) => s.date === duplicateFromDate && s.shiftType === 'Guardia (Fin de semana/Feriado)'
+      (s) => (s.date ? s.date.substring(0, 10) : '') === duplicateFromDate && s.shiftType === 'Guardia (Fin de semana/Feriado)'
     );
 
     if (existingOnDate.length === 0) return;
@@ -418,13 +473,25 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
           )}
 
           {hasAccess && (
-            <button
-              onClick={() => setIsAddingPersonnel(true)}
-              className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs uppercase tracking-wider transition-all flex items-center gap-2 shrink-0 shadow-lg"
-            >
-              <Plus className="w-4 h-4" />
-              <span>NUEVO PERSONAL</span>
-            </button>
+            <div className="flex items-center gap-2">
+              {onClearAllGuardShifts && guardShifts.length > 0 && (
+                <button
+                  onClick={onClearAllGuardShifts}
+                  className="px-3 py-2.5 rounded-xl bg-red-950/60 hover:bg-red-900 border border-red-800/80 text-red-300 font-bold text-xs transition-all flex items-center gap-1.5 shrink-0 shadow-md"
+                  title="Eliminar todas las guardias del calendario"
+                >
+                  <Trash2 className="w-4 h-4 text-red-400" />
+                  <span>Limpiar Guardias ({guardShifts.length})</span>
+                </button>
+              )}
+              <button
+                onClick={() => setIsAddingPersonnel(true)}
+                className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs uppercase tracking-wider transition-all flex items-center gap-2 shrink-0 shadow-lg"
+              >
+                <Plus className="w-4 h-4" />
+                <span>NUEVO PERSONAL</span>
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -514,9 +581,9 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
 
                     {/* Shifts Chips inside Calendar Cell */}
                     <div className="space-y-0.5 overflow-y-auto max-h-12 no-scrollbar">
-                      {dayShifts.map((sh) => (
+                      {dayShifts.map((sh, idx) => (
                         <div
-                          key={`${sh.id}-${dateStr}`}
+                          key={`${sh.id}-${dateStr}-${idx}`}
                           className={`text-[9px] font-semibold px-1 py-0.2 rounded truncate flex items-center gap-0.5 ${
                             sh.shiftType === 'Vacaciones'
                               ? 'bg-cyan-600/30 text-cyan-200 border border-cyan-500/40'
@@ -555,7 +622,7 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
 
         {/* Right Column: Personnel Balance Panel Table (7 cols) */}
         <div className="lg:col-span-7 bg-gradient-to-br from-[#1E293B] via-[#1E293B] to-[#0F172A] border border-slate-700/80 rounded-2xl p-5 shadow-xl flex flex-col">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
             <div>
               <h3 className="text-base font-bold text-white flex items-center gap-2">
                 <Users className="w-5 h-5 text-purple-400" />
@@ -565,6 +632,51 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
                 Resumen de guardias trabajadas, días compensatorios y balance
               </p>
             </div>
+
+            {/* Search Bar for Panel */}
+            <div className="relative min-w-[200px]">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+              <input
+                type="text"
+                value={panelSearchQuery}
+                onChange={(e) => setPanelSearchQuery(e.target.value)}
+                placeholder="Buscar personal..."
+                className="w-full pl-8 pr-7 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs placeholder-slate-500 focus:outline-none focus:border-purple-500"
+              />
+              {panelSearchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setPanelSearchQuery('')}
+                  className="absolute right-2 top-2 text-slate-400 hover:text-white"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Division Filter Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-2 mb-3 no-scrollbar border-b border-slate-800/80">
+            {[
+              { id: 'all', label: 'Todas las Divisiones' },
+              { id: 'Prensa', label: 'Prensa' },
+              { id: 'Programación', label: 'Programación' },
+              { id: 'Ingesta', label: 'Ingesta' },
+              { id: 'Gerencia', label: 'Gerencia' },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setPanelDivisionFilter(tab.id)}
+                className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-all whitespace-nowrap ${
+                  panelDivisionFilter === tab.id
+                    ? 'bg-purple-600 text-white shadow'
+                    : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800/80'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
           </div>
 
           <div className="overflow-x-auto flex-1">
@@ -581,7 +693,7 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60">
-                {personnel.map((per, idx) => (
+                {filteredPanelPersonnel.map((per, idx) => (
                   <tr key={per.id ? `per-${per.id}` : `per-idx-${idx}`} className="hover:bg-slate-800/40 transition-colors">
                     <td className="p-3 font-semibold text-white">
                       <div className="flex items-center gap-1.5 flex-wrap">
@@ -707,9 +819,9 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
 
                 {/* List of current assignments */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {getShiftsForDate(selectedCalendarDate).map((sh) => (
+                  {getShiftsForDate(selectedCalendarDate).map((sh, idx) => (
                     <div
-                      key={sh.id}
+                      key={`${sh.id}-${idx}`}
                       className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-between text-xs"
                     >
                       <div>
@@ -782,64 +894,119 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
 
             {/* Assignment Form */}
             <form onSubmit={handleSaveAssignment} className="space-y-4">
+              {/* Buscador de Personal en Asignaciones del Día */}
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block">
+                  🔍 Buscar Personal para Asignación:
+                </label>
+                <div className="relative">
+                  <Search className="w-4 h-4 text-purple-400 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    value={assignSearchQuery}
+                    onChange={(e) => setAssignSearchQuery(e.target.value)}
+                    placeholder="Escriba nombre, división o rol para filtrar..."
+                    className="w-full pl-9 pr-8 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs placeholder-slate-500 focus:outline-none focus:border-purple-500 transition-all shadow-inner"
+                  />
+                  {assignSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setAssignSearchQuery('')}
+                      className="absolute right-2.5 top-2 text-slate-400 hover:text-white p-0.5 rounded-full"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
               {/* MODE 1: GUARDIA (Multiple Workers & Encargado) */}
               {assignmentMode === 'guardia' && (
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-bold text-slate-300 uppercase tracking-wider block">
-                      Seleccionar Trabajadores de Guardia & Designar Encargado 👑
+                      Seleccionar Trabajadores de Guardia por División & Designar Encargado 👑
                     </label>
                     <span className="text-[10px] text-purple-300 font-mono font-bold">
                       {selectedWorkerIds.length} seleccionados
                     </span>
                   </div>
 
-                  {/* Multi Worker Checklist */}
-                  <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1 border border-slate-800 rounded-xl p-2 bg-slate-950">
-                    {personnel.map((p) => {
-                      const isSelected = selectedWorkerIds.includes(p.id);
-                      const isLead = leadWorkerId === p.id;
+                  {/* Multi Worker Checklist Divided by Division */}
+                  <div className="max-h-60 overflow-y-auto space-y-3 pr-1 border border-slate-800 rounded-xl p-2.5 bg-slate-950">
+                    {(Object.entries(groupedPersonnelForAssign) as [string, Personnel[]][]).map(([divisionName, members]) => {
+                      if (members.length === 0) return null;
+                      const selectedInDivCount = members.filter((m) => selectedWorkerIds.includes(m.id)).length;
 
                       return (
-                        <div
-                          key={p.id}
-                          className={`p-2 rounded-lg border text-xs flex items-center justify-between transition-all ${
-                            isSelected
-                              ? 'bg-purple-950/40 border-purple-500/50 text-white'
-                              : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
-                          }`}
-                        >
-                          <label className="flex items-center gap-2.5 cursor-pointer flex-1">
-                            <input
-                              type="checkbox"
-                              checked={isSelected}
-                              onChange={() => handleToggleWorker(p.id)}
-                              className="rounded border-slate-700 text-purple-600 focus:ring-purple-500 w-4 h-4"
-                            />
-                            <div>
-                              <div className="font-semibold">{p.name}</div>
-                              <div className="text-[10px] text-slate-500">{p.division} • {p.role}</div>
-                            </div>
-                          </label>
+                        <div key={divisionName} className="space-y-1.5">
+                          {/* Division Header */}
+                          <div className="flex items-center justify-between px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800">
+                            <span className="text-[11px] font-extrabold uppercase tracking-wider text-purple-300 flex items-center gap-1.5">
+                              <Briefcase className="w-3.5 h-3.5 text-purple-400" />
+                              División {divisionName}
+                            </span>
+                            <span className="text-[10px] font-mono font-bold text-slate-400">
+                              {selectedInDivCount} de {members.length} sel.
+                            </span>
+                          </div>
 
-                          {/* Lead / Encargado Designation Button */}
-                          {isSelected && (
-                            <button
-                              type="button"
-                              onClick={() => setLeadWorkerId(p.id)}
-                              className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold flex items-center gap-1 border transition-all ${
-                                isLead
-                                  ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md ring-1 ring-amber-300'
-                                  : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-amber-300'
-                              }`}
-                            >
-                              <Crown className="w-3 h-3" />
-                              <span>{isLead ? 'Encargado 👑' : 'Hacer Encargado'}</span>
-                            </button>
-                          )}
+                          {/* Members List in Division */}
+                          <div className="space-y-1 pl-1">
+                            {members.map((p) => {
+                              const isSelected = selectedWorkerIds.includes(p.id);
+                              const isLead = leadWorkerId === p.id;
+
+                              return (
+                                <div
+                                  key={p.id}
+                                  className={`p-2 rounded-lg border text-xs flex items-center justify-between transition-all ${
+                                    isSelected
+                                      ? 'bg-purple-950/40 border-purple-500/50 text-white shadow-sm'
+                                      : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                                  }`}
+                                >
+                                  <label className="flex items-center gap-2.5 cursor-pointer flex-1">
+                                    <input
+                                      type="checkbox"
+                                      checked={isSelected}
+                                      onChange={() => handleToggleWorker(p.id)}
+                                      className="rounded border-slate-700 text-purple-600 focus:ring-purple-500 w-4 h-4"
+                                    />
+                                    <div>
+                                      <div className="font-semibold text-white">{p.name}</div>
+                                      <div className="text-[10px] text-slate-400">{p.role}</div>
+                                    </div>
+                                  </label>
+
+                                  {/* Lead / Encargado Designation Button */}
+                                  {isSelected && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setLeadWorkerId(p.id)}
+                                      className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold flex items-center gap-1 border transition-all ${
+                                        isLead
+                                          ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md ring-1 ring-amber-300'
+                                          : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-amber-300'
+                                      }`}
+                                    >
+                                      <Crown className="w-3 h-3" />
+                                      <span>{isLead ? 'Encargado 👑' : 'Hacer Encargado'}</span>
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
                       );
                     })}
+
+                    {filteredPersonnelForAssign.length === 0 && (
+                      <div className="p-4 text-center text-xs text-slate-400 font-medium">
+                        No se encontró personal con "{assignSearchQuery}".
+                      </div>
+                    )}
                   </div>
 
                   <div>
@@ -862,18 +1029,25 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
                 <div className="space-y-3">
                   <div>
                     <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1">
-                      Trabajador para Vacaciones *
+                      Trabajador para Vacaciones (Agrupado por División) *
                     </label>
                     <select
                       value={vacationPersonId}
                       onChange={(e) => setVacationPersonId(e.target.value)}
-                      className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs font-semibold"
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs font-semibold"
                     >
-                      {personnel.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name} ({p.division} - Balance: {p.balanceDays}d)
-                        </option>
-                      ))}
+                      {(Object.entries(groupedPersonnelForAssign) as [string, Personnel[]][]).map(([divisionName, members]) => {
+                        if (members.length === 0) return null;
+                        return (
+                          <optgroup key={divisionName} label={`DIVISIÓN: ${divisionName.toUpperCase()}`}>
+                            {members.map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.name} ({p.role} - Balance: {p.balanceDays}d)
+                              </option>
+                            ))}
+                          </optgroup>
+                        );
+                      })}
                     </select>
                   </div>
 
@@ -925,18 +1099,25 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
                 <div className="space-y-3">
                   <div>
                     <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1">
-                      Trabajador *
+                      Trabajador (Agrupado por División) *
                     </label>
                     <select
                       value={dayOffPersonId}
                       onChange={(e) => setDayOffPersonId(e.target.value)}
-                      className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs font-semibold"
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs font-semibold"
                     >
-                      {personnel.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name} ({p.division} - Balance: {p.balanceDays}d libres)
-                        </option>
-                      ))}
+                      {(Object.entries(groupedPersonnelForAssign) as [string, Personnel[]][]).map(([divisionName, members]) => {
+                        if (members.length === 0) return null;
+                        return (
+                          <optgroup key={divisionName} label={`DIVISIÓN: ${divisionName.toUpperCase()}`}>
+                            {members.map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.name} ({p.role} - Balance: {p.balanceDays}d libres)
+                              </option>
+                            ))}
+                          </optgroup>
+                        );
+                      })}
                     </select>
                   </div>
 
