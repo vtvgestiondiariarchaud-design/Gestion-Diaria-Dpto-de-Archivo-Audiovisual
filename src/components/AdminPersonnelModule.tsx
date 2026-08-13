@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { Personnel, GuardShiftRecord, ShiftType, DivisionType, UserProfile } from '../types';
+import { canUserManagePersonnel, canUserAssignVacations } from '../utils/permissions';
 import { 
   Calendar as CalendarIcon, 
   Users, 
@@ -37,6 +38,7 @@ interface AdminPersonnelModuleProps {
   onDeleteGuardShift?: (shiftId: string) => void;
   onClearAllGuardShifts?: () => void;
   onAddPersonnel: (person: Omit<Personnel, 'id' | 'guardDaysWorked' | 'daysOffGenerated' | 'daysOffTaken' | 'balanceDays'>) => void;
+  onDeletePersonnel?: (personnelId: string) => void;
   onQuickAdjustDays: (personnelId: string, type: 'guard' | 'dayOff') => void;
   onOpenPinModal?: () => void;
   userHasPin?: boolean;
@@ -51,15 +53,16 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
   onDeleteGuardShift,
   onClearAllGuardShifts,
   onAddPersonnel,
+  onDeletePersonnel,
   onQuickAdjustDays,
   onOpenPinModal,
   userHasPin,
 }) => {
-  // Access check
-  const hasAccess =
-    currentUser.role === 'Asistente Administrativa' ||
-    currentUser.role === 'Gerente de Archivo' ||
-    currentUser.role === 'Adjunta de Gerencia';
+  // Access checks:
+  // Jefes, Coordinadores, Gerente, Adjunta, Asistente Admin -> Guardias y Días Libres
+  // Asistente Admin, Gerente, Adjunta -> Vacaciones
+  const hasAccess = canUserManagePersonnel(currentUser);
+  const canAssignVacations = canUserAssignVacations(currentUser);
 
   // Calendar state (Year & Month)
   const [currentDate, setCurrentDate] = useState(new Date(2026, 7, 1)); // August 2026 default
@@ -157,9 +160,10 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
     'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
   ];
 
-  // Calendar Days Calculation
+  // Calendar Days Calculation (Monday = 0 ... Sunday = 6)
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const firstDayIndex = new Date(year, month, 1).getDay(); // 0 = Sunday
+  const rawFirstDayIndex = new Date(year, month, 1).getDay(); // 0 = Sunday, 1 = Monday
+  const firstDayIndex = (rawFirstDayIndex + 6) % 7; // 0 = Monday ... 6 = Sunday
 
   const prevMonth = () => {
     setCurrentDate(new Date(year, month - 1, 1));
@@ -186,6 +190,10 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
     const dateStr = `${year}-${pad(month + 1)}-${pad(dayNum)}`;
     setSelectedCalendarDate(dateStr);
     setAssignSearchQuery('');
+
+    if (!canAssignVacations && assignmentMode === 'vacaciones') {
+      setAssignmentMode('guardia');
+    }
     
     // Default vacation start/end dates
     setVacationStartDate(dateStr);
@@ -253,6 +261,7 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
       }
 
     } else if (assignmentMode === 'vacaciones') {
+      if (!canAssignVacations) return;
       if (!vacationPersonId || !vacationStartDate || !vacationEndDate) return;
       const p = personnel.find((per) => per.id === vacationPersonId);
       if (!p) return;
@@ -429,119 +438,133 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
         <div className="p-4 rounded-2xl bg-amber-950/40 border border-amber-800/60 text-amber-300 text-xs flex items-center gap-3">
           <ShieldAlert className="w-5 h-5 text-amber-400 shrink-0" />
           <span>
-            <strong>Modo de Consulta:</strong> Módulo de gestión de personal reservado para la Asistente Administrativa y la Gerencia.
+            <strong>Modo de Consulta:</strong> Módulo de gestión de personal reservado para Coordinadores, Jefes de División, Asistente Administrativa y Gerencia.
           </span>
         </div>
       )}
 
       {/* Rule Highlight Banner */}
-      <div className="p-5 bg-gradient-to-br from-[#1E293B] via-[#1E293B] to-[#0F172A] border border-slate-700/80 rounded-xl shadow-lg flex flex-col md:flex-row items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
+      <div className="p-4 sm:p-5 bg-gradient-to-br from-[#1E293B] via-[#1E293B] to-[#0F172A] border border-slate-700/80 rounded-xl shadow-lg flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 overflow-hidden">
+        <div className="flex items-start sm:items-center gap-3.5">
           <div className="p-3 rounded-xl bg-purple-600/20 border border-purple-500/40 text-purple-300 shrink-0">
             <Award className="w-6 h-6" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-base font-bold text-white">
                 Gestión de Personal, Guardias y Vacaciones VTV
               </h2>
-              <span className="px-2 py-0.5 rounded bg-purple-900/40 border border-purple-700/60 text-purple-300 font-bold font-mono text-[9px] uppercase">
+              <span className="px-2 py-0.5 rounded bg-purple-900/40 border border-purple-700/60 text-purple-300 font-bold font-mono text-[9px] uppercase whitespace-nowrap">
                 SISTEMA INTEGRAL
               </span>
             </div>
             <p className="text-xs text-slate-300 mt-1 max-w-xl leading-relaxed">
-              Asignación de guardias con múltiplos trabajadores y <strong>Encargado de Guardia 👑</strong>, gestión de <strong>Vacaciones con rango 🌴</strong>, reporte formateado para <strong>WhatsApp 📱</strong> y duplicado rápido de guardia.
+              Asignación de guardias con múltiples trabajadores y <strong>Encargado de Guardia 👑</strong>, gestión de <strong>Vacaciones con rango 🌴</strong>, reporte formateado para <strong>WhatsApp 📱</strong> y duplicado rápido.
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap w-full lg:w-auto justify-start lg:justify-end shrink-0">
           {onOpenPinModal && (
             <button
               onClick={onOpenPinModal}
-              className={`px-3.5 py-2.5 rounded-xl border font-bold text-xs transition-all flex items-center gap-2 shadow-md ${
+              className={`px-3 py-2 rounded-xl border font-bold text-xs transition-all flex items-center gap-2 shadow-md shrink-0 ${
                 userHasPin
                   ? 'bg-amber-950/80 border-amber-500/60 text-amber-300 hover:bg-amber-900'
                   : 'bg-amber-600 hover:bg-amber-500 text-white border-amber-400 animate-pulse'
               }`}
               title={userHasPin ? 'Modificar PIN de seguridad' : 'Crear PIN de seguridad de personal'}
             >
-              <KeyRound className="w-4 h-4 text-amber-300" />
-              <span>{userHasPin ? 'Modificar mi PIN' : 'Crear mi PIN (Seguridad)'}</span>
-              {userHasPin && <Lock className="w-3.5 h-3.5 text-amber-400" />}
+              <KeyRound className="w-4 h-4 text-amber-300 shrink-0" />
+              <span className="whitespace-nowrap">{userHasPin ? 'Modificar mi PIN' : 'Crear mi PIN'}</span>
+              {userHasPin && <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0" />}
             </button>
           )}
 
           {hasAccess && (
-            <div className="flex items-center gap-2">
+            <>
               {onClearAllGuardShifts && guardShifts.length > 0 && (
                 <button
                   onClick={onClearAllGuardShifts}
-                  className="px-3 py-2.5 rounded-xl bg-red-950/60 hover:bg-red-900 border border-red-800/80 text-red-300 font-bold text-xs transition-all flex items-center gap-1.5 shrink-0 shadow-md"
+                  className="px-3 py-2 rounded-xl bg-red-950/60 hover:bg-red-900 border border-red-800/80 text-red-300 font-bold text-xs transition-all flex items-center gap-1.5 shrink-0 shadow-md"
                   title="Eliminar todas las guardias del calendario"
                 >
-                  <Trash2 className="w-4 h-4 text-red-400" />
-                  <span>Limpiar Guardias ({guardShifts.length})</span>
+                  <Trash2 className="w-4 h-4 text-red-400 shrink-0" />
+                  <span className="whitespace-nowrap">Limpiar Guardias ({guardShifts.length})</span>
                 </button>
               )}
               <button
                 onClick={() => setIsAddingPersonnel(true)}
-                className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs uppercase tracking-wider transition-all flex items-center gap-2 shrink-0 shadow-lg"
+                className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs uppercase tracking-wider transition-all flex items-center gap-1.5 shrink-0 shadow-lg"
               >
-                <Plus className="w-4 h-4" />
-                <span>NUEVO PERSONAL</span>
+                <Plus className="w-4 h-4 shrink-0" />
+                <span className="whitespace-nowrap">NUEVO PERSONAL</span>
               </button>
-            </div>
+            </>
           )}
         </div>
       </div>
 
-      {/* Main Grid: Calendar & Personnel Balances Table */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Interactive Monthly Calendar (5 cols) */}
-        <div className="lg:col-span-5 bg-gradient-to-br from-[#1E293B] via-[#1E293B] to-[#0F172A] border border-slate-700/80 rounded-xl p-5 shadow-xl flex flex-col justify-between">
+      {/* Main Layout: Calendar Row and Personnel Balances Row Stacked */}
+      <div className="flex flex-col gap-6 w-full">
+        {/* ROW 1: Interactive Monthly Calendar (Full Width) */}
+        <div className="w-full bg-gradient-to-br from-[#1E293B] via-[#1E293B] to-[#0F172A] border border-slate-700/80 rounded-2xl p-5 sm:p-6 shadow-xl flex flex-col justify-between">
           <div>
             {/* Calendar Header with Navigation */}
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <CalendarIcon className="w-4 h-4 text-purple-400" />
-                <h3 className="text-sm font-bold uppercase tracking-wider text-slate-200">
-                  {monthNames[month]} {year}
-                </h3>
+            <div className="flex items-center justify-between mb-5">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-lg bg-purple-500/20 border border-purple-500/40 text-purple-300">
+                  <CalendarIcon className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold uppercase tracking-wider text-white">
+                    Calendario de Guardias y Vacaciones — {monthNames[month]} {year}
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Haga clic en cualquier fecha para asignar guardias, vacaciones o días libres
+                  </p>
+                </div>
               </div>
 
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800">
                 <button
                   onClick={prevMonth}
-                  className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 transition-colors"
+                  className="p-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 hover:text-white transition-all flex items-center gap-1 text-xs font-semibold"
+                  title="Mes Anterior"
                 >
                   <ChevronLeft className="w-4 h-4" />
+                  <span className="hidden sm:inline">Anterior</span>
                 </button>
+                <span className="px-3 text-xs font-bold font-mono text-purple-300 hidden md:inline">
+                  {monthNames[month]} {year}
+                </span>
                 <button
                   onClick={nextMonth}
-                  className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 transition-colors"
+                  className="p-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 hover:text-white transition-all flex items-center gap-1 text-xs font-semibold"
+                  title="Mes Siguiente"
                 >
+                  <span className="hidden sm:inline">Siguiente</span>
                   <ChevronRight className="w-4 h-4" />
                 </button>
               </div>
             </div>
 
-            {/* Days of Week Header */}
-            <div className="grid grid-cols-7 text-center font-bold text-[10px] text-slate-400 uppercase tracking-widest py-2 border-b border-slate-800">
-              <span className="text-red-400">DOM</span>
-              <span>LUN</span>
-              <span>MAR</span>
-              <span>MIÉ</span>
-              <span>JUE</span>
-              <span>VIE</span>
-              <span className="text-red-400">SÁB</span>
+            {/* Days of Week Header (Monday to Sunday) */}
+            <div className="grid grid-cols-7 text-center font-bold text-xs text-slate-400 uppercase tracking-widest py-2.5 bg-slate-950/60 rounded-xl border border-slate-800/80">
+              <span>LUNES</span>
+              <span>MARTES</span>
+              <span>MIÉRCOLES</span>
+              <span>JUEVES</span>
+              <span>VIERNES</span>
+              <span className="text-red-400">SÁBADO</span>
+              <span className="text-red-400">DOMINGO</span>
             </div>
 
             {/* Calendar Days Grid */}
-            <div className="grid grid-cols-7 gap-1 mt-2">
+            <div className="grid grid-cols-7 gap-1.5 sm:gap-2 mt-2.5">
               {/* Empty offset cells */}
               {Array.from({ length: firstDayIndex }).map((_, i) => (
-                <div key={`empty-${i}`} className="h-16 rounded-xl bg-slate-950/20 border border-transparent"></div>
+                <div key={`empty-${i}`} className="min-h-[90px] sm:min-h-[110px] rounded-xl bg-slate-950/20 border border-slate-900/40"></div>
               ))}
 
               {/* Month Days */}
@@ -562,29 +585,29 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
                     key={dateStr}
                     disabled={!hasAccess}
                     onClick={() => handleOpenAssignModal(dayNum)}
-                    className={`h-18 p-1 rounded-xl border flex flex-col justify-between text-left transition-all relative overflow-hidden group ${
+                    className={`min-h-[90px] sm:min-h-[110px] p-2 rounded-xl border flex flex-col justify-between text-left transition-all relative overflow-hidden group shadow-sm ${
                       hasVacations
-                        ? 'bg-cyan-950/40 border-cyan-800/80 hover:border-cyan-400'
+                        ? 'bg-cyan-950/40 border-cyan-800/80 hover:border-cyan-400 hover:shadow-cyan-950/50'
                         : isWeekend
                         ? 'bg-slate-950/80 border-slate-800 hover:border-purple-500/80'
-                        : 'bg-slate-900 border-slate-800/80 hover:border-blue-500/80'
+                        : 'bg-slate-900/90 border-slate-800/80 hover:border-blue-500/80'
                     }`}
                   >
                     <span
-                      className={`text-[11px] font-bold font-mono px-1 rounded flex items-center justify-between ${
-                        isWeekend ? 'text-red-400' : 'text-slate-300'
+                      className={`text-xs font-bold font-mono px-1.5 py-0.5 rounded-md flex items-center justify-between ${
+                        isWeekend ? 'bg-red-950/50 text-red-400 border border-red-900/40' : 'bg-slate-800/60 text-slate-200'
                       }`}
                     >
                       <span>{dayNum}</span>
-                      {hasVacations && <span className="text-[10px]">🌴</span>}
+                      {hasVacations && <span className="text-xs">🌴</span>}
                     </span>
 
                     {/* Shifts Chips inside Calendar Cell */}
-                    <div className="space-y-0.5 overflow-y-auto max-h-12 no-scrollbar">
+                    <div className="space-y-1 overflow-y-auto max-h-16 sm:max-h-20 no-scrollbar w-full mt-1">
                       {dayShifts.map((sh, idx) => (
                         <div
                           key={`${sh.id}-${dateStr}-${idx}`}
-                          className={`text-[9px] font-semibold px-1 py-0.2 rounded truncate flex items-center gap-0.5 ${
+                          className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md truncate flex items-center gap-1 shadow-xs ${
                             sh.shiftType === 'Vacaciones'
                               ? 'bg-cyan-600/30 text-cyan-200 border border-cyan-500/40'
                               : sh.shiftType === 'Guardia (Fin de semana/Feriado)'
@@ -595,8 +618,8 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
                           }`}
                           title={`${sh.personnelName} - ${sh.shiftType} ${sh.isLead ? '(Encargado)' : ''}`}
                         >
-                          {sh.isLead && <span>👑</span>}
-                          <span className="truncate">{sh.personnelName.split(' ')[0]}</span>
+                          {sh.isLead && <span className="shrink-0">👑</span>}
+                          <span className="truncate">{sh.personnelName}</span>
                         </div>
                       ))}
                     </div>
@@ -607,56 +630,63 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
           </div>
 
           {/* Calendar Legend */}
-          <div className="mt-4 pt-3 border-t border-slate-800 text-[10px] text-slate-400 flex flex-wrap items-center justify-between gap-2">
-            <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded bg-amber-400"></span> 👑 Encargado
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded bg-purple-500"></span> Guardia FDS
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded bg-cyan-400"></span> 🌴 Vacaciones
+          <div className="mt-5 pt-3.5 border-t border-slate-800/80 text-xs text-slate-400 flex flex-wrap items-center justify-center sm:justify-between gap-4">
+            <div className="flex items-center gap-4 flex-wrap">
+              <span className="flex items-center gap-1.5 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-400"></span> 👑 Encargado de Guardia
+              </span>
+              <span className="flex items-center gap-1.5 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
+                <span className="w-2.5 h-2.5 rounded-full bg-purple-500"></span> Guardia FDS / Feriado
+              </span>
+              <span className="flex items-center gap-1.5 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
+                <span className="w-2.5 h-2.5 rounded-full bg-cyan-400"></span> 🌴 Vacaciones
+              </span>
+            </div>
+            <span className="text-[11px] text-slate-500 font-medium">
+              * Haga clic en un día para ver opciones de asignación y reportes de WhatsApp
             </span>
           </div>
         </div>
 
-        {/* Right Column: Personnel Balance Panel Table (7 cols) */}
-        <div className="lg:col-span-7 bg-gradient-to-br from-[#1E293B] via-[#1E293B] to-[#0F172A] border border-slate-700/80 rounded-2xl p-5 shadow-xl flex flex-col">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+        {/* ROW 2: Personnel Balance Panel Table (Full Width) */}
+        <div className="w-full bg-gradient-to-br from-[#1E293B] via-[#1E293B] to-[#0F172A] border border-slate-700/80 rounded-2xl p-5 sm:p-6 shadow-xl flex flex-col">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
             <div>
-              <h3 className="text-base font-bold text-white flex items-center gap-2">
-                <Users className="w-5 h-5 text-purple-400" />
+              <h3 className="text-lg font-bold text-white flex items-center gap-2.5">
+                <div className="p-2 rounded-lg bg-purple-500/20 border border-purple-500/40 text-purple-300">
+                  <Users className="w-5 h-5" />
+                </div>
                 Panel de Saldos de Personal VTV
               </h3>
-              <p className="text-xs text-slate-400">
-                Resumen de guardias trabajadas, días compensatorios y balance
+              <p className="text-xs text-slate-400 mt-0.5">
+                Resumen consolidado de guardias trabajadas, días compensatorios generados, disfrutados y balance actual
               </p>
             </div>
 
             {/* Search Bar for Panel */}
-            <div className="relative min-w-[200px]">
-              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+            <div className="relative min-w-[240px] md:w-72">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
               <input
                 type="text"
                 value={panelSearchQuery}
                 onChange={(e) => setPanelSearchQuery(e.target.value)}
-                placeholder="Buscar personal..."
-                className="w-full pl-8 pr-7 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs placeholder-slate-500 focus:outline-none focus:border-purple-500"
+                placeholder="Buscar por nombre o rol..."
+                className="w-full pl-9 pr-8 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs placeholder-slate-500 focus:outline-none focus:border-purple-500 transition-colors shadow-inner"
               />
               {panelSearchQuery && (
                 <button
                   type="button"
                   onClick={() => setPanelSearchQuery('')}
-                  className="absolute right-2 top-2 text-slate-400 hover:text-white"
+                  className="absolute right-2.5 top-2.5 text-slate-400 hover:text-white"
                 >
-                  <X className="w-3 h-3" />
+                  <X className="w-3.5 h-3.5" />
                 </button>
               )}
             </div>
           </div>
 
           {/* Division Filter Pills */}
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-2 mb-3 no-scrollbar border-b border-slate-800/80">
+          <div className="flex items-center gap-2 overflow-x-auto pb-2.5 mb-4 no-scrollbar border-b border-slate-800/80">
             {[
               { id: 'all', label: 'Todas las Divisiones' },
               { id: 'Prensa', label: 'Prensa' },
@@ -668,9 +698,9 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
                 key={tab.id}
                 type="button"
                 onClick={() => setPanelDivisionFilter(tab.id)}
-                className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-all whitespace-nowrap ${
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
                   panelDivisionFilter === tab.id
-                    ? 'bg-purple-600 text-white shadow'
+                    ? 'bg-purple-600 text-white shadow-md'
                     : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800/80'
                 }`}
               >
@@ -679,76 +709,97 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
             ))}
           </div>
 
-          <div className="overflow-x-auto flex-1">
+          {/* Full Width Table Container */}
+          <div className="overflow-x-auto rounded-xl border border-slate-800/80 bg-slate-950/40 shadow-inner">
             <table className="w-full text-left text-xs text-slate-300">
-              <thead className="bg-slate-950 text-slate-400 uppercase font-bold border-b border-slate-800">
+              <thead className="bg-slate-950 text-slate-400 uppercase font-bold border-b border-slate-800/80">
                 <tr>
-                  <th className="p-3">Personal</th>
-                  <th className="p-3">División</th>
-                  <th className="p-3 text-center">Guardias</th>
-                  <th className="p-3 text-center">Generados</th>
-                  <th className="p-3 text-center">Disfrutados</th>
-                  <th className="p-3 text-center">Balance</th>
-                  {hasAccess && <th className="p-3 text-right">Ajuste</th>}
+                  <th className="py-3 px-4">Personal</th>
+                  <th className="py-3 px-4">División</th>
+                  <th className="py-3 px-3 text-center">Guardias Trabajadas</th>
+                  <th className="py-3 px-3 text-center">Días Generados</th>
+                  <th className="py-3 px-3 text-center">Días Disfrutados</th>
+                  <th className="py-3 px-3 text-center">Balance Pendiente</th>
+                  {hasAccess && <th className="py-3 px-4 text-right">Ajuste Rápido de Días</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60">
                 {filteredPanelPersonnel.map((per, idx) => (
                   <tr key={per.id ? `per-${per.id}` : `per-idx-${idx}`} className="hover:bg-slate-800/40 transition-colors">
-                    <td className="p-3 font-semibold text-white">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span>{per.name}</span>
+                    <td className="py-3 px-4 font-semibold text-white">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm">{per.name}</span>
                         {per.pin && (
-                          <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[9px] font-extrabold flex items-center gap-0.5" title="Perfil Protegido con PIN">
+                          <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[9px] font-extrabold flex items-center gap-1 shrink-0" title="Perfil Protegido con PIN">
                             <Lock className="w-2.5 h-2.5 text-amber-400" /> PIN
                           </span>
                         )}
                       </div>
-                      <div className="text-[10px] text-slate-400 font-normal">{per.role}</div>
+                      <div className="text-xs text-slate-400 font-normal mt-0.5">{per.role}</div>
                     </td>
-                    <td className="p-3 text-slate-300 font-medium">{per.division}</td>
-                    <td className="p-3 text-center font-mono font-bold text-purple-300 bg-purple-950/20">
+                    <td className="py-3 px-4 text-slate-300 font-medium">{per.division}</td>
+                    <td className="py-3 px-3 text-center font-mono font-bold text-purple-300 bg-purple-950/20">
                       {per.guardDaysWorked}
                     </td>
-                    <td className="p-3 text-center font-mono font-bold text-emerald-300 bg-emerald-950/20">
+                    <td className="py-3 px-3 text-center font-mono font-bold text-emerald-300 bg-emerald-950/20">
                       {per.daysOffGenerated}
                     </td>
-                    <td className="p-3 text-center font-mono font-bold text-amber-300 bg-amber-950/20">
+                    <td className="py-3 px-3 text-center font-mono font-bold text-amber-300 bg-amber-950/20">
                       {per.daysOffTaken}
                     </td>
-                    <td className="p-3 text-center">
+                    <td className="py-3 px-3 text-center">
                       <span
-                        className={`inline-block font-mono font-extrabold px-2 py-0.5 rounded ${
+                        className={`inline-block font-mono font-extrabold px-2.5 py-1 rounded-lg text-xs ${
                           per.balanceDays > 0
                             ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
                             : 'bg-slate-800 text-slate-400'
                         }`}
                       >
-                        {per.balanceDays}d
+                        {per.balanceDays} días
                       </span>
                     </td>
                     {hasAccess && (
-                      <td className="p-3 text-right">
-                        <div className="flex items-center justify-end gap-1">
+                      <td className="py-3 px-4 text-right">
+                        <div className="flex items-center justify-end gap-2">
                           <button
                             onClick={() => onQuickAdjustDays(per.id, 'guard')}
-                            className="px-2 py-1 rounded bg-purple-600 hover:bg-purple-500 text-white font-bold text-[10px]"
-                            title="+1 Guardia"
+                            className="px-2.5 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs transition-all shadow-sm flex items-center gap-1"
+                            title="Añadir 1 Guardia trabajada"
                           >
                             + Guardia
                           </button>
                           <button
                             onClick={() => onQuickAdjustDays(per.id, 'dayOff')}
-                            className="px-2 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white font-bold text-[10px]"
-                            title="+1 Día Libre"
+                            className="px-2.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs transition-all shadow-sm flex items-center gap-1"
+                            title="Añadir 1 Día Libre disfrutado"
                           >
                             + Libre
                           </button>
+                          {onDeletePersonnel && (
+                            <button
+                              onClick={() => {
+                                if (window.confirm(`¿Está seguro de eliminar a "${per.name}" de la lista de personal?`)) {
+                                  onDeletePersonnel(per.id);
+                                }
+                              }}
+                              className="p-1.5 rounded-lg bg-red-950/70 hover:bg-red-900 text-red-400 border border-red-800/80 transition-colors ml-1"
+                              title="Eliminar personal"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     )}
                   </tr>
                 ))}
+                {filteredPanelPersonnel.length === 0 && (
+                  <tr>
+                    <td colSpan={hasAccess ? 7 : 6} className="p-8 text-center text-slate-400 text-xs font-medium">
+                      No se encontró personal registrado en esta categoría.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -780,17 +831,17 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
             {/* Existing Assignments on this date & WhatsApp Report Bar */}
             {getShiftsForDate(selectedCalendarDate).length > 0 && (
               <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                   <h4 className="text-xs font-bold text-purple-300 uppercase tracking-wider flex items-center gap-2">
-                    <Users className="w-4 h-4" />
+                    <Users className="w-4 h-4 text-purple-400" />
                     Asignados el {selectedCalendarDate}:
                   </h4>
 
                   {/* WhatsApp & Duplicate Buttons */}
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <button
                       onClick={() => handleSendWhatsApp(selectedCalendarDate)}
-                      className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 shadow"
+                      className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 shadow whitespace-nowrap"
                     >
                       <Send className="w-3.5 h-3.5" />
                       <span>WhatsApp</span>
@@ -798,7 +849,7 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
 
                     <button
                       onClick={() => handleCopyReport(selectedCalendarDate)}
-                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs flex items-center gap-1.5 border border-slate-700"
+                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs flex items-center gap-1.5 border border-slate-700 whitespace-nowrap"
                     >
                       <Copy className="w-3.5 h-3.5" />
                       <span>Copiar</span>
@@ -809,7 +860,7 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
                         setDuplicateFromDate(selectedCalendarDate);
                         setDuplicateTargetDate('');
                       }}
-                      className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs flex items-center gap-1.5 shadow"
+                      className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs flex items-center gap-1.5 shadow whitespace-nowrap"
                     >
                       <CalendarPlus className="w-3.5 h-3.5" />
                       <span>Duplicar a Fecha</span>
@@ -824,12 +875,12 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
                       key={`${sh.id}-${idx}`}
                       className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-between text-xs"
                     >
-                      <div>
-                        <div className="font-bold text-white flex items-center gap-1.5">
+                      <div className="min-w-0 pr-2">
+                        <div className="font-bold text-white flex items-center gap-1.5 truncate">
                           {sh.isLead && <span title="Encargado de Guardia">👑</span>}
-                          <span>{sh.personnelName}</span>
+                          <span className="truncate">{sh.personnelName}</span>
                         </div>
-                        <div className="text-[10px] text-slate-400">
+                        <div className="text-[10px] text-slate-400 truncate">
                           {sh.division} • {sh.shiftType}
                           {sh.endDate && ` (${sh.date} al ${sh.endDate})`}
                         </div>
@@ -838,7 +889,7 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
                       {onDeleteGuardShift && (
                         <button
                           onClick={() => onDeleteGuardShift(sh.id)}
-                          className="p-1 text-slate-500 hover:text-red-400 transition-colors"
+                          className="p-1 text-slate-500 hover:text-red-400 transition-colors shrink-0"
                           title="Eliminar asignación"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -851,43 +902,45 @@ export const AdminPersonnelModule: React.FC<AdminPersonnelModuleProps> = ({
             )}
 
             {/* Mode Switcher Tabs */}
-            <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800">
+            <div className={`grid gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 ${canAssignVacations ? 'grid-cols-1 sm:grid-cols-3' : 'grid-cols-1 sm:grid-cols-2'}`}>
               <button
                 type="button"
                 onClick={() => setAssignmentMode('guardia')}
-                className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                className={`py-2 px-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 whitespace-nowrap ${
                   assignmentMode === 'guardia'
                     ? 'bg-purple-600 text-white shadow-md'
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <Crown className="w-3.5 h-3.5" />
-                <span>Guardia (Múltiples + Encargado)</span>
+                <Crown className="w-3.5 h-3.5 shrink-0" />
+                <span>Guardia (Múltiples)</span>
               </button>
 
-              <button
-                type="button"
-                onClick={() => setAssignmentMode('vacaciones')}
-                className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
-                  assignmentMode === 'vacaciones'
-                    ? 'bg-cyan-600 text-white shadow-md'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <Palmtree className="w-3.5 h-3.5" />
-                <span>Vacaciones (Rango de Fechas)</span>
-              </button>
+              {canAssignVacations && (
+                <button
+                  type="button"
+                  onClick={() => setAssignmentMode('vacaciones')}
+                  className={`py-2 px-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                    assignmentMode === 'vacaciones'
+                      ? 'bg-cyan-600 text-white shadow-md'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Palmtree className="w-3.5 h-3.5 shrink-0" />
+                  <span>Vacaciones</span>
+                </button>
+              )}
 
               <button
                 type="button"
                 onClick={() => setAssignmentMode('diaLibre')}
-                className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                className={`py-2 px-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 whitespace-nowrap ${
                   assignmentMode === 'diaLibre'
                     ? 'bg-amber-600 text-white shadow-md'
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <Sun className="w-3.5 h-3.5" />
+                <Sun className="w-3.5 h-3.5 shrink-0" />
                 <span>Día Libre</span>
               </button>
             </div>

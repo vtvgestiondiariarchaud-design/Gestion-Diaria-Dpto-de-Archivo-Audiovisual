@@ -343,8 +343,12 @@ export function loadInitialState(): AppState {
 
     const localPer = localStorage.getItem(LOCAL_STORAGE_KEY_PERSONNEL);
     if (localPer) {
-      const parsed: Personnel[] = JSON.parse(localPer);
-      personnel = deduplicatePersonnel([...parsed, ...INITIAL_PERSONNEL]);
+      try {
+        const parsed: Personnel[] = JSON.parse(localPer);
+        personnel = deduplicatePersonnel(parsed);
+      } catch (e) {
+        personnel = deduplicatePersonnel(INITIAL_PERSONNEL);
+      }
     } else {
       personnel = deduplicatePersonnel(INITIAL_PERSONNEL);
     }

@@ -135,3 +135,31 @@ export const canUserFinalizeSignal = (
   return { allowed: true };
 };
 
+/**
+ * Permiso para gestionar personal, asignar guardias y días libres:
+ * Jefes de División, Coordinadores, Gerente de Archivo, Adjunta de Gerencia y Asistente Administrativa.
+ */
+export const canUserManagePersonnel = (user: UserProfile): boolean => {
+  if (!user) return false;
+  return (
+    user.role === 'Asistente Administrativa' ||
+    user.role === 'Gerente de Archivo' ||
+    user.role === 'Adjunta de Gerencia' ||
+    user.role === 'Jefe de División' ||
+    user.role === 'Coordinador'
+  );
+};
+
+/**
+ * Permiso exclusivo para asignar vacaciones:
+ * Únicamente Asistente Administrativa, Gerente de Archivo y Adjunta de Gerencia.
+ */
+export const canUserAssignVacations = (user: UserProfile): boolean => {
+  if (!user) return false;
+  return (
+    user.role === 'Asistente Administrativa' ||
+    user.role === 'Gerente de Archivo' ||
+    user.role === 'Adjunta de Gerencia'
+  );
+};
+

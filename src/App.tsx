@@ -783,6 +783,18 @@ export default function App() {
     showToast(`Personal registrado: ${newPerson.name}`);
   };
 
+  // Delete Personnel
+  const handleDeletePersonnel = (personnelId: string) => {
+    setState((prev) => {
+      const updatedPersonnel = prev.personnel.filter((p) => p.id !== personnelId);
+      saveLocalPersonnel(updatedPersonnel);
+      autoPushToSheets(prev.materials, updatedPersonnel, prev.guardShifts);
+      return { ...prev, personnel: updatedPersonnel };
+    });
+
+    showToast('Personal eliminado con éxito.');
+  };
+
   // Quick Adjust Days for Personnel
   const handleQuickAdjustDays = (personnelId: string, type: 'guard' | 'dayOff') => {
     setState((prev) => {
@@ -949,6 +961,7 @@ export default function App() {
             onDeleteGuardShift={handleDeleteGuardShift}
             onClearAllGuardShifts={handleClearAllGuardShifts}
             onAddPersonnel={handleAddPersonnel}
+            onDeletePersonnel={handleDeletePersonnel}
             onQuickAdjustDays={handleQuickAdjustDays}
             onOpenPinModal={() => setIsPinModalOpen(true)}
             userHasPin={currentUserHasPin}
