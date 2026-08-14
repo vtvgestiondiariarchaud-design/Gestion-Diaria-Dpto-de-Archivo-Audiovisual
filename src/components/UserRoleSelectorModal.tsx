@@ -34,9 +34,9 @@ export const UserRoleSelectorModal: React.FC<UserRoleSelectorModalProps> = ({
       case 'Asistente Administrativa':
         return 'Acceso Exclusivo: Gestión de Vacaciones, Días Libres y Guardias del Personal + Vista de Consulta de Archivo.';
       case 'Jefe de División':
-        return 'Control de División: Creación, Catalogación ("Para Archivar"), "Finalizado", vinculación de señales y consulta de Prensa, Programación o Ingesta.';
+        return 'Control de División: Creación de tarjetas (Ingesta y Solicitudes), Catalogación ("Para Archivar"), "Finalizado", vinculación de señales y gestión de Prensa, Programación o Ingesta.';
       case 'Coordinador':
-        return 'Control Operativo: Creación de tarjetas, catalogación ("Para Archivar"), "Finalizado" y vinculación de señales.';
+        return 'Control Operativo: Creación de tarjetas (Ingesta y Solicitudes), Asignación de equipo, Catalogación ("Para Archivar"), "Finalizado" y vinculación de señales.';
       default:
         return 'Consulta general del sistema.';
     }

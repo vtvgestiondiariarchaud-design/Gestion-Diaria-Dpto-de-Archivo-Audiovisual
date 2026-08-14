@@ -1,24 +1,25 @@
 import { UserProfile, MaterialSignal } from '../types';
 
 /**
- * Permiso de creación de tarjetas de material:
- * Coordinadores, Jefes de División, Adjunta de Gerencia, Gerente de Archivo
- * y TODOS los usuarios que pertenecen a la división de Ingesta.
+ * Permiso de creación de tarjetas de material y tareas:
+ * Permite a TODOS los Coordinadores, Jefes de División, Gerente de Archivo, Adjunta de Gerencia
+ * y a todo el personal de la división de Ingesta (Ingestadores y Operadores de Ingesta)
+ * crear tarjetas tanto en "Ingesta y Trabajo Activo" como en "Solicitudes y Otras Tareas".
  */
 export const canUserCreateMaterial = (user: UserProfile): boolean => {
   if (!user) return false;
-  if (
-    user.role === 'Gerente de Archivo' ||
-    user.role === 'Adjunta de Gerencia' ||
-    user.role === 'Jefe de División' ||
-    user.role === 'Coordinador' ||
-    user.division === 'Ingesta' ||
-    user.role === 'Ingestador' ||
-    user.role === 'Operador de Ingesta'
-  ) {
-    return true;
-  }
-  return false;
+  const role = (user.role || '').trim().toLowerCase();
+  const division = (user.division || '').trim().toLowerCase();
+
+  return (
+    role.includes('gerente') ||
+    role.includes('adjunt') ||
+    role.includes('jefe') ||
+    role.includes('coordinador') ||
+    role.includes('ingestad') ||
+    role.includes('operador') ||
+    division === 'ingesta'
+  );
 };
 
 /**

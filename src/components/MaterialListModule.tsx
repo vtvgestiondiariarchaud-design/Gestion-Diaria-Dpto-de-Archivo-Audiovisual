@@ -428,11 +428,15 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
           <div className="flex items-center gap-2">
             {canCreate ? (
               <button
-                onClick={() => onOpenNewMaterialModal()}
-                className="flex-1 py-2 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-lg shadow-blue-900/50 transition-all flex items-center justify-center gap-1.5"
+                onClick={() => onOpenNewMaterialModal(undefined, undefined, undefined, folderTab === 'requests')}
+                className={`flex-1 py-2 px-3 rounded-xl text-white font-bold text-xs shadow-lg transition-all flex items-center justify-center gap-1.5 ${
+                  folderTab === 'requests'
+                    ? 'bg-purple-600 hover:bg-purple-500 shadow-purple-900/50'
+                    : 'bg-blue-600 hover:bg-blue-500 shadow-blue-900/50'
+                }`}
               >
                 <Plus className="w-4 h-4" />
-                <span>Nuevo Registro</span>
+                <span>{folderTab === 'requests' ? 'Nueva Solicitud / Tarea' : 'Nuevo Registro (Ingesta)'}</span>
               </button>
             ) : (
               <span className="text-xs text-slate-500 italic">
@@ -671,7 +675,17 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
               {folderTab === 'all' && 'Repositorio General de Materiales'}
             </h3>
           </div>
-          <div className="flex items-center gap-2 self-end sm:self-auto">
+          <div className="flex items-center gap-2 self-end sm:self-auto flex-wrap">
+            {folderTab === 'active' && canCreate && (
+              <button
+                onClick={() => onOpenNewMaterialModal(undefined, undefined, undefined, false)}
+                className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-lg shadow-blue-950/80 transition-all"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Nuevo Registro de Ingesta</span>
+              </button>
+            )}
+
             {folderTab === 'requests' && canCreate && (
               <button
                 onClick={() => onOpenNewMaterialModal(undefined, undefined, undefined, true)}
@@ -680,6 +694,27 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                 <Plus className="w-3.5 h-3.5" />
                 <span>Crear Solicitud / Otra Tarea</span>
               </button>
+            )}
+
+            {(folderTab === 'all' || folderTab === 'finalized') && canCreate && (
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => onOpenNewMaterialModal(undefined, undefined, undefined, false)}
+                  className="px-2.5 py-1.5 rounded-xl bg-blue-600/90 hover:bg-blue-500 text-white font-bold text-xs flex items-center gap-1 shadow transition-all"
+                  title="Crear registro de material audiovisual de Ingesta"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>+ Ingesta</span>
+                </button>
+                <button
+                  onClick={() => onOpenNewMaterialModal(undefined, undefined, undefined, true)}
+                  className="px-2.5 py-1.5 rounded-xl bg-purple-600/90 hover:bg-purple-500 text-white font-bold text-xs flex items-center gap-1 shadow transition-all"
+                  title="Crear solicitud o tarea asignada"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>+ Solicitud</span>
+                </button>
+              </div>
             )}
             <span className="text-[10px] font-mono font-bold text-purple-300 bg-purple-950/80 px-3 py-1 rounded-full border border-purple-800/60 shadow-inner">
               Página {currentPage} de {totalPages} • {familyGroups.length} familias ({filteredMaterials.length} señales)

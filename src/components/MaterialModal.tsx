@@ -28,11 +28,13 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
 
   const todayStr = getLocalDateISOString();
 
-  const [mode, setMode] = useState<'batch' | 'single'>(presetFamilyId ? 'single' : 'batch');
+  const [mode, setMode] = useState<'batch' | 'single'>(
+    presetFamilyId || presetIsRequestTask ? 'single' : 'batch'
+  );
   const [isRequestTask, setIsRequestTask] = useState<boolean>(presetIsRequestTask);
   const [title, setTitle] = useState(presetTitle || '');
   const [division, setDivision] = useState<DivisionType>(
-    presetDivision || currentUser.division || 'Prensa'
+    presetDivision || (currentUser.division && currentUser.division !== 'Gerencia' ? currentUser.division : 'Prensa')
   );
   const [signalType, setSignalType] = useState<SignalType>('Limpio');
   
@@ -64,7 +66,7 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
       // Create 3 signals: Limpio, Insert, Master
       const signalTypes: SignalType[] = ['Limpio', 'Insert', 'Master'];
 
-      signalTypes.forEach((stype, idx) => {
+      signalTypes.forEach((stype) => {
         const matId = `MAT-2026-${Math.floor(1000 + Math.random() * 9000)}`;
         generatedSignals.push({
           id: matId,
@@ -120,15 +122,21 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/80">
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-blue-600/20 text-blue-400 border border-blue-500/30">
-              <Film className="w-5 h-5" />
+            <div className={`p-2 rounded-lg border ${isRequestTask ? 'bg-purple-600/20 text-purple-400 border-purple-500/30' : 'bg-blue-600/20 text-blue-400 border-blue-500/30'}`}>
+              {isRequestTask ? <FileText className="w-5 h-5" /> : <Film className="w-5 h-5" />}
             </div>
             <div>
               <h2 className="text-lg font-bold text-white">
-                {presetFamilyId ? 'Añadir Señal a Familia Existente' : 'Registrar Nuevo Material Audiovisual'}
+                {presetFamilyId
+                  ? 'Añadir Señal a Familia Existente'
+                  : isRequestTask
+                  ? 'Registrar Nueva Solicitud u Otra Tarea'
+                  : 'Registrar Nuevo Material Audiovisual (Ingesta)'}
               </h2>
               <p className="text-xs text-slate-400">
-                Departamento de Archivo Audiovisual VTV
+                {isRequestTask
+                  ? 'Archivo Audiovisual VTV • Bandeja de Solicitudes y Tareas Asignadas'
+                  : 'Departamento de Archivo Audiovisual VTV • Ingesta y Trabajo Activo'}
               </p>
             </div>
           </div>
@@ -151,7 +159,10 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
               <div className="grid grid-cols-2 gap-3">
                 <button
                   type="button"
-                  onClick={() => setIsRequestTask(false)}
+                  onClick={() => {
+                    setIsRequestTask(false);
+                    setMode('batch');
+                  }}
                   className={`p-2.5 rounded-xl border text-left flex items-center gap-2.5 transition-all ${
                     !isRequestTask
                       ? 'bg-blue-950/60 border-blue-500 text-white shadow-md ring-1 ring-blue-500/30'
@@ -160,14 +171,17 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
                 >
                   <Film className="w-4 h-4 text-blue-400 shrink-0" />
                   <div>
-                    <p className="text-xs font-bold">Material Audiovisual Estándar</p>
-                    <p className="text-[10px] text-slate-400">Noticiero, programa, pauta audiovisual</p>
+                    <p className="text-xs font-bold">Material de Ingesta</p>
+                    <p className="text-[10px] text-slate-400">Trabajo activo, noticieros, programas</p>
                   </div>
                 </button>
 
                 <button
                   type="button"
-                  onClick={() => setIsRequestTask(true)}
+                  onClick={() => {
+                    setIsRequestTask(true);
+                    setMode('single');
+                  }}
                   className={`p-2.5 rounded-xl border text-left flex items-center gap-2.5 transition-all ${
                     isRequestTask
                       ? 'bg-purple-950/60 border-purple-500 text-purple-200 shadow-md ring-1 ring-purple-500/30'
@@ -177,7 +191,7 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
                   <FileText className="w-4 h-4 text-purple-400 shrink-0" />
                   <div>
                     <p className="text-xs font-bold">Solicitud u Otra Tarea</p>
-                    <p className="text-[10px] text-purple-300/80">Asignable a varias personas (Contabiliza por archivar)</p>
+                    <p className="text-[10px] text-purple-300/80">Equipo de trabajo (Por archivar)</p>
                   </div>
                 </button>
               </div>
@@ -380,13 +394,21 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
             </button>
             <button
               type="submit"
-              className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold shadow-lg shadow-blue-900/40 transition-all flex items-center gap-2"
+              className={`px-5 py-2.5 rounded-xl text-white text-sm font-bold shadow-lg transition-all flex items-center gap-2 ${
+                isRequestTask
+                  ? 'bg-purple-600 hover:bg-purple-500 shadow-purple-950/60'
+                  : 'bg-blue-600 hover:bg-blue-500 shadow-blue-900/40'
+              }`}
             >
               <CheckCircle2 className="w-4 h-4" />
               <span>
-                {mode === 'batch' && !presetFamilyId
+                {isRequestTask
+                  ? mode === 'batch' && !presetFamilyId
+                    ? 'Guardar Solicitud (3 Señales)'
+                    : 'Guardar Solicitud / Tarea'
+                  : mode === 'batch' && !presetFamilyId
                   ? 'Guardar Familia (3 Señales)'
-                  : 'Guardar Señal'}
+                  : 'Guardar Señal de Ingesta'}
               </span>
             </button>
           </div>
