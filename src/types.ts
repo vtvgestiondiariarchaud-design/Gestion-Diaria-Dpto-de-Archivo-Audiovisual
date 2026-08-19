@@ -125,6 +125,19 @@ export interface MonthlyArchiveLog {
   }[];
 }
 
+export interface BackupSnapshot {
+  id: string;
+  timestamp: string;
+  note: string;
+  materialsCount: number;
+  personnelCount: number;
+  shiftsCount: number;
+  materials: MaterialSignal[];
+  personnel: Personnel[];
+  guardShifts: GuardShiftRecord[];
+  monthlyArchives?: MonthlyArchiveLog[];
+}
+
 export interface AppState {
   currentUser: UserProfile;
   materials: MaterialSignal[];
@@ -134,4 +147,5 @@ export interface AppState {
   appsScriptUrl: string;
   isSyncing: boolean;
   lastSyncTime?: string;
+  syncError?: string;
 }

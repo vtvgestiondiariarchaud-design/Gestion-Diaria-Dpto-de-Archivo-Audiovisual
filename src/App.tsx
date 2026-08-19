@@ -17,15 +17,14 @@ import {
   saveLocalAppsScriptUrl, 
   saveLocalActiveUser,
   saveLocalMonthlyArchives,
-  syncWithGoogleSheets,
-  fetchFromGoogleSheets,
   loadLocalUserPins,
   saveLocalUserPins,
   deduplicatePersonnel,
   deduplicateGuardShifts,
   getFormattedDateTime,
   normalizeDateString,
-  getLocalDateISOString
+  getLocalDateISOString,
+  createBackupSnapshot
 } from './services/apiService';
 import { Navbar } from './components/Navbar';
 import { canUserFinalizeSignal } from './utils/permissions';
@@ -38,6 +37,7 @@ import { PinVerificationModal } from './components/PinVerificationModal';
 import { AdminPersonnelModule } from './components/AdminPersonnelModule';
 import { DashboardModule } from './components/DashboardModule';
 import { GoogleAppsScriptModal } from './components/GoogleAppsScriptModal';
+import { BackupRestoreModal } from './components/BackupRestoreModal';
 
 export default function App() {
   const [state, setState] = useState(() => loadInitialState());
@@ -53,6 +53,7 @@ export default function App() {
     }
   });
   const [isMaterialModalOpen, setIsMaterialModalOpen] = useState(false);
+  const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
   
   // Edit Material Modal State
   const [editingSignal, setEditingSignal] = useState<MaterialSignal | null>(null);
@@ -77,97 +78,31 @@ export default function App() {
     setTimeout(() => setNotification(null), 4000);
   };
 
-  // Google Sheets Auto Synchronization (Read & Write)
-  const loadDataFromSheets = async (isManual = false) => {
-    if (!state.appsScriptUrl) return;
+  // Handle Restore State from Backup
+  const handleRestoreState = (restored: {
+    materials: MaterialSignal[];
+    personnel: Personnel[];
+    guardShifts: GuardShiftRecord[];
+    monthlyArchives?: MonthlyArchiveLog[];
+  }) => {
+    const mats = restored.materials || [];
+    const pers = deduplicatePersonnel(restored.personnel || []);
+    const shifts = deduplicateGuardShifts(restored.guardShifts || []);
+    const archives = restored.monthlyArchives || [];
 
-    if (isManual) {
-      setState((prev) => ({ ...prev, isSyncing: true }));
-    }
+    saveLocalMaterials(mats);
+    saveLocalPersonnel(pers);
+    saveLocalGuardShifts(shifts);
+    saveLocalMonthlyArchives(archives);
 
-    const result = await fetchFromGoogleSheets(state.appsScriptUrl);
-    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
-
-    if (result.success && result.data) {
-      const { materials, personnel, guardShifts, monthlyArchives } = result.data;
-
-      setState((prev) => {
-        const newMaterials = materials.length > 0 ? materials : prev.materials;
-        const newPersonnel = personnel.length > 0 ? deduplicatePersonnel(personnel) : deduplicatePersonnel(prev.personnel);
-        
-        // Use guardShifts array from Google Sheets directly (normalized & deduplicated)
-        let newShifts = prev.guardShifts;
-        if (Array.isArray(guardShifts)) {
-          newShifts = deduplicateGuardShifts(guardShifts);
-        }
-
-        const newArchives = monthlyArchives && monthlyArchives.length > 0 ? monthlyArchives : (prev.monthlyArchives || []);
-
-        saveLocalMaterials(newMaterials);
-        saveLocalPersonnel(newPersonnel);
-        saveLocalGuardShifts(newShifts);
-        saveLocalMonthlyArchives(newArchives);
-
-        return {
-          ...prev,
-          materials: newMaterials,
-          personnel: newPersonnel,
-          guardShifts: newShifts,
-          monthlyArchives: newArchives,
-          isSyncing: false,
-          lastSyncTime: timestamp,
-        };
-      });
-
-      if (isManual) {
-        showToast('Datos leídos y sincronizados desde Google Sheets.', 'success');
-      }
-    } else {
-      setState((prev) => ({ ...prev, isSyncing: false }));
-      if (isManual) {
-        showToast(result.message, 'error');
-      }
-    }
+    setState((prev) => ({
+      ...prev,
+      materials: mats,
+      personnel: pers,
+      guardShifts: shifts,
+      monthlyArchives: archives,
+    }));
   };
-
-  const autoPushToSheets = async (
-    mats?: MaterialSignal[],
-    pers?: Personnel[],
-    shifts?: GuardShiftRecord[],
-    archives?: MonthlyArchiveLog[]
-  ) => {
-    if (!state.appsScriptUrl) return;
-
-    const targetMats = mats || state.materials;
-    const targetPers = pers || state.personnel;
-    const targetShifts = shifts || state.guardShifts;
-    const targetArchives = archives || state.monthlyArchives || [];
-
-    await syncWithGoogleSheets(state.appsScriptUrl, {
-      materials: targetMats,
-      personnel: targetPers,
-      guardShifts: targetShifts,
-      monthlyArchives: targetArchives,
-    });
-  };
-
-  // 1. Initial Load: Read Google Sheets database when app loads
-  useEffect(() => {
-    if (state.appsScriptUrl) {
-      loadDataFromSheets(false);
-    }
-  }, [state.appsScriptUrl]);
-
-  // 2. Real-time Polling: Read Google Sheets every 15 seconds
-  useEffect(() => {
-    if (!state.appsScriptUrl) return;
-
-    const intervalId = setInterval(() => {
-      loadDataFromSheets(false);
-    }, 15000);
-
-    return () => clearInterval(intervalId);
-  }, [state.appsScriptUrl]);
 
   // Dynamically link user profiles to personnel list
   const userProfiles: UserProfile[] = React.useMemo(() => {
@@ -234,7 +169,7 @@ export default function App() {
       return updated;
     });
 
-    // Save PIN inside Personnel record and push to Google Sheets
+    // Save PIN inside Personnel record
     setState((prev) => {
       const updatedPersonnel = prev.personnel.map((p) => {
         if (p.id === userId || p.name === prev.currentUser.name) {
@@ -243,12 +178,11 @@ export default function App() {
         return p;
       });
       saveLocalPersonnel(updatedPersonnel);
-      autoPushToSheets(prev.materials, updatedPersonnel, prev.guardShifts);
       return { ...prev, personnel: updatedPersonnel };
     });
 
     if (pin) {
-      showToast('PIN de seguridad guardado en el personal y sincronizado.');
+      showToast('PIN de seguridad guardado en el personal.');
     } else {
       showToast('PIN de seguridad eliminado.');
     }
@@ -266,7 +200,6 @@ export default function App() {
         m.id === updatedSignal.id ? updatedSignal : m
       );
       saveLocalMaterials(updatedMaterials);
-      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts);
       return { ...prev, materials: updatedMaterials };
     });
     showToast(`Material ${updatedSignal.id} modificado exitosamente.`);
@@ -311,7 +244,6 @@ export default function App() {
       });
 
       saveLocalMaterials(updatedMaterials);
-      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts);
       return { ...prev, materials: updatedMaterials };
     });
 
@@ -370,7 +302,6 @@ export default function App() {
       });
 
       saveLocalMaterials(updatedMaterials);
-      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts);
       return { ...prev, materials: updatedMaterials };
     });
 
@@ -405,7 +336,6 @@ export default function App() {
       });
 
       saveLocalMaterials(updatedMaterials);
-      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts);
       return { ...prev, materials: updatedMaterials };
     });
 
@@ -435,7 +365,6 @@ export default function App() {
       });
 
       saveLocalMaterials(updatedMaterials);
-      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts);
       return { ...prev, materials: updatedMaterials };
     });
 
@@ -479,7 +408,6 @@ export default function App() {
       });
 
       saveLocalMaterials(updatedMaterials);
-      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts);
       return { ...prev, materials: updatedMaterials };
     });
 
@@ -527,7 +455,6 @@ export default function App() {
       });
 
       saveLocalMaterials(updatedMaterials);
-      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts);
       return { ...prev, materials: updatedMaterials };
     });
 
@@ -539,7 +466,6 @@ export default function App() {
     setState((prev) => {
       const updatedMaterials = [...newSignals, ...prev.materials];
       saveLocalMaterials(updatedMaterials);
-      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts);
       return { ...prev, materials: updatedMaterials };
     });
 
@@ -551,7 +477,6 @@ export default function App() {
     setState((prev) => {
       const updatedMaterials = prev.materials.filter((m) => m.id !== signalId);
       saveLocalMaterials(updatedMaterials);
-      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts);
       return { ...prev, materials: updatedMaterials };
     });
 
@@ -566,7 +491,7 @@ export default function App() {
 
       saveLocalMaterials(updatedMaterials);
       saveLocalMonthlyArchives(updatedArchives);
-      autoPushToSheets(updatedMaterials, prev.personnel, prev.guardShifts, updatedArchives);
+      createBackupSnapshot(updatedMaterials, prev.personnel, prev.guardShifts, updatedArchives, 'Cierre y Depuración Mensual');
 
       return {
         ...prev,
@@ -575,24 +500,24 @@ export default function App() {
       };
     });
 
-    showToast(`Depuración completada: ${signalIdsToPurge.length} materiales eliminados y estatus mensual guardado en Google Sheets (${monthlyLog.formattedDuration}).`, 'success');
+    showToast(`Depuración completada: ${signalIdsToPurge.length} materiales eliminados y guardados en historial mensual.`, 'success');
   };
 
   const handleSaveMonthlyLogOnly = (monthlyLog: MonthlyArchiveLog) => {
     setState((prev) => {
       const updatedArchives = [monthlyLog, ...(prev.monthlyArchives || [])];
       saveLocalMonthlyArchives(updatedArchives);
-      autoPushToSheets(prev.materials, prev.personnel, prev.guardShifts, updatedArchives);
+      createBackupSnapshot(prev.materials, prev.personnel, prev.guardShifts, updatedArchives, 'Cierre de Mes');
       return { ...prev, monthlyArchives: updatedArchives };
     });
-    showToast('Resumen mensual registrado y respaldado en Google Sheets exitosamente.', 'success');
+    showToast('Resumen mensual registrado y respaldado exitosamente.', 'success');
   };
 
   const handleClearMonthlyArchives = () => {
     if (window.confirm('¿Está seguro de eliminar el historial de reportes mensuales de cierres?')) {
       setState((prev) => {
         saveLocalMonthlyArchives([]);
-        autoPushToSheets(prev.materials, prev.personnel, prev.guardShifts, []);
+        createBackupSnapshot(prev.materials, prev.personnel, prev.guardShifts, [], 'Limpieza de Cierres');
         return { ...prev, monthlyArchives: [] };
       });
       showToast('Historial de cierres mensuales limpiado.');
@@ -604,7 +529,7 @@ export default function App() {
     if (window.confirm('¿Está seguro de que desea eliminar TODAS las guardias del calendario? Esta acción no se puede deshacer.')) {
       setState((prev) => {
         saveLocalGuardShifts([]);
-        autoPushToSheets(prev.materials, prev.personnel, []);
+        createBackupSnapshot(prev.materials, prev.personnel, [], prev.monthlyArchives || [], 'Limpieza de Guardias');
         return { ...prev, guardShifts: [] };
       });
       showToast('Se han eliminado todas las guardias del calendario.');
@@ -688,7 +613,6 @@ export default function App() {
 
       saveLocalGuardShifts(updatedShifts);
       saveLocalPersonnel(updatedPersonnel);
-      autoPushToSheets(prev.materials, updatedPersonnel, updatedShifts);
 
       return {
         ...prev,
@@ -749,7 +673,6 @@ export default function App() {
 
       saveLocalGuardShifts(updatedShifts);
       saveLocalPersonnel(updatedPersonnel);
-      autoPushToSheets(prev.materials, updatedPersonnel, updatedShifts);
 
       return {
         ...prev,
@@ -777,7 +700,6 @@ export default function App() {
     setState((prev) => {
       const updatedPersonnel = [...prev.personnel, newPerson];
       saveLocalPersonnel(updatedPersonnel);
-      autoPushToSheets(prev.materials, updatedPersonnel, prev.guardShifts);
       return { ...prev, personnel: updatedPersonnel };
     });
 
@@ -789,7 +711,6 @@ export default function App() {
     setState((prev) => {
       const updatedPersonnel = prev.personnel.filter((p) => p.id !== personnelId);
       saveLocalPersonnel(updatedPersonnel);
-      autoPushToSheets(prev.materials, updatedPersonnel, prev.guardShifts);
       return { ...prev, personnel: updatedPersonnel };
     });
 
@@ -826,7 +747,6 @@ export default function App() {
       });
 
       saveLocalPersonnel(updatedPersonnel);
-      autoPushToSheets(prev.materials, updatedPersonnel, prev.guardShifts);
       return { ...prev, personnel: updatedPersonnel };
     });
 
@@ -838,23 +758,6 @@ export default function App() {
     setState((prev) => ({ ...prev, appsScriptUrl: url }));
     saveLocalAppsScriptUrl(url);
     showToast('URL de Google Apps Script actualizada.');
-  };
-
-  // Trigger Sync (Push local state then fetch latest state from Google Sheets)
-  const handleSyncNow = async () => {
-    if (!state.appsScriptUrl) {
-      showToast('Por favor configure la URL de Google Apps Script en la pestaña de Configuración.', 'error');
-      setActiveTab('settings');
-      return;
-    }
-
-    setState((prev) => ({ ...prev, isSyncing: true }));
-    await syncWithGoogleSheets(state.appsScriptUrl, {
-      materials: state.materials,
-      personnel: state.personnel,
-      guardShifts: state.guardShifts,
-    });
-    await loadDataFromSheets(true);
   };
 
   // Open Material Modal with presets
@@ -893,10 +796,9 @@ export default function App() {
         currentUser={state.currentUser}
         onOpenUserSelector={() => setIsUserSelectorOpen(true)}
         onOpenPinModal={() => setIsPinModalOpen(true)}
+        onOpenBackupModal={() => setIsBackupModalOpen(true)}
         userHasPin={currentUserHasPin}
         appsScriptUrl={state.appsScriptUrl}
-        isSyncing={state.isSyncing}
-        onSyncNow={handleSyncNow}
       />
 
       {/* Main Content Area */}
@@ -977,8 +879,7 @@ export default function App() {
           <GoogleAppsScriptModal
             appsScriptUrl={state.appsScriptUrl}
             onSaveUrl={handleSaveAppsScriptUrl}
-            onSyncNow={handleSyncNow}
-            isSyncing={state.isSyncing}
+            onOpenBackupModal={() => setIsBackupModalOpen(true)}
             lastSyncTime={state.lastSyncTime}
           />
         )}
@@ -1047,6 +948,14 @@ export default function App() {
           }}
         />
       )}
+
+      <BackupRestoreModal
+        isOpen={isBackupModalOpen}
+        onClose={() => setIsBackupModalOpen(false)}
+        state={state}
+        onRestoreState={handleRestoreState}
+        onToast={showToast}
+      />
 
       {/* Footer */}
       <footer className="bg-slate-900 border-t border-slate-800/80 py-4 text-center text-xs text-slate-500">

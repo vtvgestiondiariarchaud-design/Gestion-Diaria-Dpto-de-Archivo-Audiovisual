@@ -12,7 +12,8 @@ import {
   CheckCircle2,
   Tv,
   KeyRound,
-  Lock
+  Lock,
+  ShieldCheck
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -21,10 +22,9 @@ interface NavbarProps {
   currentUser: UserProfile;
   onOpenUserSelector: () => void;
   onOpenPinModal?: () => void;
+  onOpenBackupModal?: () => void;
   userHasPin?: boolean;
-  appsScriptUrl: string;
-  isSyncing: boolean;
-  onSyncNow: () => void;
+  appsScriptUrl?: string;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -33,10 +33,9 @@ export const Navbar: React.FC<NavbarProps> = ({
   currentUser,
   onOpenUserSelector,
   onOpenPinModal,
+  onOpenBackupModal,
   userHasPin,
   appsScriptUrl,
-  isSyncing,
-  onSyncNow,
 }) => {
   const getRoleBadgeColor = (role: RoleType) => {
     switch (role) {
@@ -77,25 +76,19 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
           </div>
 
-          {/* User Profile Pill & Sync Status */}
+          {/* User Profile Pill & Backup Centre */}
           <div className="flex items-center flex-wrap gap-2 sm:gap-3">
-            {/* Apps Script Status */}
-            <button
-              onClick={onSyncNow}
-              disabled={isSyncing}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
-                appsScriptUrl
-                  ? 'bg-emerald-950/50 border-emerald-700/60 text-emerald-300 hover:bg-emerald-900/60'
-                  : 'bg-slate-800/80 border-slate-700 text-slate-400 hover:bg-slate-800'
-              }`}
-              title={appsScriptUrl ? 'Conectado a Google Sheets. Clic para sincronizar' : 'Modo Almacenamiento Local (Configurar Google Sheets)'}
-            >
-              <Database className={`w-3.5 h-3.5 ${appsScriptUrl ? 'text-emerald-400' : 'text-slate-400'}`} />
-              <span className="hidden sm:inline">
-                {appsScriptUrl ? 'Google Sheets OK' : 'Modo Local'}
-              </span>
-              <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin text-amber-400' : 'text-slate-400'}`} />
-            </button>
+            {/* Backup & Recovery Button (Diario y Mensual) */}
+            {onOpenBackupModal && (
+              <button
+                onClick={onOpenBackupModal}
+                className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-950/70 hover:bg-emerald-900/80 text-emerald-300 border border-emerald-700/70 hover:border-emerald-500 transition-all shadow-md group"
+                title="Crear Respaldo Diario / Mensual en Google Drive y Copias de Seguridad"
+              >
+                <ShieldCheck className="w-4 h-4 text-emerald-400 group-hover:scale-110 transition-transform" />
+                <span>Crear Respaldo</span>
+              </button>
+            )}
 
             {/* Security PIN Button */}
             {onOpenPinModal && (

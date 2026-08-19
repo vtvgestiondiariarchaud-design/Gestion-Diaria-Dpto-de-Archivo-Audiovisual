@@ -16,16 +16,14 @@ import {
 interface GoogleAppsScriptModalProps {
   appsScriptUrl: string;
   onSaveUrl: (url: string) => void;
-  onSyncNow: () => void;
-  isSyncing: boolean;
+  onOpenBackupModal?: () => void;
   lastSyncTime?: string;
 }
 
 export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
   appsScriptUrl,
   onSaveUrl,
-  onSyncNow,
-  isSyncing,
+  onOpenBackupModal,
   lastSyncTime,
 }) => {
   const [urlInput, setUrlInput] = useState(appsScriptUrl);
@@ -55,10 +53,10 @@ export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
           </div>
           <div>
             <h2 className="text-lg font-bold text-white">
-              Conexión Exclusiva a Google Sheets (Google Apps Script API)
+              Conexión con Google Drive / Sheets para Respaldos Diarios y Mensuales
             </h2>
             <p className="text-xs text-slate-400">
-              Backend Serverless para persistencia de datos en tiempo real en hojas de cálculo
+              Cree hojas independientes por fecha y período con toda la metadata en su Google Drive
             </p>
           </div>
         </div>
@@ -95,30 +93,22 @@ export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
             <div className="text-xs text-slate-400">
               Estado actual:{' '}
               {appsScriptUrl ? (
-                <span className="text-emerald-400 font-bold">Conectado a Google Sheets</span>
+                <span className="text-emerald-400 font-bold">Conectado a Google Drive / Sheets</span>
               ) : (
                 <span className="text-amber-400 font-bold">Modo Local (Sin URL configurada)</span>
               )}
-              {lastSyncTime && (
-                <span className="block text-[10px] text-slate-500 mt-0.5">
-                  Última sincronización: {lastSyncTime}
-                </span>
-              )}
             </div>
 
-            <button
-              type="button"
-              onClick={onSyncNow}
-              disabled={isSyncing || !appsScriptUrl}
-              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
-                appsScriptUrl
-                  ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-md'
-                  : 'bg-slate-800 text-slate-500 cursor-not-allowed'
-              }`}
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-              <span>{isSyncing ? 'Sincronizando...' : 'Probar & Sincronizar Ahora'}</span>
-            </button>
+            {onOpenBackupModal && (
+              <button
+                type="button"
+                onClick={onOpenBackupModal}
+                className="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-bold text-xs rounded-xl shadow-md transition-all flex items-center gap-2"
+              >
+                <Layers className="w-3.5 h-3.5 text-emerald-300" />
+                <span>Abrir Centro de Respaldos (Diario y Mensual)</span>
+              </button>
+            )}
           </div>
         </form>
       </div>
@@ -153,9 +143,20 @@ export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
             <li>Copie el código de abajo y reemplácelo completamente en el archivo <code className="text-amber-300 font-mono">Código.gs</code>.</li>
             <li>Guarde los cambios y haga clic en el botón azul <strong>Desplegar → Nuevo despliegue</strong>.</li>
             <li>Seleccione tipo: <strong>Aplicación Web</strong>.</li>
-            <li>Configure: <em>Ejecutar como:</em> <strong>Yo</strong> | <em>Quién tiene acceso:</em> <strong>Cualquier persona (Anyone)</strong>.</li>
-            <li>Haga clic en <strong>Desplegar</strong>, autorice los permisos y copie la Web App URL obtenida.</li>
+            <li>Configure: <em>Ejecutar como:</em> <strong>Yo</strong> | <em>Quién tiene acceso:</em> <strong>Cualquier persona (Anyone)</strong> (fundamental para permitir la conexión).</li>
+            <li>Haga clic en <strong>Desplegar</strong>, autorice los permisos y copie la Web App URL que termina en <code className="text-emerald-300 font-mono">/exec</code>.</li>
+            <li>Pegue la URL arriba y presione <strong>Guardar URL</strong>.</li>
           </ol>
+
+          <div className="mt-3 p-3 rounded-lg bg-emerald-950/40 border border-emerald-800/60 text-emerald-200">
+            <p className="font-bold flex items-center gap-1.5">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              Protección de Datos & Respaldos Locales Integrados
+            </p>
+            <p className="text-[11px] text-emerald-300/80 mt-1">
+              Todos los materiales creados se guardan de forma instantánea en la memoria local segura y cuentan con copias de seguridad automáticas accesibles desde el botón <strong>Respaldos</strong> en la barra superior.
+            </p>
+          </div>
         </div>
 
         {/* Code View */}

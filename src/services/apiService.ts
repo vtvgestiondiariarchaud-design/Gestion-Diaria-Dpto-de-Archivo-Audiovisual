@@ -1,4 +1,4 @@
-import { MaterialSignal, Personnel, GuardShiftRecord, MaterialFamilyGroup, AppState, MaterialStatus, MonthlyArchiveLog, UserProfile } from '../types';
+import { MaterialSignal, Personnel, GuardShiftRecord, MaterialFamilyGroup, AppState, MaterialStatus, MonthlyArchiveLog, UserProfile, BackupSnapshot } from '../types';
 import { INITIAL_MATERIALS, INITIAL_PERSONNEL, INITIAL_GUARD_SHIFTS, DEFAULT_USERS, DEFAULT_APPS_SCRIPT_URL } from '../data/initialData';
 
 const LOCAL_STORAGE_KEY_MATERIALS = 'vtv_archivo_materials_v1';
@@ -8,6 +8,7 @@ const LOCAL_STORAGE_KEY_APPS_SCRIPT_URL = 'vtv_archivo_apps_script_url_v1';
 const LOCAL_STORAGE_KEY_USER = 'vtv_archivo_active_user_v1';
 const LOCAL_STORAGE_KEY_PINS = 'vtv_archivo_user_pins_v1';
 const LOCAL_STORAGE_KEY_MONTHLY_ARCHIVES = 'vtv_archivo_monthly_archives_v1';
+export const LOCAL_STORAGE_KEY_BACKUP_SNAPSHOTS = 'vtv_archivo_backup_snapshots_v1';
 
 // Helper for duration conversions
 export function durationToSeconds(durationInput?: string | number | null): number {
@@ -349,6 +350,91 @@ export function deduplicateGuardShifts(list: GuardShiftRecord[]): GuardShiftReco
   return result;
 }
 
+/**
+ * Fusión inteligente de materiales para evitar pérdida de registros locales no sincronizados.
+ * Si un material fue registrado localmente (por ejemplo, del 13/08 en adelante) y aún no está en Google Sheets,
+ * se conserva y se marca para sincronizar a Google Sheets en lugar de borrarlo.
+ */
+export function mergeMaterials(
+  local: MaterialSignal[],
+  remote: MaterialSignal[]
+): { merged: MaterialSignal[]; hasLocalUnsynced: boolean } {
+  if (!remote || remote.length === 0) {
+    return { merged: local || [], hasLocalUnsynced: (local && local.length > 0) };
+  }
+  if (!local || local.length === 0) {
+    return { merged: remote, hasLocalUnsynced: false };
+  }
+
+  const remoteMap = new Map<string, MaterialSignal>();
+  remote.forEach((m) => {
+    if (m && m.id) remoteMap.set(m.id, m);
+  });
+
+  let hasLocalUnsynced = false;
+  const mergedMap = new Map<string, MaterialSignal>();
+
+  // 1. Agregar todos los remotos
+  remote.forEach((m) => {
+    if (m && m.id) mergedMap.set(m.id, m);
+  });
+
+  // 2. Revisar locales y preservar registros no existentes en remoto o con cambios recientes
+  local.forEach((localItem) => {
+    if (!localItem || !localItem.id) return;
+    if (!remoteMap.has(localItem.id)) {
+      // Registro nuevo creado localmente que no está en Google Sheets: ¡PRESERVAR!
+      mergedMap.set(localItem.id, localItem);
+      hasLocalUnsynced = true;
+    } else {
+      const remoteItem = remoteMap.get(localItem.id)!;
+      // Si el local tiene un estado más avanzado (ej. finalizado o catalogado) que el remoto
+      if (
+        (localItem.isFinalized && !remoteItem.isFinalized) ||
+        (localItem.isCataloged && !remoteItem.isCataloged)
+      ) {
+        mergedMap.set(localItem.id, localItem);
+        hasLocalUnsynced = true;
+      }
+    }
+  });
+
+  const merged = Array.from(mergedMap.values()).sort(
+    (a, b) => parseAnyDate(b.creationDate).getTime() - parseAnyDate(a.creationDate).getTime()
+  );
+
+  return { merged, hasLocalUnsynced };
+}
+
+/**
+ * Fusión inteligente de guardias para evitar sobrescribir turnos agregados recientemente.
+ */
+export function mergeGuardShifts(
+  local: GuardShiftRecord[],
+  remote: GuardShiftRecord[]
+): { merged: GuardShiftRecord[]; hasLocalUnsynced: boolean } {
+  if (!remote || remote.length === 0) {
+    return { merged: deduplicateGuardShifts(local || []), hasLocalUnsynced: (local && local.length > 0) };
+  }
+  if (!local || local.length === 0) {
+    return { merged: deduplicateGuardShifts(remote), hasLocalUnsynced: false };
+  }
+
+  const remoteIds = new Set(remote.map((s) => s.id));
+  let hasLocalUnsynced = false;
+  const combined = [...remote];
+
+  local.forEach((l) => {
+    if (l && l.id && !remoteIds.has(l.id)) {
+      combined.push(l);
+      hasLocalUnsynced = true;
+    }
+  });
+
+  const merged = deduplicateGuardShifts(combined);
+  return { merged, hasLocalUnsynced };
+}
+
 // Local Storage API methods
 export function loadInitialState(): AppState {
   let materials: MaterialSignal[] = INITIAL_MATERIALS;
@@ -447,12 +533,33 @@ export function loadLocalMonthlyArchives(): MonthlyArchiveLog[] {
   }
 }
 
-export function saveLocalMonthlyArchives(archives: MonthlyArchiveLog[]) {
+// Safe localStorage setter that gracefully frees up snapshot space if quota limit is reached
+function safeSetItem(key: string, value: string): void {
   try {
-    localStorage.setItem(LOCAL_STORAGE_KEY_MONTHLY_ARCHIVES, JSON.stringify(archives));
-  } catch (e) {
-    console.error(e);
+    localStorage.setItem(key, value);
+  } catch (e: any) {
+    // If quota exceeded, clean up old snapshots first to guarantee primary database save
+    if (
+      e?.name === 'QuotaExceededError' ||
+      e?.code === 22 ||
+      e?.code === 1014 ||
+      String(e).toLowerCase().includes('quota')
+    ) {
+      console.warn(`Alcanzado límite de cuota en almacenamiento local al guardar '${key}'. Liberando historial de puntos de restauración...`);
+      try {
+        localStorage.removeItem(LOCAL_STORAGE_KEY_BACKUP_SNAPSHOTS);
+        localStorage.setItem(key, value);
+        return;
+      } catch (retryErr) {
+        console.error(`No se pudo guardar '${key}' tras liberar snapshots:`, retryErr);
+      }
+    }
+    console.error(`Error guardando '${key}':`, e);
   }
+}
+
+export function saveLocalMonthlyArchives(archives: MonthlyArchiveLog[]) {
+  safeSetItem(LOCAL_STORAGE_KEY_MONTHLY_ARCHIVES, JSON.stringify(archives));
 }
 
 export function generateMonthlyArchiveLog(materials: MaterialSignal[], user: UserProfile): MonthlyArchiveLog {
@@ -560,51 +667,31 @@ export function exportMaterialsToCSV(materials: MaterialSignal[], customFilename
 }
 
 export function saveLocalMaterials(materials: MaterialSignal[]) {
-  try {
-    const normalized = materials.map((m) => ({
-      ...m,
-      duration: formatDurationHHMMSS(m.duration),
-      creationDate: getFormattedDateTime(m.creationDate),
-      catalogedAt: m.catalogedAt ? getFormattedDateTime(m.catalogedAt) : undefined,
-      finalizedAt: m.finalizedAt ? getFormattedDateTime(m.finalizedAt) : undefined,
-      assignedAt: m.assignedAt ? getFormattedDateTime(m.assignedAt) : undefined,
-    }));
-    localStorage.setItem(LOCAL_STORAGE_KEY_MATERIALS, JSON.stringify(normalized));
-  } catch (e) {
-    console.error(e);
-  }
+  const normalized = materials.map((m) => ({
+    ...m,
+    duration: formatDurationHHMMSS(m.duration),
+    creationDate: getFormattedDateTime(m.creationDate),
+    catalogedAt: m.catalogedAt ? getFormattedDateTime(m.catalogedAt) : undefined,
+    finalizedAt: m.finalizedAt ? getFormattedDateTime(m.finalizedAt) : undefined,
+    assignedAt: m.assignedAt ? getFormattedDateTime(m.assignedAt) : undefined,
+  }));
+  safeSetItem(LOCAL_STORAGE_KEY_MATERIALS, JSON.stringify(normalized));
 }
 
 export function saveLocalPersonnel(personnel: Personnel[]) {
-  try {
-    localStorage.setItem(LOCAL_STORAGE_KEY_PERSONNEL, JSON.stringify(personnel));
-  } catch (e) {
-    console.error(e);
-  }
+  safeSetItem(LOCAL_STORAGE_KEY_PERSONNEL, JSON.stringify(personnel));
 }
 
 export function saveLocalGuardShifts(shifts: GuardShiftRecord[]) {
-  try {
-    localStorage.setItem(LOCAL_STORAGE_KEY_SHIFTS, JSON.stringify(shifts));
-  } catch (e) {
-    console.error(e);
-  }
+  safeSetItem(LOCAL_STORAGE_KEY_SHIFTS, JSON.stringify(shifts));
 }
 
 export function saveLocalAppsScriptUrl(url: string) {
-  try {
-    localStorage.setItem(LOCAL_STORAGE_KEY_APPS_SCRIPT_URL, url);
-  } catch (e) {
-    console.error(e);
-  }
+  safeSetItem(LOCAL_STORAGE_KEY_APPS_SCRIPT_URL, url);
 }
 
 export function saveLocalActiveUser(user: any) {
-  try {
-    localStorage.setItem(LOCAL_STORAGE_KEY_USER, JSON.stringify(user));
-  } catch (e) {
-    console.error(e);
-  }
+  safeSetItem(LOCAL_STORAGE_KEY_USER, JSON.stringify(user));
 }
 
 export function loadLocalUserPins(): Record<string, string> {
@@ -618,17 +705,102 @@ export function loadLocalUserPins(): Record<string, string> {
 }
 
 export function saveLocalUserPins(pins: Record<string, string>) {
+  safeSetItem(LOCAL_STORAGE_KEY_PINS, JSON.stringify(pins));
+}
+
+// Backup & Recovery System
+export function createBackupSnapshot(
+  materials: MaterialSignal[],
+  personnel: Personnel[],
+  guardShifts: GuardShiftRecord[],
+  monthlyArchives: MonthlyArchiveLog[] = [],
+  note: string = 'Respaldo automático'
+): BackupSnapshot | null {
   try {
-    localStorage.setItem(LOCAL_STORAGE_KEY_PINS, JSON.stringify(pins));
+    const raw = localStorage.getItem(LOCAL_STORAGE_KEY_BACKUP_SNAPSHOTS);
+    const existing: BackupSnapshot[] = raw ? JSON.parse(raw) : [];
+
+    const newSnapshot: BackupSnapshot = {
+      id: `SNP-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: getFormattedDateTime(new Date()),
+      note,
+      materialsCount: materials.length,
+      personnelCount: personnel.length,
+      shiftsCount: guardShifts.length,
+      materials: JSON.parse(JSON.stringify(materials)),
+      personnel: JSON.parse(JSON.stringify(personnel)),
+      guardShifts: JSON.parse(JSON.stringify(guardShifts)),
+      monthlyArchives: JSON.parse(JSON.stringify(monthlyArchives)),
+    };
+
+    // Keep at most 3 snapshots in local storage to prevent exceeding browser quota
+    const updated = [newSnapshot, ...existing.slice(0, 2)];
+    
+    try {
+      localStorage.setItem(LOCAL_STORAGE_KEY_BACKUP_SNAPSHOTS, JSON.stringify(updated));
+    } catch (quotaErr) {
+      // If quota exceeded, try storing only the single newest snapshot
+      try {
+        localStorage.setItem(LOCAL_STORAGE_KEY_BACKUP_SNAPSHOTS, JSON.stringify([newSnapshot]));
+      } catch (singleErr) {
+        console.warn('No hay espacio suficiente para almacenar un snapshot local adicional en localStorage.');
+      }
+    }
+
+    return newSnapshot;
+  } catch (e) {
+    console.warn('Advertencia al crear snapshot:', e);
+    return null;
+  }
+}
+
+export function loadBackupSnapshots(): BackupSnapshot[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_STORAGE_KEY_BACKUP_SNAPSHOTS);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    console.error('Error loading backup snapshots:', e);
+    return [];
+  }
+}
+
+export function clearBackupSnapshots(): void {
+  try {
+    localStorage.removeItem(LOCAL_STORAGE_KEY_BACKUP_SNAPSHOTS);
   } catch (e) {
     console.error(e);
   }
 }
 
-// Google Apps Script API Services
-export async function fetchFromGoogleSheets(
-  url: string
-): Promise<{
+export function exportStateToJSON(
+  materials: MaterialSignal[],
+  personnel: Personnel[],
+  guardShifts: GuardShiftRecord[],
+  monthlyArchives: MonthlyArchiveLog[] = []
+): void {
+  const data = {
+    exportedAt: new Date().toISOString(),
+    version: '1.0',
+    system: 'VTV Gestión y Archivo Audiovisual',
+    materials,
+    personnel,
+    guardShifts,
+    monthlyArchives,
+  };
+
+  const jsonStr = JSON.stringify(data, null, 2);
+  const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  const dateStr = getLocalDateISOString();
+  link.setAttribute('href', url);
+  link.setAttribute('download', `VTV_Respaldo_Completo_${dateStr}.json`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+export function parseImportedJSON(jsonString: string): {
   success: boolean;
   message: string;
   data?: {
@@ -637,197 +809,64 @@ export async function fetchFromGoogleSheets(
     guardShifts: GuardShiftRecord[];
     monthlyArchives?: MonthlyArchiveLog[];
   };
-}> {
-  if (!url || !url.startsWith('http')) {
-    return { success: false, message: 'URL de Google Apps Script no configurada o inválida.' };
-  }
-
+} {
   try {
-    let resData: any = null;
-
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        mode: 'cors',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'getAllData' }),
-      });
-      resData = await response.json();
-    } catch (e) {
-      const getUrl = url + (url.includes('?') ? '&' : '?') + 'action=getAllData';
-      const response = await fetch(getUrl, { method: 'GET', mode: 'cors' });
-      resData = await response.json();
+    const parsed = JSON.parse(jsonString);
+    if (!parsed || typeof parsed !== 'object') {
+      return { success: false, message: 'El archivo JSON no tiene un formato válido.' };
     }
 
-    if (resData && resData.success && resData.data) {
-      const rawMats = Array.isArray(resData.data.materials) ? resData.data.materials : [];
-      const parsedMaterials: MaterialSignal[] = rawMats.map((m: any) => {
-        const status = (m['Estado'] || m.status || 'Registrado') as MaterialStatus;
-        const rawCreation = String(m['Fecha Creación'] || m.creationDate || new Date().toISOString());
-        const rawCat = m['Fecha Catalogación'] || m.catalogedAt;
-        const rawFin = m['Fecha Finalizado'] || m.finalizedAt;
-        const rawAssigned = m['Fecha Asignación'] || m.assignedAt;
+    const rawMats = Array.isArray(parsed.materials) ? parsed.materials : [];
+    const rawPers = Array.isArray(parsed.personnel) ? parsed.personnel : [];
+    const rawShifts = Array.isArray(parsed.guardShifts) ? parsed.guardShifts : [];
+    const rawArchives = Array.isArray(parsed.monthlyArchives) ? parsed.monthlyArchives : [];
 
-        const rawIsRequest = m['Es Solicitud'] !== undefined 
-          ? (m['Es Solicitud'] === 'SI' || m['Es Solicitud'] === 'true' || m['Es Solicitud'] === true) 
-          : (m.isRequestTask === true || m.isRequestTask === 'true');
+    const materials: MaterialSignal[] = rawMats.map((m: any) => ({
+      ...m,
+      duration: formatDurationHHMMSS(m.duration),
+      creationDate: getFormattedDateTime(m.creationDate),
+      catalogedAt: m.catalogedAt ? getFormattedDateTime(m.catalogedAt) : undefined,
+      finalizedAt: m.finalizedAt ? getFormattedDateTime(m.finalizedAt) : undefined,
+      assignedAt: m.assignedAt ? getFormattedDateTime(m.assignedAt) : undefined,
+      isIngested: m.isIngested !== undefined ? m.isIngested : true,
+      isCataloged: m.isCataloged !== undefined ? m.isCataloged : (m.status === 'Por Archivar' || m.status === 'Finalizado'),
+      isFinalized: m.isFinalized !== undefined ? m.isFinalized : (m.status === 'Finalizado'),
+    }));
 
-        const rawAssignedStr = m['Asignado A'] || m.assignedTo || '';
-        const parsedAssignedPersons = Array.isArray(m.assignedPersons)
-          ? m.assignedPersons
-          : (rawAssignedStr && rawAssignedStr !== 'Sin asignar' 
-              ? String(rawAssignedStr).split(',').map((s: string) => s.trim()).filter(Boolean) 
-              : undefined);
+    const personnel = deduplicatePersonnel(rawPers);
+    const guardShifts = deduplicateGuardShifts(rawShifts);
 
-        const rawIngested = m['Ingestado'] !== undefined 
-          ? (m['Ingestado'] === 'SI' || m['Ingestado'] === 'true' || m['Ingestado'] === true) 
-          : (m.isIngested !== undefined ? (m.isIngested === true || m.isIngested === 'true') : true);
-
-        const rawCataloged = m['Catalogado'] !== undefined 
-          ? (m['Catalogado'] === 'SI' || m['Catalogado'] === 'true' || m['Catalogado'] === true) 
-          : (m.isCataloged !== undefined ? (m.isCataloged === true || m.isCataloged === 'true') : (status === 'Por Archivar' || status === 'Finalizado' || rawIsRequest));
-
-        const rawFinalized = m['Finalizado'] !== undefined 
-          ? (m['Finalizado'] === 'SI' || m['Finalizado'] === 'true' || m['Finalizado'] === true) 
-          : (m.isFinalized !== undefined ? (m.isFinalized === true || m.isFinalized === 'true') : (status === 'Finalizado'));
-
-        return {
-          id: String(m.ID || m.id || ''),
-          familyId: String(m['ID Familia'] || m.familyId || m.id || ''),
-          signalType: (m['Tipo Señal'] || m.signalType || 'Limpio') as any,
-          title: String(m['Título / Descripción'] || m.title || ''),
-          division: (m['División'] || m.division || 'Prensa') as any,
-          duration: formatDurationHHMMSS(m['Duración'] || m.duration || '00:00:00'),
-          creationDate: getFormattedDateTime(rawCreation),
-          createdBy: String(m['Creado Por'] || m.createdBy || 'Sistema'),
-          createdByRole: String(m['Rol Creador'] || m.createdByRole || ''),
-          status,
-          catalogedBy: m['Catalogado Por'] || m.catalogedBy || undefined,
-          catalogedAt: rawCat ? getFormattedDateTime(rawCat) : undefined,
-          finalizedBy: m['Finalizado Por'] || m.finalizedBy || undefined,
-          finalizedAt: rawFin ? getFormattedDateTime(rawFin) : undefined,
-          assignedTo: (parsedAssignedPersons && parsedAssignedPersons.length > 0) ? parsedAssignedPersons[0] : (rawAssignedStr !== 'Sin asignar' ? rawAssignedStr : undefined),
-          assignedToRole: m['Rol Asignado'] || m.assignedToRole || undefined,
-          assignedAt: rawAssigned ? getFormattedDateTime(rawAssigned) : undefined,
-          assignedPersons: parsedAssignedPersons,
-          isRequestTask: rawIsRequest,
-          notes: m['Notas'] || m.notes || undefined,
-          isIngested: rawIngested,
-          isCataloged: rawCataloged,
-          isFinalized: rawFinalized,
-        };
-      }).filter((m) => m.id);
-
-      const rawPer = Array.isArray(resData.data.personnel) ? resData.data.personnel : [];
-      const parsedPersonnel: Personnel[] = deduplicatePersonnel(rawPer.map((p: any) => {
-        const pinVal = p.PIN !== undefined && p.PIN !== null ? String(p.PIN).trim() : (p.pin !== undefined && p.pin !== null ? String(p.pin).trim() : '');
-        return {
-          id: String(p.ID || p.id || ''),
-          name: String(p['Nombre'] || p.name || ''),
-          role: (p['Rol'] || p.role || 'Operador') as any,
-          division: (p['División'] || p.division || 'Prensa') as any,
-          guardDaysWorked: Number(p['Días Guardia Trabajados'] ?? p.guardDaysWorked) || 0,
-          daysOffGenerated: Number(p['Días Libres Generados'] ?? p.daysOffGenerated) || 0,
-          daysOffTaken: Number(p['Días Libres Disfrutados'] ?? p.daysOffTaken) || 0,
-          balanceDays: Number(p['Balance Pendiente'] ?? p.balanceDays) || 0,
-          pin: pinVal ? pinVal : undefined,
-        };
-      }).filter((p) => p.name));
-
-      const rawShifts = Array.isArray(resData.data.guardShifts) ? resData.data.guardShifts : [];
-      const parsedShiftsList: GuardShiftRecord[] = rawShifts.map((s: any, idx: number) => {
-        const rawDate = s['Fecha'] || s.date || '';
-        const rawEndDate = s['Fecha Fin'] || s.endDate || undefined;
-        const rawCreated = s['Fecha Registro'] || s.createdAt || s.createdDate || '';
-        const rawIsLead = s['Es Encargado'] !== undefined
-          ? (s['Es Encargado'] === 'SI' || s['Es Encargado'] === true || s['Es Encargado'] === 'true')
-          : (s.isLead === true || s.isLead === 'true');
-
-        const shiftId = String(s.ID || s.id || `sh-${Date.now()}-${idx}`);
-
-        return {
-          id: shiftId,
-          personnelId: String(s['ID Personal'] || s.personnelId || ''),
-          personnelName: String(s['Nombre Personal'] || s.personnelName || ''),
-          division: (s['División'] || s.division || 'Prensa') as any,
-          date: normalizeDateString(rawDate),
-          endDate: rawEndDate ? normalizeDateString(rawEndDate) : undefined,
-          shiftType: (s['Tipo Turno'] || s.shiftType || 'Guardia (Fin de semana/Feriado)') as any,
-          assignedBy: String(s['Asignado Por'] || s.assignedBy || ''),
-          isLead: rawIsLead,
-          notes: s['Notas'] || s.notes || undefined,
-          createdAt: String(rawCreated || getFormattedDateTime()),
-        };
-      }).filter((s) => s.personnelId);
-
-      const parsedShifts = deduplicateGuardShifts(parsedShiftsList);
-
-      const rawArchives = Array.isArray(resData.data.monthlyArchives) 
-        ? resData.data.monthlyArchives 
-        : (Array.isArray(resData.data.cierresMensuales) ? resData.data.cierresMensuales : []);
-      const parsedArchives: MonthlyArchiveLog[] = rawArchives.map((a: any) => {
-        let breakdown = {};
-        if (typeof a.divisionBreakdown === 'object' && a.divisionBreakdown) {
-          breakdown = a.divisionBreakdown;
-        } else if (a['Detalle Desglose']) {
-          try { breakdown = typeof a['Detalle Desglose'] === 'string' ? JSON.parse(a['Detalle Desglose']) : a['Detalle Desglose']; } catch (e) {}
-        }
-
-        let items = [];
-        if (Array.isArray(a.exportedItems)) {
-          items = a.exportedItems;
-        } else if (a['Materiales Exportados']) {
-          try { items = typeof a['Materiales Exportados'] === 'string' ? JSON.parse(a['Materiales Exportados']) : a['Materiales Exportados']; } catch (e) {}
-        }
-
-        return {
-          id: String(a['ID Cierre'] || a.id || ''),
-          monthPeriod: String(a['Período'] || a.monthPeriod || ''),
-          exportDate: String(a['Fecha Exportación'] || a.exportDate || ''),
-          exportedBy: String(a['Exportado Por'] || a.exportedBy || ''),
-          exporterRole: String(a['Rol Exporter'] || a.exporterRole || ''),
-          materialsCount: Number(a['Cantidad Materiales'] ?? a.materialsCount) || 0,
-          totalDurationSeconds: Number(a['Total Segundos'] ?? a.totalDurationSeconds) || 0,
-          formattedDuration: String(a['Total Horas Formato'] || a.formattedDuration || ''),
-          divisionBreakdown: breakdown,
-          exportedItems: items,
-        };
-      }).filter((a) => a.id);
-
-      return {
-        success: true,
-        message: 'Datos sincronizados desde Google Sheets.',
-        data: {
-          materials: parsedMaterials,
-          personnel: parsedPersonnel,
-          guardShifts: parsedShifts,
-          monthlyArchives: parsedArchives,
-        },
-      };
-    } else {
-      return { success: false, message: resData?.message || 'Error al obtener datos de Google Sheets.' };
-    }
+    return {
+      success: true,
+      message: `Archivo importado exitosamente (${materials.length} materiales, ${personnel.length} personal, ${guardShifts.length} guardias).`,
+      data: {
+        materials,
+        personnel,
+        guardShifts,
+        monthlyArchives: rawArchives,
+      },
+    };
   } catch (err: any) {
-    console.error('Fetch Google Sheets Error:', err);
-    return { success: false, message: `Error de lectura: ${err.message || err.toString()}` };
+    return { success: false, message: `Error al leer archivo JSON: ${err.message || err.toString()}` };
   }
 }
 
-export async function syncWithGoogleSheets(
+// Google Apps Script API Services - Respaldos Diarios y Mensuales en Google Drive
+export async function createDailyBackupInDrive(
   url: string,
-  state: { 
-    materials: MaterialSignal[]; 
-    personnel: Personnel[]; 
-    guardShifts: GuardShiftRecord[];
-    monthlyArchives?: MonthlyArchiveLog[];
-  }
-): Promise<{ success: boolean; message: string }> {
+  dateStr: string,
+  materials: MaterialSignal[],
+  userName: string = 'Operador VTV'
+): Promise<{ success: boolean; message: string; sheetName?: string }> {
   if (!url || !url.startsWith('http')) {
-    return { success: false, message: 'URL de Google Apps Script no configurada o inválida.' };
+    return { 
+      success: false, 
+      message: 'URL de Google Apps Script no configurada. Configure la URL en el módulo correspondiente para enviar a Google Drive.' 
+    };
   }
 
   try {
-    const formattedMaterials = state.materials.map((m) => {
+    const formattedMaterials = materials.map((m) => {
       let assignedStr = 'Sin asignar';
       if (m.assignedPersons && m.assignedPersons.length > 0) {
         assignedStr = m.assignedPersons.join(', ');
@@ -836,93 +875,302 @@ export async function syncWithGoogleSheets(
       }
 
       return {
-        'ID': m.id,
-        'ID Familia': m.familyId,
-        'Tipo Señal': m.signalType,
-        'Título / Descripción': m.title,
-        'División': m.division,
-        'Duración': formatDurationHHMMSS(m.duration),
-        'Fecha Creación': m.creationDate,
-        'Creado Por': m.createdBy,
-        'Rol Creador': m.creatorRole || m.createdByRole || '',
-        'Estado': m.status,
-        'Es Solicitud': m.isRequestTask ? 'SI' : 'NO',
-        'Asignado A': assignedStr,
-        'Rol Asignado': m.assignedToRole || '',
-        'Fecha Asignación': m.assignedAt || '',
-        'Ingestado': m.isIngested ? 'SI' : 'NO',
-        'Catalogado': m.isCataloged ? 'SI' : 'NO',
-        'Finalizado': m.isFinalized ? 'SI' : 'NO',
-        'Catalogado Por': m.catalogedBy || 'N/A',
-        'Fecha Catalogación': m.catalogedAt || 'N/A',
-        'Finalizado Por': m.finalizedBy || 'N/A',
-        'Fecha Finalizado': m.finalizedAt || 'N/A',
-        'Notas': m.notes || '',
+        id: m.id,
+        familyId: m.familyId || m.id,
+        title: m.title,
+        signalType: m.signalType,
+        division: m.division,
+        duration: formatDurationHHMMSS(m.duration),
+        creationDate: m.creationDate,
+        createdBy: m.createdBy,
+        createdByRole: m.creatorRole || m.createdByRole || '',
+        status: m.status,
+        isRequestTask: m.isRequestTask ? true : false,
+        assignedTo: assignedStr,
+        assignedToRole: m.assignedToRole || '',
+        assignedAt: m.assignedAt || '',
+        isIngested: m.isIngested !== undefined ? m.isIngested : true,
+        isCataloged: m.isCataloged !== undefined ? m.isCataloged : (m.status === 'Por Archivar' || m.status === 'Finalizado'),
+        catalogedBy: m.catalogedBy || 'N/A',
+        catalogedAt: m.catalogedAt || 'N/A',
+        isFinalized: m.isFinalized !== undefined ? m.isFinalized : (m.status === 'Finalizado'),
+        finalizedBy: m.finalizedBy || 'N/A',
+        finalizedAt: m.finalizedAt || 'N/A',
+        notes: m.notes || '',
       };
     });
-
-    const formattedPersonnel = state.personnel.map((p) => ({
-      'ID': p.id,
-      'Nombre': p.name,
-      'Rol': p.role,
-      'División': p.division,
-      'Días Guardia Trabajados': p.guardDaysWorked,
-      'Días Libres Generados': p.daysOffGenerated,
-      'Días Libres Disfrutados': p.daysOffTaken,
-      'Balance Pendiente': p.balanceDays,
-      'PIN': p.pin || '',
-    }));
-
-    const formattedShifts = (state.guardShifts || []).map((s) => ({
-      'ID': s.id,
-      'ID Personal': s.personnelId,
-      'Nombre Personal': s.personnelName,
-      'División': s.division,
-      'Fecha': normalizeDateString(s.date) || '',
-      'Fecha Fin': s.endDate ? normalizeDateString(s.endDate) : '',
-      'Tipo Turno': s.shiftType,
-      'Es Encargado': s.isLead ? 'SI' : 'NO',
-      'Asignado Por': s.assignedBy || '',
-      'Notas': s.notes || '',
-      'Fecha Registro': s.createdAt || (s as any).createdDate || '',
-    }));
-
-    const formattedArchives = (state.monthlyArchives || []).map((a) => ({
-      'ID Cierre': a.id,
-      'Período': a.monthPeriod,
-      'Fecha Exportación': a.exportDate,
-      'Exportado Por': a.exportedBy,
-      'Rol Exporter': a.exporterRole,
-      'Cantidad Materiales': a.materialsCount,
-      'Total Horas Formato': a.formattedDuration,
-      'Total Segundos': a.totalDurationSeconds,
-      'Detalle Desglose': JSON.stringify(a.divisionBreakdown || {}),
-      'Materiales Exportados': JSON.stringify(a.exportedItems || []),
-    }));
 
     const response = await fetch(url, {
       method: 'POST',
       mode: 'cors',
-      headers: {
-        'Content-Type': 'text/plain;charset=utf-8',
-      },
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({
-        action: 'syncAllData',
+        action: 'createDailyBackupSheet',
+        date: dateStr,
         materials: formattedMaterials,
-        personnel: formattedPersonnel,
-        guardShifts: formattedShifts,
-        monthlyArchives: formattedArchives,
+        user: userName,
       }),
     });
 
     const data = await response.json();
     if (data && data.success) {
-      return { success: true, message: data.message || 'Sincronización exitosa con Google Sheets.' };
+      return {
+        success: true,
+        message: data.message || `Hoja de respaldo diario creada exitosamente en Google Drive.`,
+        sheetName: data.sheetName,
+      };
     } else {
-      return { success: false, message: data.message || 'Error en respuesta de Google Apps Script.' };
+      return { success: false, message: data?.message || 'Error al crear la hoja en Google Drive.' };
     }
   } catch (err: any) {
-    console.error('Apps Script Sync Error:', err);
-    return { success: false, message: `Error de conexión: ${err.message || err.toString()}` };
+    console.error('Error creating daily backup sheet:', err);
+    return { success: false, message: `Error de conexión con Google Drive: ${err.message || err.toString()}` };
   }
+}
+
+export async function createMonthlyBackupInDrive(
+  url: string,
+  monthPeriod: string,
+  materials: MaterialSignal[],
+  summary: {
+    totalCount: number;
+    formattedDuration: string;
+    prensaCount: number;
+    programacionCount: number;
+    ingestaCount: number;
+    finalizedCount: number;
+  },
+  userName: string = 'Gerencia de Archivo'
+): Promise<{ success: boolean; message: string; sheetName?: string }> {
+  if (!url || !url.startsWith('http')) {
+    return { 
+      success: false, 
+      message: 'URL de Google Apps Script no configurada. Configure la URL en el módulo correspondiente para enviar a Google Drive.' 
+    };
+  }
+
+  try {
+    const formattedMaterials = materials.map((m) => {
+      let assignedStr = 'Sin asignar';
+      if (m.assignedPersons && m.assignedPersons.length > 0) {
+        assignedStr = m.assignedPersons.join(', ');
+      } else if (m.assignedTo) {
+        assignedStr = m.assignedTo;
+      }
+
+      return {
+        id: m.id,
+        familyId: m.familyId || m.id,
+        title: m.title,
+        signalType: m.signalType,
+        division: m.division,
+        duration: formatDurationHHMMSS(m.duration),
+        creationDate: m.creationDate,
+        createdBy: m.createdBy,
+        createdByRole: m.creatorRole || m.createdByRole || '',
+        status: m.status,
+        isRequestTask: m.isRequestTask ? true : false,
+        assignedTo: assignedStr,
+        assignedToRole: m.assignedToRole || '',
+        assignedAt: m.assignedAt || '',
+        isIngested: m.isIngested !== undefined ? m.isIngested : true,
+        isCataloged: m.isCataloged !== undefined ? m.isCataloged : (m.status === 'Por Archivar' || m.status === 'Finalizado'),
+        catalogedBy: m.catalogedBy || 'N/A',
+        catalogedAt: m.catalogedAt || 'N/A',
+        isFinalized: m.isFinalized !== undefined ? m.isFinalized : (m.status === 'Finalizado'),
+        finalizedBy: m.finalizedBy || 'N/A',
+        finalizedAt: m.finalizedAt || 'N/A',
+        notes: m.notes || '',
+      };
+    });
+
+    const response = await fetch(url, {
+      method: 'POST',
+      mode: 'cors',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'createMonthlyBackupSheet',
+        monthPeriod,
+        materials: formattedMaterials,
+        summary,
+        user: userName,
+      }),
+    });
+
+    const data = await response.json();
+    if (data && data.success) {
+      return {
+        success: true,
+        message: data.message || `Hoja de respaldo mensual creada exitosamente en Google Drive.`,
+        sheetName: data.sheetName,
+      };
+    } else {
+      return { success: false, message: data?.message || 'Error al crear la hoja mensual en Google Drive.' };
+    }
+  } catch (err: any) {
+    console.error('Error creating monthly backup sheet:', err);
+    return { success: false, message: `Error de conexión con Google Drive: ${err.message || err.toString()}` };
+  }
+}
+
+// Client-side CSV Exporters with Full Metadata
+export function exportDailyBackupToCSV(dateStr: string, materials: MaterialSignal[]): void {
+  const headers = [
+    'ID Material',
+    'ID Familia',
+    'Título / Descripción',
+    'Tipo de Señal',
+    'División',
+    'Duración',
+    'Fecha Creación',
+    'Creado Por',
+    'Rol Creador',
+    'Estado',
+    'Es Solicitud',
+    'Asignado A',
+    'Rol Asignado',
+    'Fecha Asignación',
+    'Ingestado',
+    'Catalogado',
+    'Catalogado Por',
+    'Fecha Catalogación',
+    'Finalizado',
+    'Finalizado Por',
+    'Fecha Finalizado',
+    'Notas / Observaciones'
+  ];
+
+  const escapeCSV = (val: any) => {
+    if (val === null || val === undefined) return '""';
+    const str = String(val).replace(/"/g, '""');
+    return `"${str}"`;
+  };
+
+  const rows = materials.map((m) => {
+    let assignedStr = 'Sin asignar';
+    if (m.assignedPersons && m.assignedPersons.length > 0) {
+      assignedStr = m.assignedPersons.join(', ');
+    } else if (m.assignedTo) {
+      assignedStr = m.assignedTo;
+    }
+
+    return [
+      escapeCSV(m.id),
+      escapeCSV(m.familyId || m.id),
+      escapeCSV(m.title),
+      escapeCSV(m.signalType),
+      escapeCSV(m.division),
+      escapeCSV(formatDurationHHMMSS(m.duration)),
+      escapeCSV(m.creationDate),
+      escapeCSV(m.createdBy),
+      escapeCSV(m.creatorRole || m.createdByRole || ''),
+      escapeCSV(m.status),
+      escapeCSV(m.isRequestTask ? 'SI' : 'NO'),
+      escapeCSV(assignedStr),
+      escapeCSV(m.assignedToRole || ''),
+      escapeCSV(m.assignedAt || ''),
+      escapeCSV(m.isIngested ? 'SI' : 'NO'),
+      escapeCSV(m.isCataloged ? 'SI' : 'NO'),
+      escapeCSV(m.catalogedBy || 'N/A'),
+      escapeCSV(m.catalogedAt || 'N/A'),
+      escapeCSV(m.isFinalized ? 'SI' : 'NO'),
+      escapeCSV(m.finalizedBy || 'N/A'),
+      escapeCSV(m.finalizedAt || 'N/A'),
+      escapeCSV(m.notes || ''),
+    ].join(';');
+  });
+
+  const csvContent = '\uFEFF' + [headers.join(';'), ...rows].join('\r\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  const cleanDate = dateStr.replace(/[\/-]/g, '_');
+  link.setAttribute('href', url);
+  link.setAttribute('download', `VTV_Respaldo_Diario_${cleanDate}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+export function exportMonthlyBackupToCSV(
+  monthPeriod: string,
+  materials: MaterialSignal[],
+  summary: { totalCount: number; formattedDuration: string }
+): void {
+  const headers = [
+    'ID Material',
+    'ID Familia',
+    'Título / Descripción',
+    'Tipo de Señal',
+    'División',
+    'Duración',
+    'Fecha Creación',
+    'Creado Por',
+    'Rol Creador',
+    'Estado',
+    'Es Solicitud',
+    'Asignado A',
+    'Rol Asignado',
+    'Fecha Asignación',
+    'Ingestado',
+    'Catalogado',
+    'Catalogado Por',
+    'Fecha Catalogación',
+    'Finalizado',
+    'Finalizado Por',
+    'Fecha Finalizado',
+    'Notas / Observaciones'
+  ];
+
+  const escapeCSV = (val: any) => {
+    if (val === null || val === undefined) return '""';
+    const str = String(val).replace(/"/g, '""');
+    return `"${str}"`;
+  };
+
+  const rows = materials.map((m) => {
+    let assignedStr = 'Sin asignar';
+    if (m.assignedPersons && m.assignedPersons.length > 0) {
+      assignedStr = m.assignedPersons.join(', ');
+    } else if (m.assignedTo) {
+      assignedStr = m.assignedTo;
+    }
+
+    return [
+      escapeCSV(m.id),
+      escapeCSV(m.familyId || m.id),
+      escapeCSV(m.title),
+      escapeCSV(m.signalType),
+      escapeCSV(m.division),
+      escapeCSV(formatDurationHHMMSS(m.duration)),
+      escapeCSV(m.creationDate),
+      escapeCSV(m.createdBy),
+      escapeCSV(m.creatorRole || m.createdByRole || ''),
+      escapeCSV(m.status),
+      escapeCSV(m.isRequestTask ? 'SI' : 'NO'),
+      escapeCSV(assignedStr),
+      escapeCSV(m.assignedToRole || ''),
+      escapeCSV(m.assignedAt || ''),
+      escapeCSV(m.isIngested ? 'SI' : 'NO'),
+      escapeCSV(m.isCataloged ? 'SI' : 'NO'),
+      escapeCSV(m.catalogedBy || 'N/A'),
+      escapeCSV(m.catalogedAt || 'N/A'),
+      escapeCSV(m.isFinalized ? 'SI' : 'NO'),
+      escapeCSV(m.finalizedBy || 'N/A'),
+      escapeCSV(m.finalizedAt || 'N/A'),
+      escapeCSV(m.notes || ''),
+    ].join(';');
+  });
+
+  const summaryHeader = `Respaldo Mensual: ${monthPeriod};Total Materiales: ${summary.totalCount};Duración Total: ${summary.formattedDuration}\r\n`;
+  const csvContent = '\uFEFF' + summaryHeader + [headers.join(';'), ...rows].join('\r\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  const cleanMonth = monthPeriod.replace(/[\/\s-]/g, '_');
+  link.setAttribute('href', url);
+  link.setAttribute('download', `VTV_Respaldo_Mensual_${cleanMonth}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
 }
