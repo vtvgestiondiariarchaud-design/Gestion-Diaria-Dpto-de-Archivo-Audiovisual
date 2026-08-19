@@ -146,139 +146,146 @@ function doGet(e) {
       return responseJSON({ success: true, message: "Servicio Google Apps Script VTV Archivo activo." });
     }
 
-    if (action === "readAllData" || action === "read") {
-      const ss = SpreadsheetApp.getActiveSpreadsheet();
-      
-      // 1. Leer MATERIALES
-      const sMat = ss.getSheetByName(SHEET_MATERIALES);
-      const materials = [];
-      if (sMat && sMat.getLastRow() > 1) {
-        const values = sMat.getRange(2, 1, sMat.getLastRow() - 1, MATERIAL_HEADERS.length).getValues();
-        for (let i = 0; i < values.length; i++) {
-          const row = values[i];
-          if (!row[0] && !row[2]) continue;
-          
-          let assignedStr = String(row[11] || "");
-          let assignedPersons = [];
-          if (assignedStr && assignedStr !== "Sin asignar") {
-            assignedPersons = assignedStr.split(",").map(function(s) { return s.trim(); });
-          }
-
-          materials.push({
-            id: String(row[0] || ""),
-            familyId: String(row[1] || row[0] || ""),
-            title: String(row[2] || ""),
-            signalType: String(row[3] || "Limpio"),
-            division: String(row[4] || "Prensa"),
-            duration: formatDurationString(row[5]),
-            creationDate: formatDateString(row[6]),
-            createdBy: String(row[7] || ""),
-            creatorRole: String(row[8] || ""),
-            status: String(row[9] || "Registrado"),
-            isRequestTask: String(row[10]).toUpperCase() === "SI" || row[10] === true,
-            assignedTo: assignedStr && assignedStr !== "Sin asignar" ? assignedStr : undefined,
-            assignedPersons: assignedPersons.length > 0 ? assignedPersons : undefined,
-            assignedToRole: row[12] ? String(row[12]) : undefined,
-            assignedAt: row[13] ? formatDateString(row[13]) : undefined,
-            isIngested: String(row[14]).toUpperCase() === "SI" || row[14] === true,
-            isCataloged: String(row[15]).toUpperCase() === "SI" || row[15] === true,
-            catalogedBy: row[16] && row[16] !== "N/A" ? String(row[16]) : undefined,
-            catalogedAt: row[17] && row[17] !== "N/A" ? formatDateString(row[17]) : undefined,
-            isFinalized: String(row[18]).toUpperCase() === "SI" || row[18] === true,
-            finalizedBy: row[19] && row[19] !== "N/A" ? String(row[19]) : undefined,
-            finalizedAt: row[20] && row[20] !== "N/A" ? formatDateString(row[20]) : undefined,
-            notes: row[21] ? String(row[21]) : ""
-          });
-        }
-      }
-
-      // 2. Leer PERSONAL
-      const sPer = ss.getSheetByName(SHEET_PERSONAL);
-      const personnel = [];
-      if (sPer && sPer.getLastRow() > 1) {
-        const values = sPer.getRange(2, 1, sPer.getLastRow() - 1, PERSONNEL_HEADERS.length).getValues();
-        for (let i = 0; i < values.length; i++) {
-          const row = values[i];
-          if (!row[0] && !row[1]) continue;
-          personnel.push({
-            id: String(row[0] || "per-" + (i + 1)),
-            name: String(row[1] || "Personal"),
-            role: String(row[2] || "Documentalista"),
-            division: String(row[3] || "Prensa"),
-            guardDaysWorked: Number(row[4]) || 0,
-            daysOffGenerated: Number(row[5]) || 0,
-            daysOffTaken: Number(row[6]) || 0,
-            balanceDays: Number(row[7]) || 0,
-            pin: row[8] ? String(row[8]) : undefined
-          });
-        }
-      }
-
-      // 3. Leer GUARDIAS
-      const sShifts = ss.getSheetByName(SHEET_GUARDIAS);
-      const guardShifts = [];
-      if (sShifts && sShifts.getLastRow() > 1) {
-        const values = sShifts.getRange(2, 1, sShifts.getLastRow() - 1, SHIFTS_HEADERS.length).getValues();
-        for (let i = 0; i < values.length; i++) {
-          const row = values[i];
-          if (!row[0] && !row[1]) continue;
-          guardShifts.push({
-            id: String(row[0] || "sh-" + (i + 1)),
-            personnelId: String(row[1] || ""),
-            personnelName: String(row[2] || ""),
-            date: formatDateString(row[3]),
-            endDate: row[4] ? formatDateString(row[4]) : undefined,
-            shiftType: String(row[5] || "Guardia (Fin de semana/Feriado)"),
-            notes: row[6] ? String(row[6]) : undefined,
-            createdAt: row[7] ? formatDateString(row[7]) : undefined
-          });
-        }
-      }
-
-      // 4. Leer CIERRES MENSUALES
-      const sArch = ss.getSheetByName(SHEET_CIERRES);
-      const monthlyArchives = [];
-      if (sArch && sArch.getLastRow() > 1) {
-        const values = sArch.getRange(2, 1, sArch.getLastRow() - 1, ARCHIVE_HEADERS.length).getValues();
-        for (let i = 0; i < values.length; i++) {
-          const row = values[i];
-          if (!row[0] && !row[1]) continue;
-          monthlyArchives.push({
-            id: String(row[0]),
-            monthPeriod: String(row[1]),
-            exportDate: formatDateString(row[2]),
-            exportedBy: String(row[3]),
-            exporterRole: String(row[4]),
-            materialsCount: Number(row[5]) || 0,
-            formattedDuration: String(row[6] || "00:00:00"),
-            totalDurationSeconds: Number(row[7]) || 0,
-            exportedItems: []
-          });
-        }
-      }
-
-      return responseJSON({
-        success: true,
-        data: {
-          materials: materials,
-          personnel: personnel,
-          guardShifts: guardShifts,
-          monthlyArchives: monthlyArchives
-        },
-        counts: {
-          materials: materials.length,
-          personnel: personnel.length,
-          guardShifts: guardShifts.length,
-          monthlyArchives: monthlyArchives.length
-        },
-        message: "Datos leídos correctamente desde Google Sheets."
-      });
+    if (action === "readAllData" || action === "read" || action === "getAllData") {
+      return handleReadAllData();
     }
 
     return responseJSON({ success: false, message: "Acción GET no válida: " + action });
   } catch (err) {
     return responseJSON({ success: false, error: err.toString() });
   }
+}
+
+/**
+ * Función centralizada para leer toda la base de datos de Sheets
+ */
+function handleReadAllData() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // 1. Leer MATERIALES
+  const sMat = ss.getSheetByName(SHEET_MATERIALES);
+  const materials = [];
+  if (sMat && sMat.getLastRow() > 1) {
+    const values = sMat.getRange(2, 1, sMat.getLastRow() - 1, MATERIAL_HEADERS.length).getValues();
+    for (let i = 0; i < values.length; i++) {
+      const row = values[i];
+      if (!row[0] && !row[2]) continue;
+      
+      let assignedStr = String(row[11] || "");
+      let assignedPersons = [];
+      if (assignedStr && assignedStr !== "Sin asignar") {
+        assignedPersons = assignedStr.split(",").map(function(s) { return s.trim(); });
+      }
+
+      materials.push({
+        id: String(row[0] || ""),
+        familyId: String(row[1] || row[0] || ""),
+        title: String(row[2] || ""),
+        signalType: String(row[3] || "Limpio"),
+        division: String(row[4] || "Prensa"),
+        duration: formatDurationString(row[5]),
+        creationDate: formatDateString(row[6]),
+        createdBy: String(row[7] || ""),
+        creatorRole: String(row[8] || ""),
+        status: String(row[9] || "Registrado"),
+        isRequestTask: String(row[10]).toUpperCase() === "SI" || row[10] === true,
+        assignedTo: assignedStr && assignedStr !== "Sin asignar" ? assignedStr : undefined,
+        assignedPersons: assignedPersons.length > 0 ? assignedPersons : undefined,
+        assignedToRole: row[12] ? String(row[12]) : undefined,
+        assignedAt: row[13] ? formatDateString(row[13]) : undefined,
+        isIngested: String(row[14]).toUpperCase() === "SI" || row[14] === true,
+        isCataloged: String(row[15]).toUpperCase() === "SI" || row[15] === true,
+        catalogedBy: row[16] && row[16] !== "N/A" ? String(row[16]) : undefined,
+        catalogedAt: row[17] && row[17] !== "N/A" ? formatDateString(row[17]) : undefined,
+        isFinalized: String(row[18]).toUpperCase() === "SI" || row[18] === true,
+        finalizedBy: row[19] && row[19] !== "N/A" ? String(row[19]) : undefined,
+        finalizedAt: row[20] && row[20] !== "N/A" ? formatDateString(row[20]) : undefined,
+        notes: row[21] ? String(row[21]) : ""
+      });
+    }
+  }
+
+  // 2. Leer PERSONAL
+  const sPer = ss.getSheetByName(SHEET_PERSONAL);
+  const personnel = [];
+  if (sPer && sPer.getLastRow() > 1) {
+    const values = sPer.getRange(2, 1, sPer.getLastRow() - 1, PERSONNEL_HEADERS.length).getValues();
+    for (let i = 0; i < values.length; i++) {
+      const row = values[i];
+      if (!row[0] && !row[1]) continue;
+      personnel.push({
+        id: String(row[0] || "per-" + (i + 1)),
+        name: String(row[1] || "Personal"),
+        role: String(row[2] || "Documentalista"),
+        division: String(row[3] || "Prensa"),
+        guardDaysWorked: Number(row[4]) || 0,
+        daysOffGenerated: Number(row[5]) || 0,
+        daysOffTaken: Number(row[6]) || 0,
+        balanceDays: Number(row[7]) || 0,
+        pin: row[8] ? String(row[8]) : undefined
+      });
+    }
+  }
+
+  // 3. Leer GUARDIAS
+  const sShifts = ss.getSheetByName(SHEET_GUARDIAS);
+  const guardShifts = [];
+  if (sShifts && sShifts.getLastRow() > 1) {
+    const values = sShifts.getRange(2, 1, sShifts.getLastRow() - 1, SHIFTS_HEADERS.length).getValues();
+    for (let i = 0; i < values.length; i++) {
+      const row = values[i];
+      if (!row[0] && !row[1]) continue;
+      guardShifts.push({
+        id: String(row[0] || "sh-" + (i + 1)),
+        personnelId: String(row[1] || ""),
+        personnelName: String(row[2] || ""),
+        date: formatDateString(row[3]),
+        endDate: row[4] ? formatDateString(row[4]) : undefined,
+        shiftType: String(row[5] || "Guardia (Fin de semana/Feriado)"),
+        notes: row[6] ? String(row[6]) : undefined,
+        createdAt: row[7] ? formatDateString(row[7]) : undefined
+      });
+    }
+  }
+
+  // 4. Leer CIERRES MENSUALES
+  const sArch = ss.getSheetByName(SHEET_CIERRES);
+  const monthlyArchives = [];
+  if (sArch && sArch.getLastRow() > 1) {
+    const values = sArch.getRange(2, 1, sArch.getLastRow() - 1, ARCHIVE_HEADERS.length).getValues();
+    for (let i = 0; i < values.length; i++) {
+      const row = values[i];
+      if (!row[0] && !row[1]) continue;
+      monthlyArchives.push({
+        id: String(row[0]),
+        monthPeriod: String(row[1]),
+        exportDate: formatDateString(row[2]),
+        exportedBy: String(row[3]),
+        exporterRole: String(row[4]),
+        materialsCount: Number(row[5]) || 0,
+        formattedDuration: String(row[6] || "00:00:00"),
+        totalDurationSeconds: Number(row[7]) || 0,
+        exportedItems: []
+      });
+    }
+  }
+
+  return responseJSON({
+    success: true,
+    data: {
+      materials: materials,
+      personnel: personnel,
+      guardShifts: guardShifts,
+      monthlyArchives: monthlyArchives
+    },
+    counts: {
+      materials: materials.length,
+      personnel: personnel.length,
+      guardShifts: guardShifts.length,
+      monthlyArchives: monthlyArchives.length
+    },
+    message: "Datos leídos correctamente desde Google Sheets."
+  });
 }
 
 /**
@@ -365,6 +372,11 @@ function doPost(e) {
     const body = JSON.parse(e.postData.contents);
     const action = body.action;
     const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+    // 0. LECTURA CENTRALIZADA VÍA POST (FALLBACK DE COMPATIBILIDAD)
+    if (action === "readAllData" || action === "read" || action === "getAllData") {
+      return handleReadAllData();
+    }
 
     // ==========================================
     // 1. OPERACIONES ATÓMICAS EN MATERIALES

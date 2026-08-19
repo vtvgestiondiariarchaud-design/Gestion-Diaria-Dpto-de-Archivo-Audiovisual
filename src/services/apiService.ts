@@ -496,7 +496,8 @@ export function loadInitialState(): AppState {
     }
 
     const localUrl = localStorage.getItem(LOCAL_STORAGE_KEY_APPS_SCRIPT_URL);
-    if (localUrl && localUrl.trim()) {
+    const oldUrlSig = 'AKfycby2Vn7FENScbW6HQpNcyQ8SIeOl';
+    if (localUrl && localUrl.trim() && !localUrl.includes(oldUrlSig)) {
       appsScriptUrl = localUrl.trim();
     } else {
       appsScriptUrl = DEFAULT_APPS_SCRIPT_URL;
@@ -924,15 +925,19 @@ export async function fetchRemoteSheetData(url: string): Promise<{
   };
   message: string;
 }> {
-  if (!url || !url.startsWith('http')) {
+  const cleanUrl = (url || '').trim();
+  if (!cleanUrl || !cleanUrl.startsWith('http')) {
     return {
       success: false,
-      message: 'URL de Google Apps Script no configurada.',
+      message: 'URL de Google Apps Script no configurada o no válida.',
     };
   }
 
+  let json: any = null;
+
+  // Intento 1: Vía GET
   try {
-    const fetchUrl = url + (url.includes('?') ? '&' : '?') + 'action=readAllData&_t=' + Date.now();
+    const fetchUrl = cleanUrl + (cleanUrl.includes('?') ? '&' : '?') + 'action=readAllData&_t=' + Date.now();
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 20000);
 
@@ -944,7 +949,41 @@ export async function fetchRemoteSheetData(url: string): Promise<{
     });
     clearTimeout(timeoutId);
 
-    const json = await response.json();
+    json = await response.json();
+  } catch (errGet: any) {
+    console.warn('Fallo petición GET hacia Apps Script, intentando fallback POST...', errGet);
+
+    // Intento 2: Fallback vía POST
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+      const response = await fetch(cleanUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'readAllData' }),
+        redirect: 'follow',
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      json = await response.json();
+    } catch (errPost: any) {
+      console.error('Error final conectando con Google Sheets:', errPost);
+      const isFailedToFetch = String(errPost?.message || errPost).includes('Failed to fetch') || String(errGet?.message || errGet).includes('Failed to fetch');
+      
+      const errorMessage = isFailedToFetch
+        ? 'Error de conexión con Google Sheets (Failed to fetch). Verifique en Google Apps Script que en "Desplegar" -> "Quién tiene acceso" esté en "Cualquier persona" (Anyone) y haya guardado una "Nueva versión".'
+        : `Error al conectar con Google Sheets: ${errPost.name === 'AbortError' ? 'Tiempo de espera agotado.' : (errPost.message || errPost.toString())}`;
+
+      return {
+        success: false,
+        message: errorMessage,
+      };
+    }
+  }
+
+  try {
     if (!json || !json.success || !json.data) {
       return {
         success: false,
@@ -1032,10 +1071,10 @@ export async function fetchRemoteSheetData(url: string): Promise<{
       message: `Sincronizados ${materials.length} materiales, ${personnel.length} personal y ${guardShifts.length} turnos desde Google Sheets.`,
     };
   } catch (err: any) {
-    console.error('Error fetching remote data from Google Sheets:', err);
+    console.error('Error procesando respuesta de Google Sheets:', err);
     return {
       success: false,
-      message: `Error al conectar con Google Sheets: ${err.name === 'AbortError' ? 'Tiempo de espera agotado.' : (err.message || err.toString())}`,
+      message: `Error al procesar datos de Google Sheets: ${err.message || err.toString()}`,
     };
   }
 }
