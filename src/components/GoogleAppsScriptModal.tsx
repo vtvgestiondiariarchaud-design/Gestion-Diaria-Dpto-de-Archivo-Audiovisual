@@ -18,6 +18,8 @@ interface GoogleAppsScriptModalProps {
   onSaveUrl: (url: string) => void;
   onOpenBackupModal?: () => void;
   lastSyncTime?: string;
+  isSyncing?: boolean;
+  onTriggerSync?: () => void;
 }
 
 export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
@@ -25,6 +27,8 @@ export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
   onSaveUrl,
   onOpenBackupModal,
   lastSyncTime,
+  isSyncing,
+  onTriggerSync,
 }) => {
   const [urlInput, setUrlInput] = useState(appsScriptUrl);
   const [copied, setCopied] = useState(false);
@@ -53,10 +57,10 @@ export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
           </div>
           <div>
             <h2 className="text-lg font-bold text-white">
-              Conexión con Google Drive / Sheets para Respaldos Diarios y Mensuales
+              Base de Datos Central en Google Sheets & Respaldos en Google Drive
             </h2>
             <p className="text-xs text-slate-400">
-              Cree hojas independientes por fecha y período con toda la metadata en su Google Drive
+              Conecte todos los dispositivos para compartir en tiempo real la misma información de materiales, guardias y personal
             </p>
           </div>
         </div>
@@ -90,25 +94,42 @@ export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800/80">
-            <div className="text-xs text-slate-400">
-              Estado actual:{' '}
+            <div className="text-xs text-slate-400 flex items-center gap-2">
+              <span>Estado:</span>
               {appsScriptUrl ? (
-                <span className="text-emerald-400 font-bold">Conectado a Google Drive / Sheets</span>
+                <span className="flex items-center gap-1.5 text-emerald-400 font-bold">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                  Conectado a Google Sheets {lastSyncTime && `(Sincronizado: ${lastSyncTime})`}
+                </span>
               ) : (
                 <span className="text-amber-400 font-bold">Modo Local (Sin URL configurada)</span>
               )}
             </div>
 
-            {onOpenBackupModal && (
-              <button
-                type="button"
-                onClick={onOpenBackupModal}
-                className="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-bold text-xs rounded-xl shadow-md transition-all flex items-center gap-2"
-              >
-                <Layers className="w-3.5 h-3.5 text-emerald-300" />
-                <span>Abrir Centro de Respaldos (Diario y Mensual)</span>
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              {onTriggerSync && appsScriptUrl && (
+                <button
+                  type="button"
+                  onClick={onTriggerSync}
+                  disabled={isSyncing}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-md transition-all flex items-center gap-2"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                  <span>{isSyncing ? 'Sincronizando...' : 'Sincronizar con Google Sheets Ahora'}</span>
+                </button>
+              )}
+
+              {onOpenBackupModal && (
+                <button
+                  type="button"
+                  onClick={onOpenBackupModal}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-emerald-300 font-bold text-xs rounded-xl border border-emerald-800/60 shadow-md transition-all flex items-center gap-2"
+                >
+                  <Layers className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Centro de Respaldos</span>
+                </button>
+              )}
+            </div>
           </div>
         </form>
       </div>
@@ -135,26 +156,27 @@ export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
         <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 space-y-2">
           <h4 className="font-bold text-white flex items-center gap-1.5 text-sm">
             <HelpCircle className="w-4 h-4 text-blue-400" />
-            Pasos para la instalación en su Google Drive / Google Sheets:
+            Pasos para conectar y ver la misma información en todos los dispositivos:
           </h4>
           <ol className="list-decimal list-inside space-y-1.5 text-slate-300 leading-relaxed pl-1">
-            <li>Abra o cree una hoja de cálculo en <strong>Google Sheets</strong>.</li>
-            <li>En el menú superior, seleccione <strong>Extensiones → Apps Script</strong>.</li>
-            <li>Copie el código de abajo y reemplácelo completamente en el archivo <code className="text-amber-300 font-mono">Código.gs</code>.</li>
-            <li>Guarde los cambios y haga clic en el botón azul <strong>Desplegar → Nuevo despliegue</strong>.</li>
+            <li>Abra su hoja de cálculo en <strong>Google Sheets</strong> (o cree una nueva en Google Drive).</li>
+            <li>En el menú superior de Google Sheets, seleccione <strong>Extensiones → Apps Script</strong>.</li>
+            <li>Pegue el código de abajo reemplazando todo lo que haya en <code className="text-amber-300 font-mono">Código.gs</code>.</li>
+            <li>Haga clic en el ícono de disco <strong>Guardar</strong> (o presione Ctrl+S).</li>
+            <li>Haga clic en el botón azul <strong>Desplegar → Nuevo despliegue</strong> (si ya existía, seleccione <em>Administrar despliegues → Editar → Nueva versión</em>).</li>
             <li>Seleccione tipo: <strong>Aplicación Web</strong>.</li>
-            <li>Configure: <em>Ejecutar como:</em> <strong>Yo</strong> | <em>Quién tiene acceso:</em> <strong>Cualquier persona (Anyone)</strong> (fundamental para permitir la conexión).</li>
-            <li>Haga clic en <strong>Desplegar</strong>, autorice los permisos y copie la Web App URL que termina en <code className="text-emerald-300 font-mono">/exec</code>.</li>
-            <li>Pegue la URL arriba y presione <strong>Guardar URL</strong>.</li>
+            <li>Configure: <em>Ejecutar como:</em> <strong>Yo</strong> | <em>Quién tiene acceso:</em> <strong>Cualquier persona (Anyone)</strong> (imprescindible para que todos los dispositivos puedan sincronizar).</li>
+            <li>Haga clic en <strong>Desplegar</strong>, autorice los permisos de Google y copie la Web App URL que termina en <code className="text-emerald-300 font-mono">/exec</code>.</li>
+            <li>Pegue la misma URL en la aplicación en todos los dispositivos y presione <strong>Guardar URL</strong>.</li>
           </ol>
 
           <div className="mt-3 p-3 rounded-lg bg-emerald-950/40 border border-emerald-800/60 text-emerald-200">
             <p className="font-bold flex items-center gap-1.5">
               <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-              Protección de Datos & Respaldos Locales Integrados
+              Sincronización Automática Bidireccional
             </p>
             <p className="text-[11px] text-emerald-300/80 mt-1">
-              Todos los materiales creados se guardan de forma instantánea en la memoria local segura y cuentan con copias de seguridad automáticas accesibles desde el botón <strong>Respaldos</strong> en la barra superior.
+              Al guardar la URL, cada dispositivo leerá y escribirá en la misma hoja de cálculo maestra (hojas <em>MATERIALES</em>, <em>PERSONAL</em>, <em>GUARDIAS</em> y <em>CIERRES_MENSUALES</em>), garantizando que todos los operadores y coordinadores visualicen los mismos datos en tiempo real.
             </p>
           </div>
         </div>

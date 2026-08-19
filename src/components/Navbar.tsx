@@ -25,6 +25,10 @@ interface NavbarProps {
   onOpenBackupModal?: () => void;
   userHasPin?: boolean;
   appsScriptUrl?: string;
+  isSyncing?: boolean;
+  lastSyncTime?: string;
+  onTriggerSync?: () => void;
+  syncError?: string;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -36,6 +40,10 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenBackupModal,
   userHasPin,
   appsScriptUrl,
+  isSyncing,
+  lastSyncTime,
+  onTriggerSync,
+  syncError,
 }) => {
   const getRoleBadgeColor = (role: RoleType) => {
     switch (role) {
@@ -78,6 +86,38 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* User Profile Pill & Backup Centre */}
           <div className="flex items-center flex-wrap gap-2 sm:gap-3">
+            {/* Google Sheets Multi-Device Sync Button */}
+            {onTriggerSync && (
+              <button
+                onClick={onTriggerSync}
+                disabled={isSyncing}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all shadow-md group ${
+                  isSyncing
+                    ? 'bg-blue-950/80 border-blue-500/60 text-blue-300 animate-pulse'
+                    : syncError
+                    ? 'bg-amber-950/80 border-amber-600/70 text-amber-300 hover:bg-amber-900/90'
+                    : 'bg-emerald-950/80 hover:bg-emerald-900/90 text-emerald-300 border-emerald-600/60 hover:border-emerald-400'
+                }`}
+                title={
+                  isSyncing
+                    ? 'Sincronizando con Google Sheets...'
+                    : syncError
+                    ? `Error: ${syncError}. Haga clic para reintentar sincronizar.`
+                    : `Conectado a Google Sheets. Última sincronización: ${lastSyncTime || 'Reciente'}. Haga clic para sincronizar todos los dispositivos.`
+                }
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin text-blue-400' : 'text-emerald-400 group-hover:rotate-180 transition-transform duration-500'}`} />
+                <span className="hidden sm:inline">
+                  {isSyncing ? 'Sincronizando...' : syncError ? 'Reintentar Sync' : 'Sincronizar'}
+                </span>
+                {lastSyncTime && !isSyncing && !syncError && (
+                  <span className="hidden md:inline text-[10px] text-emerald-400/80 font-normal">
+                    ({lastSyncTime.split(' ').slice(-2).join(' ')})
+                  </span>
+                )}
+              </button>
+            )}
+
             {/* Backup & Recovery Button (Diario y Mensual) */}
             {onOpenBackupModal && (
               <button

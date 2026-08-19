@@ -24,7 +24,23 @@ import {
   getFormattedDateTime,
   normalizeDateString,
   getLocalDateISOString,
-  createBackupSnapshot
+  createBackupSnapshot,
+  smartSyncWithSheet,
+  fetchRemoteSheetData,
+  pushAllDataToRemoteSheet,
+  apiCreateMaterialsBatch,
+  apiUpdateMaterial,
+  apiBatchUpdateFamily,
+  apiDeleteMaterial,
+  apiPurgeFinalizedMaterials,
+  apiSavePersonnel,
+  apiUpdatePersonnel,
+  apiDeletePersonnel,
+  apiSaveBatchGuardShifts,
+  apiDeleteGuardShift,
+  apiClearAllGuardShifts,
+  apiSaveMonthlyArchive,
+  apiClearMonthlyArchives,
 } from './services/apiService';
 import { Navbar } from './components/Navbar';
 import { canUserFinalizeSignal } from './utils/permissions';
@@ -78,6 +94,154 @@ export default function App() {
     setTimeout(() => setNotification(null), 4000);
   };
 
+  // State reference for background async sync routines
+  const stateRef = React.useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  // Synchronize bidirectional state with Google Sheets (Master Cloud DB)
+  const handleTriggerSync = async (notify = true) => {
+    const currentUrl = stateRef.current.appsScriptUrl;
+    if (!currentUrl) {
+      if (notify) {
+        showToast('Configure primero la URL de Google Apps Script en Ajustes.', 'error');
+        setActiveTab('settings');
+      }
+      return;
+    }
+
+    if (stateRef.current.isSyncing) return;
+
+    setState((prev) => ({ ...prev, isSyncing: true, syncError: undefined }));
+
+    try {
+      const result = await fetchRemoteSheetData(currentUrl);
+      if (result.success && result.data) {
+        const remote = result.data;
+        if (remote.materials.length > 0 || remote.personnel.length > 0 || remote.guardShifts.length > 0) {
+          saveLocalMaterials(remote.materials);
+          saveLocalPersonnel(remote.personnel);
+          saveLocalGuardShifts(remote.guardShifts);
+          saveLocalMonthlyArchives(remote.monthlyArchives);
+
+          setState((prev) => ({
+            ...prev,
+            materials: remote.materials,
+            personnel: remote.personnel,
+            guardShifts: remote.guardShifts,
+            monthlyArchives: remote.monthlyArchives,
+            isSyncing: false,
+            lastSyncTime: getFormattedDateTime(new Date()),
+            syncError: undefined,
+          }));
+          if (notify) {
+            showToast(result.message, 'success');
+          }
+        } else {
+          // Si la hoja está vacía pero hay datos locales, hacemos una sincronización inicial
+          const syncRes = await smartSyncWithSheet(currentUrl, stateRef.current);
+          setState((prev) => ({
+            ...prev,
+            materials: syncRes.data?.materials || prev.materials,
+            personnel: syncRes.data?.personnel || prev.personnel,
+            guardShifts: syncRes.data?.guardShifts || prev.guardShifts,
+            monthlyArchives: syncRes.data?.monthlyArchives || prev.monthlyArchives,
+            isSyncing: false,
+            lastSyncTime: getFormattedDateTime(new Date()),
+            syncError: undefined,
+          }));
+          if (notify) {
+            showToast(syncRes.message, 'success');
+          }
+        }
+      } else {
+        setState((prev) => ({
+          ...prev,
+          isSyncing: false,
+          syncError: result.message,
+        }));
+        if (notify) {
+          showToast(result.message, 'error');
+        }
+      }
+    } catch (err: any) {
+      const errorMsg = err?.message || 'Error de conexión';
+      setState((prev) => ({
+        ...prev,
+        isSyncing: false,
+        syncError: errorMsg,
+      }));
+      if (notify) {
+        showToast(`Error al conectar con Google Sheets: ${errorMsg}`, 'error');
+      }
+    }
+  };
+
+  // Helper to report successful atomic sync
+  const markSyncSuccess = () => {
+    setState((prev) => ({
+      ...prev,
+      lastSyncTime: getFormattedDateTime(new Date()),
+      syncError: undefined,
+    }));
+  };
+
+  // Automatic sync on mount (reads fresh data from Sheets directly)
+  useEffect(() => {
+    if (state.appsScriptUrl) {
+      handleTriggerSync(false);
+    }
+  }, []);
+
+  // Periodic background sync every 25 seconds + on window focus
+  useEffect(() => {
+    if (!state.appsScriptUrl) return;
+
+    const intervalId = setInterval(() => {
+      handleTriggerSync(false);
+    }, 25000);
+
+    const onWindowFocus = () => {
+      handleTriggerSync(false);
+    };
+
+    window.addEventListener('focus', onWindowFocus);
+
+    return () => {
+      clearInterval(intervalId);
+      window.removeEventListener('focus', onWindowFocus);
+    };
+  }, [state.appsScriptUrl]);
+
+  // Background Cloud Push Helper when restoring backup or doing full export
+  const triggerCloudPush = (override?: {
+    materials?: MaterialSignal[];
+    personnel?: Personnel[];
+    guardShifts?: GuardShiftRecord[];
+    monthlyArchives?: MonthlyArchiveLog[];
+  }) => {
+    const currentUrl = stateRef.current.appsScriptUrl;
+    if (!currentUrl) return;
+
+    const payload = {
+      materials: override?.materials || stateRef.current.materials,
+      personnel: override?.personnel || stateRef.current.personnel,
+      guardShifts: override?.guardShifts || stateRef.current.guardShifts,
+      monthlyArchives: override?.monthlyArchives || stateRef.current.monthlyArchives,
+    };
+
+    pushAllDataToRemoteSheet(currentUrl, payload)
+      .then((res) => {
+        if (res.success) {
+          markSyncSuccess();
+        }
+      })
+      .catch((err) => {
+        console.warn('Error al propagar cambios a Google Sheets:', err);
+      });
+  };
+
   // Handle Restore State from Backup
   const handleRestoreState = (restored: {
     materials: MaterialSignal[];
@@ -102,6 +266,13 @@ export default function App() {
       guardShifts: shifts,
       monthlyArchives: archives,
     }));
+
+    triggerCloudPush({
+      materials: mats,
+      personnel: pers,
+      guardShifts: shifts,
+      monthlyArchives: archives,
+    });
   };
 
   // Dynamically link user profiles to personnel list
@@ -169,15 +340,24 @@ export default function App() {
       return updated;
     });
 
-    // Save PIN inside Personnel record
+    // Save PIN inside Personnel record and sync atomically to Google Sheets
     setState((prev) => {
+      let targetPerson: Personnel | undefined;
       const updatedPersonnel = prev.personnel.map((p) => {
         if (p.id === userId || p.name === prev.currentUser.name) {
-          return { ...p, pin: pin || undefined };
+          targetPerson = { ...p, pin: pin || undefined };
+          return targetPerson;
         }
         return p;
       });
       saveLocalPersonnel(updatedPersonnel);
+
+      if (prev.appsScriptUrl && targetPerson) {
+        apiUpdatePersonnel(prev.appsScriptUrl, targetPerson.id, { pin: pin || '' }, targetPerson)
+          .then((res) => { if (res.success) markSyncSuccess(); })
+          .catch((err) => console.warn('Error syncing PIN to Sheets:', err));
+      }
+
       return { ...prev, personnel: updatedPersonnel };
     });
 
@@ -200,6 +380,13 @@ export default function App() {
         m.id === updatedSignal.id ? updatedSignal : m
       );
       saveLocalMaterials(updatedMaterials);
+
+      if (prev.appsScriptUrl) {
+        apiUpdateMaterial(prev.appsScriptUrl, updatedSignal.id, undefined, updatedSignal)
+          .then((res) => { if (res.success) markSyncSuccess(); })
+          .catch((err) => console.warn('Error updating material in Sheets:', err));
+      }
+
       return { ...prev, materials: updatedMaterials };
     });
     showToast(`Material ${updatedSignal.id} modificado exitosamente.`);
@@ -216,6 +403,7 @@ export default function App() {
     }
 
     setState((prev) => {
+      let updatedTarget: MaterialSignal | undefined;
       const updatedMaterials = prev.materials.map((mat) => {
         if (mat.id === signalId) {
           const isCataloged = newStatus === 'Por Archivar' || newStatus === 'Finalizado';
@@ -238,12 +426,20 @@ export default function App() {
             updated.finalizedAt = updated.finalizedAt || timestampStr;
           }
 
+          updatedTarget = updated;
           return updated;
         }
         return mat;
       });
 
       saveLocalMaterials(updatedMaterials);
+
+      if (prev.appsScriptUrl && updatedTarget) {
+        apiUpdateMaterial(prev.appsScriptUrl, signalId, undefined, updatedTarget)
+          .then((res) => { if (res.success) markSyncSuccess(); })
+          .catch((err) => console.warn('Error updating status in Sheets:', err));
+      }
+
       return { ...prev, materials: updatedMaterials };
     });
 
@@ -265,6 +461,7 @@ export default function App() {
     }
 
     setState((prev) => {
+      let updatedTarget: MaterialSignal | undefined;
       const updatedMaterials = prev.materials.map((mat) => {
         if (mat.id === signalId) {
           const newVal = !mat[flag];
@@ -296,12 +493,20 @@ export default function App() {
           else if (updated.isCataloged) updated.status = 'Por Archivar';
           else updated.status = 'Registrado';
 
+          updatedTarget = updated;
           return updated;
         }
         return mat;
       });
 
       saveLocalMaterials(updatedMaterials);
+
+      if (prev.appsScriptUrl && updatedTarget) {
+        apiUpdateMaterial(prev.appsScriptUrl, signalId, undefined, updatedTarget)
+          .then((res) => { if (res.success) markSyncSuccess(); })
+          .catch((err) => console.warn('Error updating boolean in Sheets:', err));
+      }
+
       return { ...prev, materials: updatedMaterials };
     });
 
@@ -313,29 +518,41 @@ export default function App() {
     const timestampStr = getFormattedDateTime();
 
     setState((prev) => {
+      let updatedTarget: MaterialSignal | undefined;
       const updatedMaterials = prev.materials.map((mat) => {
         if (mat.id === signalId) {
           if (assignToUser) {
             const targetUser = prev.personnel.find((u) => u.name === assignToUser) || prev.currentUser;
-            return {
+            const updated = {
               ...mat,
               assignedTo: assignToUser,
               assignedToRole: targetUser.role,
               assignedAt: timestampStr,
             };
+            updatedTarget = updated;
+            return updated;
           } else {
-            return {
+            const updated = {
               ...mat,
               assignedTo: undefined,
               assignedToRole: undefined,
               assignedAt: undefined,
             };
+            updatedTarget = updated;
+            return updated;
           }
         }
         return mat;
       });
 
       saveLocalMaterials(updatedMaterials);
+
+      if (prev.appsScriptUrl && updatedTarget) {
+        apiUpdateMaterial(prev.appsScriptUrl, signalId, undefined, updatedTarget)
+          .then((res) => { if (res.success) markSyncSuccess(); })
+          .catch((err) => console.warn('Error assigning signal in Sheets:', err));
+      }
+
       return { ...prev, materials: updatedMaterials };
     });
 
@@ -351,20 +568,30 @@ export default function App() {
     const timestampStr = getFormattedDateTime();
 
     setState((prev) => {
+      let updatedTarget: MaterialSignal | undefined;
       const updatedMaterials = prev.materials.map((mat) => {
         if (mat.id === signalId) {
           const mainAssignee = assignedPersons.length > 0 ? assignedPersons[0] : undefined;
-          return {
+          const updated = {
             ...mat,
             assignedPersons,
             assignedTo: mainAssignee || mat.assignedTo,
             assignedAt: timestampStr,
           };
+          updatedTarget = updated;
+          return updated;
         }
         return mat;
       });
 
       saveLocalMaterials(updatedMaterials);
+
+      if (prev.appsScriptUrl && updatedTarget) {
+        apiUpdateMaterial(prev.appsScriptUrl, signalId, undefined, updatedTarget)
+          .then((res) => { if (res.success) markSyncSuccess(); })
+          .catch((err) => console.warn('Error assigning persons in Sheets:', err));
+      }
+
       return { ...prev, materials: updatedMaterials };
     });
 
@@ -384,6 +611,7 @@ export default function App() {
     }
 
     setState((prev) => {
+      const auditUpdates: Partial<MaterialSignal> = { [flag]: value };
       const updatedMaterials = prev.materials.map((mat) => {
         if (mat.familyId === familyId) {
           const updated = { ...mat, [flag]: value };
@@ -407,7 +635,25 @@ export default function App() {
         return mat;
       });
 
+      if (flag === 'isCataloged' && value) {
+        auditUpdates.catalogedBy = prev.currentUser.name;
+        auditUpdates.catalogedAt = timestampStr;
+      }
+      if (flag === 'isFinalized' && value) {
+        auditUpdates.finalizedBy = prev.currentUser.name;
+        auditUpdates.finalizedAt = timestampStr;
+        auditUpdates.isCataloged = true;
+        auditUpdates.status = 'Finalizado';
+      }
+
       saveLocalMaterials(updatedMaterials);
+
+      if (prev.appsScriptUrl) {
+        apiBatchUpdateFamily(prev.appsScriptUrl, familyId, auditUpdates)
+          .then((res) => { if (res.success) markSyncSuccess(); })
+          .catch((err) => console.warn('Error batch updating family in Sheets:', err));
+      }
+
       return { ...prev, materials: updatedMaterials };
     });
 
@@ -427,11 +673,26 @@ export default function App() {
     }
 
     setState((prev) => {
+      const isCataloged = newStatus === 'Por Archivar' || newStatus === 'Finalizado';
+      const isFinalized = newStatus === 'Finalizado';
+      const familyUpdates: Partial<MaterialSignal> = {
+        status: newStatus,
+        isIngested: true,
+        isCataloged,
+        isFinalized,
+      };
+
+      if (isCataloged) {
+        familyUpdates.catalogedBy = prev.currentUser.name;
+        familyUpdates.catalogedAt = timestampStr;
+      }
+      if (isFinalized) {
+        familyUpdates.finalizedBy = prev.currentUser.name;
+        familyUpdates.finalizedAt = timestampStr;
+      }
+
       const updatedMaterials = prev.materials.map((mat) => {
         if (mat.familyId === familyId) {
-          const isCataloged = newStatus === 'Por Archivar' || newStatus === 'Finalizado';
-          const isFinalized = newStatus === 'Finalizado';
-
           const updated = {
             ...mat,
             status: newStatus,
@@ -455,6 +716,13 @@ export default function App() {
       });
 
       saveLocalMaterials(updatedMaterials);
+
+      if (prev.appsScriptUrl) {
+        apiBatchUpdateFamily(prev.appsScriptUrl, familyId, familyUpdates)
+          .then((res) => { if (res.success) markSyncSuccess(); })
+          .catch((err) => console.warn('Error updating family status in Sheets:', err));
+      }
+
       return { ...prev, materials: updatedMaterials };
     });
 
@@ -466,6 +734,13 @@ export default function App() {
     setState((prev) => {
       const updatedMaterials = [...newSignals, ...prev.materials];
       saveLocalMaterials(updatedMaterials);
+
+      if (prev.appsScriptUrl) {
+        apiCreateMaterialsBatch(prev.appsScriptUrl, newSignals)
+          .then((res) => { if (res.success) markSyncSuccess(); })
+          .catch((err) => console.warn('Error creating materials in Sheets:', err));
+      }
+
       return { ...prev, materials: updatedMaterials };
     });
 
@@ -477,6 +752,13 @@ export default function App() {
     setState((prev) => {
       const updatedMaterials = prev.materials.filter((m) => m.id !== signalId);
       saveLocalMaterials(updatedMaterials);
+
+      if (prev.appsScriptUrl) {
+        apiDeleteMaterial(prev.appsScriptUrl, signalId)
+          .then((res) => { if (res.success) markSyncSuccess(); })
+          .catch((err) => console.warn('Error deleting material in Sheets:', err));
+      }
+
       return { ...prev, materials: updatedMaterials };
     });
 
@@ -493,6 +775,12 @@ export default function App() {
       saveLocalMonthlyArchives(updatedArchives);
       createBackupSnapshot(updatedMaterials, prev.personnel, prev.guardShifts, updatedArchives, 'Cierre y Depuración Mensual');
 
+      if (prev.appsScriptUrl) {
+        apiPurgeFinalizedMaterials(prev.appsScriptUrl, signalIdsToPurge, monthlyLog)
+          .then((res) => { if (res.success) markSyncSuccess(); })
+          .catch((err) => console.warn('Error purging finalized in Sheets:', err));
+      }
+
       return {
         ...prev,
         materials: updatedMaterials,
@@ -508,6 +796,13 @@ export default function App() {
       const updatedArchives = [monthlyLog, ...(prev.monthlyArchives || [])];
       saveLocalMonthlyArchives(updatedArchives);
       createBackupSnapshot(prev.materials, prev.personnel, prev.guardShifts, updatedArchives, 'Cierre de Mes');
+
+      if (prev.appsScriptUrl) {
+        apiSaveMonthlyArchive(prev.appsScriptUrl, monthlyLog)
+          .then((res) => { if (res.success) markSyncSuccess(); })
+          .catch((err) => console.warn('Error saving monthly log in Sheets:', err));
+      }
+
       return { ...prev, monthlyArchives: updatedArchives };
     });
     showToast('Resumen mensual registrado y respaldado exitosamente.', 'success');
@@ -518,6 +813,13 @@ export default function App() {
       setState((prev) => {
         saveLocalMonthlyArchives([]);
         createBackupSnapshot(prev.materials, prev.personnel, prev.guardShifts, [], 'Limpieza de Cierres');
+
+        if (prev.appsScriptUrl) {
+          apiClearMonthlyArchives(prev.appsScriptUrl)
+            .then((res) => { if (res.success) markSyncSuccess(); })
+            .catch((err) => console.warn('Error clearing monthly archives in Sheets:', err));
+        }
+
         return { ...prev, monthlyArchives: [] };
       });
       showToast('Historial de cierres mensuales limpiado.');
@@ -530,6 +832,13 @@ export default function App() {
       setState((prev) => {
         saveLocalGuardShifts([]);
         createBackupSnapshot(prev.materials, prev.personnel, [], prev.monthlyArchives || [], 'Limpieza de Guardias');
+
+        if (prev.appsScriptUrl) {
+          apiClearAllGuardShifts(prev.appsScriptUrl)
+            .then((res) => { if (res.success) markSyncSuccess(); })
+            .catch((err) => console.warn('Error clearing guard shifts in Sheets:', err));
+        }
+
         return { ...prev, guardShifts: [] };
       });
       showToast('Se han eliminado todas las guardias del calendario.');
@@ -614,6 +923,20 @@ export default function App() {
       saveLocalGuardShifts(updatedShifts);
       saveLocalPersonnel(updatedPersonnel);
 
+      if (prev.appsScriptUrl) {
+        apiSaveBatchGuardShifts(prev.appsScriptUrl, newShiftRecords, replaceTargetDate)
+          .then((res) => { if (res.success) markSyncSuccess(); })
+          .catch((err) => console.warn('Error saving shifts to Sheets:', err));
+
+        // Also update the affected personnel records in Sheets
+        updatedPersonnel.forEach((p) => {
+          if (workedMap.has(p.id) || generatedMap.has(p.id) || takenMap.has(p.id)) {
+            apiUpdatePersonnel(prev.appsScriptUrl, p.id, undefined, p)
+              .catch((err) => console.warn('Error updating personnel balance in Sheets:', err));
+          }
+        });
+      }
+
       return {
         ...prev,
         guardShifts: updatedShifts,
@@ -636,6 +959,7 @@ export default function App() {
 
       const updatedShifts = prev.guardShifts.filter((s) => s.id !== shiftId);
 
+      let affectedPerson: Personnel | undefined;
       const updatedPersonnel = prev.personnel.map((per) => {
         if (per.id === targetShift.personnelId) {
           let worked = per.guardDaysWorked;
@@ -660,19 +984,31 @@ export default function App() {
 
           const balance = generated - taken;
 
-          return {
+          affectedPerson = {
             ...per,
             guardDaysWorked: worked,
             daysOffGenerated: generated,
             daysOffTaken: taken,
             balanceDays: balance,
           };
+          return affectedPerson;
         }
         return per;
       });
 
       saveLocalGuardShifts(updatedShifts);
       saveLocalPersonnel(updatedPersonnel);
+
+      if (prev.appsScriptUrl) {
+        apiDeleteGuardShift(prev.appsScriptUrl, shiftId)
+          .then((res) => { if (res.success) markSyncSuccess(); })
+          .catch((err) => console.warn('Error deleting shift in Sheets:', err));
+
+        if (affectedPerson) {
+          apiUpdatePersonnel(prev.appsScriptUrl, affectedPerson.id, undefined, affectedPerson)
+            .catch((err) => console.warn('Error updating personnel balance in Sheets:', err));
+        }
+      }
 
       return {
         ...prev,
@@ -700,6 +1036,13 @@ export default function App() {
     setState((prev) => {
       const updatedPersonnel = [...prev.personnel, newPerson];
       saveLocalPersonnel(updatedPersonnel);
+
+      if (prev.appsScriptUrl) {
+        apiSavePersonnel(prev.appsScriptUrl, newPerson)
+          .then((res) => { if (res.success) markSyncSuccess(); })
+          .catch((err) => console.warn('Error saving personnel to Sheets:', err));
+      }
+
       return { ...prev, personnel: updatedPersonnel };
     });
 
@@ -711,6 +1054,13 @@ export default function App() {
     setState((prev) => {
       const updatedPersonnel = prev.personnel.filter((p) => p.id !== personnelId);
       saveLocalPersonnel(updatedPersonnel);
+
+      if (prev.appsScriptUrl) {
+        apiDeletePersonnel(prev.appsScriptUrl, personnelId)
+          .then((res) => { if (res.success) markSyncSuccess(); })
+          .catch((err) => console.warn('Error deleting personnel from Sheets:', err));
+      }
+
       return { ...prev, personnel: updatedPersonnel };
     });
 
@@ -720,6 +1070,7 @@ export default function App() {
   // Quick Adjust Days for Personnel
   const handleQuickAdjustDays = (personnelId: string, type: 'guard' | 'dayOff') => {
     setState((prev) => {
+      let updatedPerson: Personnel | undefined;
       const updatedPersonnel = prev.personnel.map((per) => {
         if (per.id === personnelId) {
           let worked = per.guardDaysWorked;
@@ -735,18 +1086,26 @@ export default function App() {
 
           const balance = generated - taken;
 
-          return {
+          updatedPerson = {
             ...per,
             guardDaysWorked: worked,
             daysOffGenerated: generated,
             daysOffTaken: taken,
             balanceDays: balance,
           };
+          return updatedPerson;
         }
         return per;
       });
 
       saveLocalPersonnel(updatedPersonnel);
+
+      if (prev.appsScriptUrl && updatedPerson) {
+        apiUpdatePersonnel(prev.appsScriptUrl, personnelId, undefined, updatedPerson)
+          .then((res) => { if (res.success) markSyncSuccess(); })
+          .catch((err) => console.warn('Error updating personnel in Sheets:', err));
+      }
+
       return { ...prev, personnel: updatedPersonnel };
     });
 
@@ -758,6 +1117,11 @@ export default function App() {
     setState((prev) => ({ ...prev, appsScriptUrl: url }));
     saveLocalAppsScriptUrl(url);
     showToast('URL de Google Apps Script actualizada.');
+    if (url && url.startsWith('http')) {
+      setTimeout(() => {
+        handleTriggerSync(true);
+      }, 300);
+    }
   };
 
   // Open Material Modal with presets
@@ -799,6 +1163,10 @@ export default function App() {
         onOpenBackupModal={() => setIsBackupModalOpen(true)}
         userHasPin={currentUserHasPin}
         appsScriptUrl={state.appsScriptUrl}
+        isSyncing={state.isSyncing}
+        lastSyncTime={state.lastSyncTime}
+        onTriggerSync={() => handleTriggerSync(true)}
+        syncError={state.syncError}
       />
 
       {/* Main Content Area */}
@@ -881,6 +1249,9 @@ export default function App() {
             onSaveUrl={handleSaveAppsScriptUrl}
             onOpenBackupModal={() => setIsBackupModalOpen(true)}
             lastSyncTime={state.lastSyncTime}
+            isSyncing={state.isSyncing}
+            onTriggerSync={() => handleTriggerSync(true)}
+            syncError={state.syncError}
           />
         )}
       </main>

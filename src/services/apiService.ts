@@ -851,6 +851,564 @@ export function parseImportedJSON(jsonString: string): {
   }
 }
 
+// Formatters for Google Sheets Remote Communication
+export function formatMaterialForSheet(m: MaterialSignal) {
+  let assignedStr = 'Sin asignar';
+  if (m.assignedPersons && m.assignedPersons.length > 0) {
+    assignedStr = m.assignedPersons.join(', ');
+  } else if (m.assignedTo) {
+    assignedStr = m.assignedTo;
+  }
+
+  return {
+    id: m.id,
+    familyId: m.familyId || m.id,
+    title: m.title,
+    signalType: m.signalType,
+    division: m.division,
+    duration: formatDurationHHMMSS(m.duration),
+    creationDate: m.creationDate,
+    createdBy: m.createdBy,
+    createdByRole: m.creatorRole || m.createdByRole || '',
+    status: m.status,
+    isRequestTask: m.isRequestTask ? true : false,
+    assignedTo: assignedStr,
+    assignedToRole: m.assignedToRole || '',
+    assignedAt: m.assignedAt || '',
+    isIngested: m.isIngested !== undefined ? m.isIngested : true,
+    isCataloged: m.isCataloged !== undefined ? m.isCataloged : (m.status === 'Por Archivar' || m.status === 'Finalizado'),
+    catalogedBy: m.catalogedBy || 'N/A',
+    catalogedAt: m.catalogedAt || 'N/A',
+    isFinalized: m.isFinalized !== undefined ? m.isFinalized : (m.status === 'Finalizado'),
+    finalizedBy: m.finalizedBy || 'N/A',
+    finalizedAt: m.finalizedAt || 'N/A',
+    notes: m.notes || '',
+  };
+}
+
+export function formatPersonnelForSheet(p: Personnel) {
+  return {
+    id: p.id,
+    name: p.name,
+    role: p.role,
+    division: p.division,
+    guardDaysWorked: Number(p.guardDaysWorked) || 0,
+    daysOffGenerated: Number(p.daysOffGenerated) || 0,
+    daysOffTaken: Number(p.daysOffTaken) || 0,
+    balanceDays: Number(p.balanceDays) || 0,
+    pin: p.pin || '',
+  };
+}
+
+export function formatGuardShiftForSheet(s: GuardShiftRecord) {
+  return {
+    id: s.id,
+    personnelId: s.personnelId,
+    personnelName: s.personnelName,
+    date: normalizeDateString(s.date),
+    endDate: s.endDate ? normalizeDateString(s.endDate) : '',
+    shiftType: s.shiftType,
+    notes: s.notes || '',
+    createdAt: s.createdAt || '',
+  };
+}
+
+// Google Apps Script API Services - Sincronización de Base de Datos Central (Multi-dispositivo)
+export async function fetchRemoteSheetData(url: string): Promise<{
+  success: boolean;
+  data?: {
+    materials: MaterialSignal[];
+    personnel: Personnel[];
+    guardShifts: GuardShiftRecord[];
+    monthlyArchives: MonthlyArchiveLog[];
+  };
+  message: string;
+}> {
+  if (!url || !url.startsWith('http')) {
+    return {
+      success: false,
+      message: 'URL de Google Apps Script no configurada.',
+    };
+  }
+
+  try {
+    const fetchUrl = url + (url.includes('?') ? '&' : '?') + 'action=readAllData&_t=' + Date.now();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+    const response = await fetch(fetchUrl, {
+      method: 'GET',
+      mode: 'cors',
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    const json = await response.json();
+    if (!json || !json.success || !json.data) {
+      return {
+        success: false,
+        message: json?.message || 'Respuesta inválida desde Google Sheets.',
+      };
+    }
+
+    const rawMats = Array.isArray(json.data.materials) ? json.data.materials : [];
+    const materials: MaterialSignal[] = rawMats.map((m: any) => ({
+      id: String(m.id || `MAT-${Date.now()}`),
+      familyId: String(m.familyId || m.id || ''),
+      title: String(m.title || 'Sin título'),
+      signalType: (m.signalType || 'Limpio') as any,
+      division: (m.division || 'Prensa') as any,
+      duration: formatDurationHHMMSS(m.duration),
+      creationDate: getFormattedDateTime(m.creationDate),
+      createdBy: String(m.createdBy || 'Operador VTV'),
+      creatorRole: m.creatorRole || m.createdByRole || '',
+      status: (m.status || 'Registrado') as any,
+      isRequestTask: m.isRequestTask === true || String(m.isRequestTask).toUpperCase() === 'SI',
+      assignedTo: m.assignedTo && m.assignedTo !== 'Sin asignar' ? m.assignedTo : undefined,
+      assignedPersons: m.assignedPersons || (m.assignedTo && m.assignedTo !== 'Sin asignar' ? m.assignedTo.split(',').map((s: string) => s.trim()) : undefined),
+      assignedToRole: m.assignedToRole || undefined,
+      assignedAt: m.assignedAt ? getFormattedDateTime(m.assignedAt) : undefined,
+      isIngested: m.isIngested !== undefined ? Boolean(m.isIngested) : true,
+      isCataloged: m.isCataloged !== undefined ? Boolean(m.isCataloged) : (m.status === 'Por Archivar' || m.status === 'Finalizado'),
+      catalogedBy: m.catalogedBy && m.catalogedBy !== 'N/A' ? m.catalogedBy : undefined,
+      catalogedAt: m.catalogedAt && m.catalogedAt !== 'N/A' ? getFormattedDateTime(m.catalogedAt) : undefined,
+      isFinalized: m.isFinalized !== undefined ? Boolean(m.isFinalized) : (m.status === 'Finalizado'),
+      finalizedBy: m.finalizedBy && m.finalizedBy !== 'N/A' ? m.finalizedBy : undefined,
+      finalizedAt: m.finalizedAt && m.finalizedAt !== 'N/A' ? getFormattedDateTime(m.finalizedAt) : undefined,
+      notes: m.notes || '',
+    }));
+
+    const rawPersonnel = Array.isArray(json.data.personnel) ? json.data.personnel : [];
+    const personnel: Personnel[] = deduplicatePersonnel(
+      rawPersonnel.map((p: any) => ({
+        id: String(p.id || `per-${Math.random().toString(36).substring(2, 8)}`),
+        name: String(p.name || 'Personal'),
+        role: (p.role || 'Documentalista') as any,
+        division: (p.division || 'Prensa') as any,
+        guardDaysWorked: Number(p.guardDaysWorked) || 0,
+        daysOffGenerated: Number(p.daysOffGenerated) || 0,
+        daysOffTaken: Number(p.daysOffTaken) || 0,
+        balanceDays: Number(p.balanceDays) || 0,
+        pin: p.pin ? String(p.pin) : undefined,
+      }))
+    );
+
+    const rawShifts = Array.isArray(json.data.guardShifts) ? json.data.guardShifts : [];
+    const guardShifts: GuardShiftRecord[] = deduplicateGuardShifts(
+      rawShifts.map((s: any) => ({
+        id: String(s.id || `sh-${Date.now()}`),
+        personnelId: String(s.personnelId || ''),
+        personnelName: String(s.personnelName || ''),
+        date: normalizeDateString(s.date),
+        endDate: s.endDate ? normalizeDateString(s.endDate) : undefined,
+        shiftType: (s.shiftType || 'Guardia (Fin de semana/Feriado)') as any,
+        notes: s.notes || undefined,
+        createdAt: s.createdAt ? getFormattedDateTime(s.createdAt) : undefined,
+      }))
+    );
+
+    const rawArchives = Array.isArray(json.data.monthlyArchives) ? json.data.monthlyArchives : [];
+    const monthlyArchives: MonthlyArchiveLog[] = rawArchives.map((a: any) => ({
+      id: String(a.id || `MAR-${Date.now()}`),
+      monthPeriod: String(a.monthPeriod || ''),
+      exportDate: getFormattedDateTime(a.exportDate),
+      exportedBy: String(a.exportedBy || ''),
+      exporterRole: String(a.exporterRole || ''),
+      materialsCount: Number(a.materialsCount) || 0,
+      formattedDuration: String(a.formattedDuration || '00:00:00'),
+      totalDurationSeconds: Number(a.totalDurationSeconds) || 0,
+      exportedItems: Array.isArray(a.exportedItems) ? a.exportedItems : [],
+    }));
+
+    return {
+      success: true,
+      data: {
+        materials,
+        personnel,
+        guardShifts,
+        monthlyArchives,
+      },
+      message: `Sincronizados ${materials.length} materiales, ${personnel.length} personal y ${guardShifts.length} turnos desde Google Sheets.`,
+    };
+  } catch (err: any) {
+    console.error('Error fetching remote data from Google Sheets:', err);
+    return {
+      success: false,
+      message: `Error al conectar con Google Sheets: ${err.name === 'AbortError' ? 'Tiempo de espera agotado.' : (err.message || err.toString())}`,
+    };
+  }
+}
+
+/**
+ * Función Genérica para Ejecutar Acciones Atómicas en Google Apps Script
+ */
+export async function apiSendAction(url: string, payload: any): Promise<{ success: boolean; message?: string; data?: any; counts?: any }> {
+  if (!url || !url.startsWith('http')) {
+    return { success: false, message: 'URL de Google Apps Script no configurada.' };
+  }
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20000);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain;charset=utf-8',
+      },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    const json = await response.json();
+    return json;
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    console.error(`Error al ejecutar acción '${payload?.action}' en Google Sheets:`, err);
+    return {
+      success: false,
+      message: err.name === 'AbortError' ? 'Tiempo de espera agotado al comunicar con Google Sheets.' : (err.message || String(err)),
+    };
+  }
+}
+
+// -------------------------------------------------------------
+// OPERACIONES ATÓMICAS (RPC) EN TIEMPO REAL CON GOOGLE SHEETS
+// -------------------------------------------------------------
+
+// 1. Acciones Atómicas sobre Materiales
+export async function apiCreateMaterialsBatch(url: string, materials: MaterialSignal[]) {
+  return apiSendAction(url, {
+    action: 'createMaterials',
+    materials: materials.map(formatMaterialForSheet),
+  });
+}
+
+export async function apiUpdateMaterial(url: string, materialId: string, updates?: Partial<MaterialSignal>, fullMaterial?: MaterialSignal) {
+  return apiSendAction(url, {
+    action: 'updateMaterial',
+    id: materialId,
+    updates: updates,
+    material: fullMaterial ? formatMaterialForSheet(fullMaterial) : undefined,
+  });
+}
+
+export async function apiBatchUpdateFamily(url: string, familyId: string, updates: Partial<MaterialSignal>) {
+  return apiSendAction(url, {
+    action: 'batchUpdateFamily',
+    familyId: familyId,
+    updates: updates,
+  });
+}
+
+export async function apiDeleteMaterial(url: string, materialId: string) {
+  return apiSendAction(url, {
+    action: 'deleteMaterial',
+    id: materialId,
+  });
+}
+
+export async function apiPurgeFinalizedMaterials(url: string, signalIds: string[], monthlyLog?: MonthlyArchiveLog) {
+  return apiSendAction(url, {
+    action: 'purgeFinalizedMaterials',
+    signalIds: signalIds,
+    monthlyLog: monthlyLog,
+  });
+}
+
+// 2. Acciones Atómicas sobre Personal
+export async function apiSavePersonnel(url: string, person: Personnel) {
+  return apiSendAction(url, {
+    action: 'savePersonnel',
+    personnel: formatPersonnelForSheet(person),
+  });
+}
+
+export async function apiUpdatePersonnel(url: string, personId: string, updates?: Partial<Personnel>, fullPerson?: Personnel) {
+  return apiSendAction(url, {
+    action: 'updatePersonnel',
+    id: personId,
+    updates: updates,
+    person: fullPerson ? formatPersonnelForSheet(fullPerson) : undefined,
+  });
+}
+
+export async function apiDeletePersonnel(url: string, personId: string) {
+  return apiSendAction(url, {
+    action: 'deletePersonnel',
+    id: personId,
+  });
+}
+
+// 3. Acciones Atómicas sobre Guardias
+export async function apiSaveBatchGuardShifts(url: string, shifts: GuardShiftRecord[], replaceTargetDate?: string) {
+  return apiSendAction(url, {
+    action: 'saveBatchGuardShifts',
+    shifts: shifts.map(formatGuardShiftForSheet),
+    replaceTargetDate: replaceTargetDate,
+  });
+}
+
+export async function apiDeleteGuardShift(url: string, shiftId: string) {
+  return apiSendAction(url, {
+    action: 'deleteGuardShift',
+    id: shiftId,
+  });
+}
+
+export async function apiClearAllGuardShifts(url: string) {
+  return apiSendAction(url, {
+    action: 'clearAllGuardShifts',
+  });
+}
+
+// 4. Acciones Atómicas sobre Cierres e Historial Mensual
+export async function apiSaveMonthlyArchive(url: string, archive: MonthlyArchiveLog) {
+  return apiSendAction(url, {
+    action: 'saveMonthlyArchive',
+    archive: archive,
+  });
+}
+
+export async function apiClearMonthlyArchives(url: string) {
+  return apiSendAction(url, {
+    action: 'clearMonthlyArchives',
+  });
+}
+
+export async function pushAllDataToRemoteSheet(
+  url: string,
+  data: {
+    materials: MaterialSignal[];
+    personnel: Personnel[];
+    guardShifts: GuardShiftRecord[];
+    monthlyArchives?: MonthlyArchiveLog[];
+  }
+): Promise<{ success: boolean; message: string; counts?: any }> {
+  if (!url || !url.startsWith('http')) {
+    return {
+      success: false,
+      message: 'URL de Google Apps Script no configurada.',
+    };
+  }
+
+  try {
+    const formattedMaterials = data.materials.map((m) => {
+      let assignedStr = 'Sin asignar';
+      if (m.assignedPersons && m.assignedPersons.length > 0) {
+        assignedStr = m.assignedPersons.join(', ');
+      } else if (m.assignedTo) {
+        assignedStr = m.assignedTo;
+      }
+
+      return {
+        id: m.id,
+        familyId: m.familyId || m.id,
+        title: m.title,
+        signalType: m.signalType,
+        division: m.division,
+        duration: formatDurationHHMMSS(m.duration),
+        creationDate: m.creationDate,
+        createdBy: m.createdBy,
+        createdByRole: m.creatorRole || m.createdByRole || '',
+        status: m.status,
+        isRequestTask: m.isRequestTask ? true : false,
+        assignedTo: assignedStr,
+        assignedToRole: m.assignedToRole || '',
+        assignedAt: m.assignedAt || '',
+        isIngested: m.isIngested !== undefined ? m.isIngested : true,
+        isCataloged: m.isCataloged !== undefined ? m.isCataloged : (m.status === 'Por Archivar' || m.status === 'Finalizado'),
+        catalogedBy: m.catalogedBy || 'N/A',
+        catalogedAt: m.catalogedAt || 'N/A',
+        isFinalized: m.isFinalized !== undefined ? m.isFinalized : (m.status === 'Finalizado'),
+        finalizedBy: m.finalizedBy || 'N/A',
+        finalizedAt: m.finalizedAt || 'N/A',
+        notes: m.notes || '',
+      };
+    });
+
+    const formattedPersonnel = (data.personnel || []).map((p) => ({
+      id: p.id,
+      name: p.name,
+      role: p.role,
+      division: p.division,
+      guardDaysWorked: p.guardDaysWorked || 0,
+      daysOffGenerated: p.daysOffGenerated || 0,
+      daysOffTaken: p.daysOffTaken || 0,
+      balanceDays: p.balanceDays || 0,
+      pin: p.pin || '',
+    }));
+
+    const formattedShifts = (data.guardShifts || []).map((s) => ({
+      id: s.id,
+      personnelId: s.personnelId,
+      personnelName: s.personnelName,
+      date: normalizeDateString(s.date),
+      endDate: s.endDate ? normalizeDateString(s.endDate) : '',
+      shiftType: s.shiftType,
+      notes: s.notes || '',
+      createdAt: s.createdAt || '',
+    }));
+
+    const formattedArchives = (data.monthlyArchives || []).map((a) => ({
+      id: a.id,
+      monthPeriod: a.monthPeriod,
+      exportDate: a.exportDate,
+      exportedBy: a.exportedBy,
+      exporterRole: a.exporterRole,
+      materialsCount: a.materialsCount || 0,
+      formattedDuration: a.formattedDuration || '00:00:00',
+      totalDurationSeconds: a.totalDurationSeconds || 0,
+    }));
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
+
+    const response = await fetch(url, {
+      method: 'POST',
+      mode: 'cors',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        action: 'syncAllData',
+        materials: formattedMaterials,
+        personnel: formattedPersonnel,
+        guardShifts: formattedShifts,
+        monthlyArchives: formattedArchives,
+      }),
+    });
+    clearTimeout(timeoutId);
+
+    const resJson = await response.json();
+    if (resJson && resJson.success) {
+      return {
+        success: true,
+        message: resJson.message || 'Datos guardados correctamente en Google Sheets.',
+        counts: resJson.counts,
+      };
+    } else {
+      return {
+        success: false,
+        message: resJson?.message || 'Error al guardar datos en Google Sheets.',
+      };
+    }
+  } catch (err: any) {
+    console.error('Error pushing data to Google Sheets:', err);
+    return {
+      success: false,
+      message: `Error al enviar a Google Sheets: ${err.name === 'AbortError' ? 'Tiempo de espera agotado.' : (err.message || err.toString())}`,
+    };
+  }
+}
+
+/**
+ * Sincronización inteligente bidireccional entre el dispositivo local y Google Sheets
+ */
+export async function smartSyncWithSheet(
+  url: string,
+  localState: {
+    materials: MaterialSignal[];
+    personnel: Personnel[];
+    guardShifts: GuardShiftRecord[];
+    monthlyArchives?: MonthlyArchiveLog[];
+  }
+): Promise<{
+  success: boolean;
+  data?: {
+    materials: MaterialSignal[];
+    personnel: Personnel[];
+    guardShifts: GuardShiftRecord[];
+    monthlyArchives: MonthlyArchiveLog[];
+  };
+  message: string;
+}> {
+  if (!url || !url.startsWith('http')) {
+    return {
+      success: false,
+      message: 'No hay URL de Google Apps Script configurada para sincronizar.',
+    };
+  }
+
+  // 1. Obtener los datos más recientes desde Google Sheets
+  const remoteRes = await fetchRemoteSheetData(url);
+  if (!remoteRes.success || !remoteRes.data) {
+    return {
+      success: false,
+      message: remoteRes.message,
+    };
+  }
+
+  const remote = remoteRes.data;
+
+  // 2. Fusión inteligente de materiales (conserva locales no sincronizados y actualiza remotos)
+  const { merged: mergedMaterials, hasLocalUnsynced: hasUnsyncedMats } = mergeMaterials(
+    localState.materials || [],
+    remote.materials || []
+  );
+
+  // 3. Fusión inteligente de guardias
+  const { merged: mergedShifts, hasLocalUnsynced: hasUnsyncedShifts } = mergeGuardShifts(
+    localState.guardShifts || [],
+    remote.guardShifts || []
+  );
+
+  // 4. Fusión de personal (toma los de remoto si existen, o locales si tienen más datos)
+  const personnelMap = new Map<string, Personnel>();
+  (remote.personnel && remote.personnel.length > 0 ? remote.personnel : localState.personnel || []).forEach((p) => {
+    if (p && (p.id || p.name)) {
+      personnelMap.set(p.id || p.name, p);
+    }
+  });
+  // Agregar cualquier personal local no registrado en remoto
+  (localState.personnel || []).forEach((lp) => {
+    const key = lp.id || lp.name;
+    if (key && !personnelMap.has(key)) {
+      personnelMap.set(key, lp);
+    }
+  });
+  const mergedPersonnel = deduplicatePersonnel(Array.from(personnelMap.values()));
+
+  // 5. Fusión de cierres mensuales
+  const archiveMap = new Map<string, MonthlyArchiveLog>();
+  (remote.monthlyArchives || []).forEach((a) => {
+    if (a && a.id) archiveMap.set(a.id, a);
+  });
+  (localState.monthlyArchives || []).forEach((la) => {
+    if (la && la.id && !archiveMap.has(la.id)) {
+      archiveMap.set(la.id, la);
+    }
+  });
+  const mergedArchives = Array.from(archiveMap.values());
+
+  const mergedState = {
+    materials: mergedMaterials,
+    personnel: mergedPersonnel,
+    guardShifts: mergedShifts,
+    monthlyArchives: mergedArchives,
+  };
+
+  // 6. Guardar estado consolidado en almacenamiento local seguro
+  saveLocalMaterials(mergedState.materials);
+  saveLocalPersonnel(mergedState.personnel);
+  saveLocalGuardShifts(mergedState.guardShifts);
+  saveLocalMonthlyArchives(mergedState.monthlyArchives);
+
+  // 7. Si habían datos locales que no estaban en Google Sheets, o si la hoja remota estaba vacía, subir la versión fusionada a Google Sheets
+  const needsPush = hasUnsyncedMats || hasUnsyncedShifts || remote.materials.length === 0;
+  if (needsPush) {
+    // Subir en segundo plano para consolidar Google Sheets
+    pushAllDataToRemoteSheet(url, mergedState).catch((err) => {
+      console.warn('Advertencia al enviar estado consolidado a Google Sheets:', err);
+    });
+  }
+
+  return {
+    success: true,
+    data: mergedState,
+    message: `Base de datos sincronizada: ${mergedMaterials.length} materiales, ${mergedPersonnel.length} personal, ${mergedShifts.length} guardias.`,
+  };
+}
+
 // Google Apps Script API Services - Respaldos Diarios y Mensuales en Google Drive
 export async function createDailyBackupInDrive(
   url: string,
