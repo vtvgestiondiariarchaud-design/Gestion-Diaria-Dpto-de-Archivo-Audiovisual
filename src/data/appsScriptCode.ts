@@ -166,41 +166,81 @@ function handleReadAllData() {
   const sMat = ss.getSheetByName(SHEET_MATERIALES);
   const materials = [];
   if (sMat && sMat.getLastRow() > 1) {
-    const values = sMat.getRange(2, 1, sMat.getLastRow() - 1, MATERIAL_HEADERS.length).getValues();
+    const lastCol = Math.max(sMat.getLastColumn(), MATERIAL_HEADERS.length);
+    const headerVals = sMat.getRange(1, 1, 1, lastCol).getValues()[0];
+    const colMap = {};
+    for (let c = 0; c < headerVals.length; c++) {
+      const h = String(headerVals[c] || "").trim().toLowerCase();
+      if (h) colMap[h] = c;
+    }
+
+    const getCol = function(row, headerName, defaultIdx) {
+      const lower = headerName.toLowerCase();
+      if (colMap[lower] !== undefined && colMap[lower] < row.length) {
+        return row[colMap[lower]];
+      }
+      return row[defaultIdx];
+    };
+
+    const values = sMat.getRange(2, 1, sMat.getLastRow() - 1, lastCol).getValues();
+    const validSignalTypes = ["limpio", "insert", "master"];
+
     for (let i = 0; i < values.length; i++) {
       const row = values[i];
-      if (!row[0] && !row[2]) continue;
-      
-      let assignedStr = String(row[11] || "");
+      const idVal = String(getCol(row, "ID Material", 0) || "").trim();
+      let famVal = String(getCol(row, "ID Familia", 1) || idVal || "").trim();
+      let titleVal = String(getCol(row, "Título / Descripción", 2) || "").trim();
+      let signalVal = String(getCol(row, "Tipo de Señal", 3) || "Limpio").trim();
+
+      if (!idVal && !titleVal && !signalVal) continue;
+
+      // Detect and fix inverted Title <-> SignalType
+      const isTitleType = validSignalTypes.indexOf(titleVal.toLowerCase()) !== -1;
+      const isSignalType = validSignalTypes.indexOf(signalVal.toLowerCase()) !== -1;
+
+      if (isTitleType && !isSignalType && signalVal) {
+        const temp = titleVal;
+        titleVal = signalVal;
+        signalVal = temp;
+      }
+
+      // Normalize signal type capitalization
+      const lowerSig = signalVal.toLowerCase();
+      if (lowerSig.indexOf("limp") !== -1) signalVal = "Limpio";
+      else if (lowerSig.indexOf("ins") !== -1) signalVal = "Insert";
+      else if (lowerSig.indexOf("mas") !== -1) signalVal = "Master";
+      else signalVal = "Limpio";
+
+      let assignedStr = String(getCol(row, "Asignado A", 11) || "");
       let assignedPersons = [];
       if (assignedStr && assignedStr !== "Sin asignar") {
         assignedPersons = assignedStr.split(",").map(function(s) { return s.trim(); });
       }
 
       materials.push({
-        id: String(row[0] || ""),
-        familyId: String(row[1] || row[0] || ""),
-        title: String(row[2] || ""),
-        signalType: String(row[3] || "Limpio"),
-        division: String(row[4] || "Prensa"),
-        duration: formatDurationString(row[5]),
-        creationDate: formatDateString(row[6]),
-        createdBy: String(row[7] || ""),
-        creatorRole: String(row[8] || ""),
-        status: String(row[9] || "Registrado"),
-        isRequestTask: String(row[10]).toUpperCase() === "SI" || row[10] === true,
+        id: idVal || ("MAT-REC-" + (i + 1)),
+        familyId: famVal || idVal,
+        title: titleVal || ("Material " + idVal),
+        signalType: signalVal,
+        division: String(getCol(row, "División", 4) || "Prensa"),
+        duration: formatDurationString(getCol(row, "Duración", 5)),
+        creationDate: formatDateString(getCol(row, "Fecha Creación", 6)),
+        createdBy: String(getCol(row, "Creado Por", 7) || ""),
+        creatorRole: String(getCol(row, "Rol Creador", 8) || ""),
+        status: String(getCol(row, "Estado", 9) || "Registrado"),
+        isRequestTask: String(getCol(row, "Es Solicitud / Tarea", 10)).toUpperCase() === "SI" || getCol(row, "Es Solicitud / Tarea", 10) === true,
         assignedTo: assignedStr && assignedStr !== "Sin asignar" ? assignedStr : undefined,
         assignedPersons: assignedPersons.length > 0 ? assignedPersons : undefined,
-        assignedToRole: row[12] ? String(row[12]) : undefined,
-        assignedAt: row[13] ? formatDateString(row[13]) : undefined,
-        isIngested: String(row[14]).toUpperCase() === "SI" || row[14] === true,
-        isCataloged: String(row[15]).toUpperCase() === "SI" || row[15] === true,
-        catalogedBy: row[16] && row[16] !== "N/A" ? String(row[16]) : undefined,
-        catalogedAt: row[17] && row[17] !== "N/A" ? formatDateString(row[17]) : undefined,
-        isFinalized: String(row[18]).toUpperCase() === "SI" || row[18] === true,
-        finalizedBy: row[19] && row[19] !== "N/A" ? String(row[19]) : undefined,
-        finalizedAt: row[20] && row[20] !== "N/A" ? formatDateString(row[20]) : undefined,
-        notes: row[21] ? String(row[21]) : ""
+        assignedToRole: getCol(row, "Rol Asignado", 12) ? String(getCol(row, "Rol Asignado", 12)) : undefined,
+        assignedAt: getCol(row, "Fecha Asignación", 13) ? formatDateString(getCol(row, "Fecha Asignación", 13)) : undefined,
+        isIngested: String(getCol(row, "Ingestado", 14)).toUpperCase() === "SI" || getCol(row, "Ingestado", 14) === true,
+        isCataloged: String(getCol(row, "Catalogado", 15)).toUpperCase() === "SI" || getCol(row, "Catalogado", 15) === true,
+        catalogedBy: getCol(row, "Catalogado Por", 16) && getCol(row, "Catalogado Por", 16) !== "N/A" ? String(getCol(row, "Catalogado Por", 16)) : undefined,
+        catalogedAt: getCol(row, "Fecha Catalogación", 17) && getCol(row, "Fecha Catalogación", 17) !== "N/A" ? formatDateString(getCol(row, "Fecha Catalogación", 17)) : undefined,
+        isFinalized: String(getCol(row, "Finalizado", 18)).toUpperCase() === "SI" || getCol(row, "Finalizado", 18) === true,
+        finalizedBy: getCol(row, "Finalizado Por", 19) && getCol(row, "Finalizado Por", 19) !== "N/A" ? String(getCol(row, "Finalizado Por", 19)) : undefined,
+        finalizedAt: getCol(row, "Fecha Finalizado", 20) && getCol(row, "Fecha Finalizado", 20) !== "N/A" ? formatDateString(getCol(row, "Fecha Finalizado", 20)) : undefined,
+        notes: getCol(row, "Notas / Observaciones", 21) ? String(getCol(row, "Notas / Observaciones", 21)) : ""
       });
     }
   }

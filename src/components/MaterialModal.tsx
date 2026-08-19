@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { MaterialSignal, DivisionType, SignalType, UserProfile } from '../types';
 import { X, Film, Layers, Clock, Calendar, User, FileText, CheckCircle2 } from 'lucide-react';
 import { getFormattedDateTime, formatDurationHHMMSS, getLocalDateISOString } from '../services/apiService';
@@ -24,8 +24,6 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
   presetDivision,
   presetIsRequestTask = false,
 }) => {
-  if (!isOpen) return null;
-
   const todayStr = getLocalDateISOString();
 
   const [mode, setMode] = useState<'batch' | 'single'>(
@@ -46,6 +44,26 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
   const [creationDate, setCreationDate] = useState(todayStr);
   const [notes, setNotes] = useState('');
 
+  // Reset form when modal opens or presets change
+  useEffect(() => {
+    if (isOpen) {
+      setMode(presetFamilyId || presetIsRequestTask ? 'single' : 'batch');
+      setIsRequestTask(Boolean(presetIsRequestTask));
+      setTitle(presetTitle || '');
+      setDivision(
+        presetDivision || (currentUser.division && currentUser.division !== 'Gerencia' ? currentUser.division : 'Prensa')
+      );
+      setSignalType('Limpio');
+      setHours('00');
+      setMinutes('30');
+      setSeconds('00');
+      setCreationDate(getLocalDateISOString());
+      setNotes('');
+    }
+  }, [isOpen, presetFamilyId, presetTitle, presetDivision, presetIsRequestTask, currentUser]);
+
+  if (!isOpen) return null;
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
@@ -53,7 +71,11 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
     const pad = (v: string) => v.padStart(2, '0');
     const formattedDuration = formatDurationHHMMSS(`${pad(hours)}:${pad(minutes)}:${pad(seconds)}`);
 
-    const familyId = presetFamilyId || `FAM-2026-${Math.floor(100 + Math.random() * 900)}`;
+    // High entropy unique seed to prevent collisions with existing cards
+    const timestampSeed = Date.now().toString().slice(-6);
+    const randomSeed = Math.floor(100 + Math.random() * 900);
+    const familyId = presetFamilyId ? presetFamilyId.trim() : `FAM-2026-${timestampSeed}${randomSeed}`;
+
     const now = new Date();
     const numPad = (v: number) => String(v).padStart(2, '0');
     const currentTime = `${numPad(now.getHours())}:${numPad(now.getMinutes())}`;
@@ -62,12 +84,19 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
 
     const generatedSignals: MaterialSignal[] = [];
 
+    const signalCodeMap: Record<SignalType, string> = {
+      Limpio: 'LIM',
+      Insert: 'INS',
+      Master: 'MAS',
+    };
+
     if (mode === 'batch' && !presetFamilyId) {
-      // Create 3 signals: Limpio, Insert, Master
+      // Create 3 distinct signals: Limpio, Insert, Master
       const signalTypes: SignalType[] = ['Limpio', 'Insert', 'Master'];
 
-      signalTypes.forEach((stype) => {
-        const matId = `MAT-2026-${Math.floor(1000 + Math.random() * 9000)}`;
+      signalTypes.forEach((stype, idx) => {
+        const code = signalCodeMap[stype] || `S${idx + 1}`;
+        const matId = `MAT-2026-${timestampSeed}${randomSeed}-${code}`;
         generatedSignals.push({
           id: matId,
           familyId,
@@ -89,8 +118,9 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
         });
       });
     } else {
-      // Create single signal
-      const matId = `MAT-2026-${Math.floor(1000 + Math.random() * 9000)}`;
+      // Create a single unique signal
+      const code = signalCodeMap[signalType] || 'SIG';
+      const matId = `MAT-2026-${timestampSeed}${randomSeed}-${code}`;
       generatedSignals.push({
         id: matId,
         familyId,

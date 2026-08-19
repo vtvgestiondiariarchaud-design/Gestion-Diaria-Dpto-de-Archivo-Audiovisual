@@ -203,9 +203,9 @@ export const MonthlyArchiveModal: React.FC<MonthlyArchiveModalProps> = ({
                           Listado de Señales Depuradas ({log.exportedItems?.length || 0})
                         </h4>
                         <div className="max-h-48 overflow-y-auto border border-slate-800 rounded-xl bg-slate-950 p-2 space-y-1">
-                          {log.exportedItems?.map((item) => (
+                          {log.exportedItems?.map((item, itIdx) => (
                             <div
-                              key={item.id}
+                              key={`archived-item-${item.id}-${itIdx}`}
                               className="p-2 rounded-lg bg-slate-900/60 hover:bg-slate-900 border border-slate-800/60 flex items-center justify-between text-[11px]"
                             >
                               <div className="flex items-center gap-2 truncate">

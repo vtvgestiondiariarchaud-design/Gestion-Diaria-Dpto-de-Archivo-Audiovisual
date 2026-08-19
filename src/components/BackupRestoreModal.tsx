@@ -569,8 +569,8 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60 bg-slate-900/60">
-                        {dailyMaterials.map((m) => (
-                          <tr key={m.id} className="hover:bg-slate-800/40 transition-colors">
+                        {dailyMaterials.map((m, mIdx) => (
+                          <tr key={`daily-mat-${m.id}-${m.signalType}-${mIdx}`} className="hover:bg-slate-800/40 transition-colors">
                             <td className="py-2 px-3 font-mono text-[11px] text-sky-400 font-semibold">{m.id}</td>
                             <td className="py-2 px-3 font-medium text-white max-w-xs truncate">{m.title}</td>
                             <td className="py-2 px-3">

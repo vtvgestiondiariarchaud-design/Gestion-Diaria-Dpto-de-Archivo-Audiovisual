@@ -19,6 +19,7 @@ import {
   saveLocalMonthlyArchives,
   loadLocalUserPins,
   saveLocalUserPins,
+  deduplicateMaterials,
   deduplicatePersonnel,
   deduplicateGuardShifts,
   getFormattedDateTime,
@@ -732,7 +733,7 @@ export default function App() {
   // Add New Materials
   const handleAddMaterials = (newSignals: MaterialSignal[]) => {
     setState((prev) => {
-      const updatedMaterials = [...newSignals, ...prev.materials];
+      const updatedMaterials = deduplicateMaterials([...newSignals, ...prev.materials]);
       saveLocalMaterials(updatedMaterials);
 
       if (prev.appsScriptUrl) {

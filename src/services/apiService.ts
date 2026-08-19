@@ -1,4 +1,4 @@
-import { MaterialSignal, Personnel, GuardShiftRecord, MaterialFamilyGroup, AppState, MaterialStatus, MonthlyArchiveLog, UserProfile, BackupSnapshot } from '../types';
+import { MaterialSignal, SignalType, Personnel, GuardShiftRecord, MaterialFamilyGroup, AppState, MaterialStatus, MonthlyArchiveLog, UserProfile, BackupSnapshot } from '../types';
 import { INITIAL_MATERIALS, INITIAL_PERSONNEL, INITIAL_GUARD_SHIFTS, DEFAULT_USERS, DEFAULT_APPS_SCRIPT_URL } from '../data/initialData';
 
 const LOCAL_STORAGE_KEY_MATERIALS = 'vtv_archivo_materials_v1';
@@ -227,21 +227,82 @@ export function formatHoursVerbose(totalSeconds: number): string {
   return parts.join(' ');
 }
 
-// Group materials by Family ID
+const VALID_SIGNAL_TYPES: SignalType[] = ['Limpio', 'Insert', 'Master'];
+
+export function sanitizeMaterialSignal(mat: any): MaterialSignal {
+  if (!mat) return mat;
+  let title = String(mat.title || '').trim();
+  let signalType = String(mat.signalType || 'Limpio').trim();
+
+  // Detect and fix inverted Title <-> SignalType (e.g. title is 'Limpio' and signalType is the actual program title)
+  const isTitleASignalType = VALID_SIGNAL_TYPES.some(
+    (st) => st.toLowerCase() === title.toLowerCase()
+  );
+  const isSignalTypeASignalType = VALID_SIGNAL_TYPES.some(
+    (st) => st.toLowerCase() === signalType.toLowerCase()
+  );
+
+  if (isTitleASignalType && !isSignalTypeASignalType && signalType.length > 0) {
+    // Inverted! Swap them
+    const tempTitle = title;
+    title = signalType;
+    const matched = VALID_SIGNAL_TYPES.find((st) => st.toLowerCase() === tempTitle.toLowerCase());
+    signalType = matched || 'Limpio';
+  } else if (isSignalTypeASignalType) {
+    const matched = VALID_SIGNAL_TYPES.find((st) => st.toLowerCase() === signalType.toLowerCase());
+    if (matched) signalType = matched;
+  } else {
+    // If signalType is not a valid signal type:
+    const lowerSig = signalType.toLowerCase();
+    if (lowerSig.includes('limp')) signalType = 'Limpio';
+    else if (lowerSig.includes('ins')) signalType = 'Insert';
+    else if (lowerSig.includes('mas')) signalType = 'Master';
+    else signalType = 'Limpio';
+  }
+
+  // Ensure title is not empty or equal to a bare signalType
+  if (!title || VALID_SIGNAL_TYPES.some((st) => st.toLowerCase() === title.toLowerCase())) {
+    if (mat.notes && mat.notes.trim() && !VALID_SIGNAL_TYPES.some((st) => st.toLowerCase() === mat.notes.trim().toLowerCase())) {
+      title = mat.notes.trim();
+    } else {
+      title = `Material ${mat.id || ''}`.trim();
+    }
+  }
+
+  const cleanId = String(mat.id || `MAT-${Date.now()}`).trim();
+  const cleanFamilyId = String(mat.familyId || cleanId).trim();
+
+  return {
+    ...mat,
+    id: cleanId,
+    familyId: cleanFamilyId,
+    title,
+    signalType: signalType as SignalType,
+    duration: formatDurationHHMMSS(mat.duration),
+    creationDate: getFormattedDateTime(mat.creationDate),
+  };
+}
+
+// Group materials by Family ID and Title coherence
 export function groupMaterialsByFamily(materials: MaterialSignal[]): MaterialFamilyGroup[] {
+  if (!Array.isArray(materials)) return [];
+  const sanitized = materials.map(sanitizeMaterialSignal);
   const familyMap = new Map<string, MaterialSignal[]>();
 
-  materials.forEach((mat) => {
-    const fid = mat.familyId || mat.id;
-    if (!familyMap.has(fid)) {
-      familyMap.set(fid, []);
+  sanitized.forEach((mat) => {
+    // Group by familyId combined with normalized title to ensure unrelated activities
+    // are never grouped into the same card even if they shared a legacy family ID
+    const normTitle = mat.title.trim().toLowerCase();
+    const groupKey = mat.familyId ? `${mat.familyId}:::${normTitle}` : `${mat.id}:::${normTitle}`;
+    if (!familyMap.has(groupKey)) {
+      familyMap.set(groupKey, []);
     }
-    familyMap.get(fid)!.push(mat);
+    familyMap.get(groupKey)!.push(mat);
   });
 
   const groups: MaterialFamilyGroup[] = [];
 
-  familyMap.forEach((signals, familyId) => {
+  familyMap.forEach((signals) => {
     // Sort signals in logical order: Limpio, Insert, Master
     const orderScore: Record<string, number> = { Limpio: 1, Insert: 2, Master: 3 };
     signals.sort((a, b) => (orderScore[a.signalType] || 4) - (orderScore[b.signalType] || 4));
@@ -266,7 +327,7 @@ export function groupMaterialsByFamily(materials: MaterialSignal[]): MaterialFam
     const isAllFinalized = signals.every((s) => s.isFinalized);
 
     groups.push({
-      familyId,
+      familyId: mainSignal.familyId || mainSignal.id,
       title: mainSignal.title,
       division: mainSignal.division,
       creationDate: mainSignal.creationDate,
@@ -285,6 +346,53 @@ export function groupMaterialsByFamily(materials: MaterialSignal[]): MaterialFam
   groups.sort((a, b) => parseAnyDate(b.creationDate).getTime() - parseAnyDate(a.creationDate).getTime());
 
   return groups;
+}
+
+export function deduplicateMaterials(list: MaterialSignal[]): MaterialSignal[] {
+  if (!Array.isArray(list)) return [];
+  const map = new Map<string, MaterialSignal>();
+
+  for (const rawMat of list) {
+    if (!rawMat) continue;
+    const mat = sanitizeMaterialSignal(rawMat);
+    let cleanId = String(mat.id || '').trim();
+    if (!cleanId) continue;
+
+    if (!map.has(cleanId)) {
+      map.set(cleanId, mat);
+    } else {
+      // If we already have this ID, merge preserving the most complete/advanced state
+      const existing = map.get(cleanId)!;
+      const isFinalized = Boolean(mat.isFinalized || existing.isFinalized || mat.status === 'Finalizado' || existing.status === 'Finalizado');
+      const isCataloged = Boolean(mat.isCataloged || existing.isCataloged || isFinalized || mat.status === 'Por Archivar' || existing.status === 'Por Archivar');
+      const isIngested = mat.isIngested !== false && existing.isIngested !== false;
+
+      let status = mat.status || existing.status || 'Registrado';
+      if (isFinalized) status = 'Finalizado';
+      else if (isCataloged) status = 'Por Archivar';
+
+      map.set(cleanId, {
+        ...existing,
+        ...mat,
+        id: cleanId,
+        familyId: mat.familyId || existing.familyId || cleanId,
+        title: mat.title || existing.title,
+        signalType: mat.signalType || existing.signalType,
+        isFinalized,
+        isCataloged,
+        isIngested,
+        status,
+        catalogedBy: mat.catalogedBy || existing.catalogedBy,
+        catalogedAt: mat.catalogedAt || existing.catalogedAt,
+        finalizedBy: mat.finalizedBy || existing.finalizedBy,
+        finalizedAt: mat.finalizedAt || existing.finalizedAt,
+        assignedTo: mat.assignedTo || existing.assignedTo,
+        assignedPersons: mat.assignedPersons || existing.assignedPersons,
+      });
+    }
+  }
+
+  return Array.from(map.values());
 }
 
 export function deduplicatePersonnel(list: Personnel[]): Personnel[] {
@@ -399,8 +507,10 @@ export function mergeMaterials(
     }
   });
 
-  const merged = Array.from(mergedMap.values()).sort(
-    (a, b) => parseAnyDate(b.creationDate).getTime() - parseAnyDate(a.creationDate).getTime()
+  const merged = deduplicateMaterials(
+    Array.from(mergedMap.values()).sort(
+      (a, b) => parseAnyDate(b.creationDate).getTime() - parseAnyDate(a.creationDate).getTime()
+    )
   );
 
   return { merged, hasLocalUnsynced };
@@ -448,7 +558,7 @@ export function loadInitialState(): AppState {
     const localMats = localStorage.getItem(LOCAL_STORAGE_KEY_MATERIALS);
     if (localMats) {
       const parsed = JSON.parse(localMats);
-      materials = parsed.map((m: any) => ({
+      materials = deduplicateMaterials(parsed.map((m: any) => ({
         ...m,
         duration: formatDurationHHMMSS(m.duration),
         creationDate: getFormattedDateTime(m.creationDate),
@@ -458,16 +568,16 @@ export function loadInitialState(): AppState {
         isIngested: m.isIngested !== undefined ? m.isIngested : true,
         isCataloged: m.isCataloged !== undefined ? m.isCataloged : (m.status === 'Por Archivar' || m.status === 'Finalizado'),
         isFinalized: m.isFinalized !== undefined ? m.isFinalized : (m.status === 'Finalizado'),
-      }));
+      })));
     } else {
-      materials = INITIAL_MATERIALS.map((m) => ({
+      materials = deduplicateMaterials(INITIAL_MATERIALS.map((m) => ({
         ...m,
         duration: formatDurationHHMMSS(m.duration),
         creationDate: getFormattedDateTime(m.creationDate),
         catalogedAt: m.catalogedAt ? getFormattedDateTime(m.catalogedAt) : undefined,
         finalizedAt: m.finalizedAt ? getFormattedDateTime(m.finalizedAt) : undefined,
         assignedAt: m.assignedAt ? getFormattedDateTime(m.assignedAt) : undefined,
-      }));
+      })));
     }
 
     const localPer = localStorage.getItem(LOCAL_STORAGE_KEY_PERSONNEL);
@@ -668,7 +778,8 @@ export function exportMaterialsToCSV(materials: MaterialSignal[], customFilename
 }
 
 export function saveLocalMaterials(materials: MaterialSignal[]) {
-  const normalized = materials.map((m) => ({
+  const deduped = deduplicateMaterials(materials);
+  const normalized = deduped.map((m) => ({
     ...m,
     duration: formatDurationHHMMSS(m.duration),
     creationDate: getFormattedDateTime(m.creationDate),
@@ -992,31 +1103,33 @@ export async function fetchRemoteSheetData(url: string): Promise<{
     }
 
     const rawMats = Array.isArray(json.data.materials) ? json.data.materials : [];
-    const materials: MaterialSignal[] = rawMats.map((m: any) => ({
-      id: String(m.id || `MAT-${Date.now()}`),
-      familyId: String(m.familyId || m.id || ''),
-      title: String(m.title || 'Sin título'),
-      signalType: (m.signalType || 'Limpio') as any,
-      division: (m.division || 'Prensa') as any,
-      duration: formatDurationHHMMSS(m.duration),
-      creationDate: getFormattedDateTime(m.creationDate),
-      createdBy: String(m.createdBy || 'Operador VTV'),
-      creatorRole: m.creatorRole || m.createdByRole || '',
-      status: (m.status || 'Registrado') as any,
-      isRequestTask: m.isRequestTask === true || String(m.isRequestTask).toUpperCase() === 'SI',
-      assignedTo: m.assignedTo && m.assignedTo !== 'Sin asignar' ? m.assignedTo : undefined,
-      assignedPersons: m.assignedPersons || (m.assignedTo && m.assignedTo !== 'Sin asignar' ? m.assignedTo.split(',').map((s: string) => s.trim()) : undefined),
-      assignedToRole: m.assignedToRole || undefined,
-      assignedAt: m.assignedAt ? getFormattedDateTime(m.assignedAt) : undefined,
-      isIngested: m.isIngested !== undefined ? Boolean(m.isIngested) : true,
-      isCataloged: m.isCataloged !== undefined ? Boolean(m.isCataloged) : (m.status === 'Por Archivar' || m.status === 'Finalizado'),
-      catalogedBy: m.catalogedBy && m.catalogedBy !== 'N/A' ? m.catalogedBy : undefined,
-      catalogedAt: m.catalogedAt && m.catalogedAt !== 'N/A' ? getFormattedDateTime(m.catalogedAt) : undefined,
-      isFinalized: m.isFinalized !== undefined ? Boolean(m.isFinalized) : (m.status === 'Finalizado'),
-      finalizedBy: m.finalizedBy && m.finalizedBy !== 'N/A' ? m.finalizedBy : undefined,
-      finalizedAt: m.finalizedAt && m.finalizedAt !== 'N/A' ? getFormattedDateTime(m.finalizedAt) : undefined,
-      notes: m.notes || '',
-    }));
+    const materials: MaterialSignal[] = deduplicateMaterials(
+      rawMats.map((m: any) => ({
+        id: String(m.id || `MAT-${Date.now()}`),
+        familyId: String(m.familyId || m.id || ''),
+        title: String(m.title || 'Sin título'),
+        signalType: (m.signalType || 'Limpio') as any,
+        division: (m.division || 'Prensa') as any,
+        duration: formatDurationHHMMSS(m.duration),
+        creationDate: getFormattedDateTime(m.creationDate),
+        createdBy: String(m.createdBy || 'Operador VTV'),
+        creatorRole: m.creatorRole || m.createdByRole || '',
+        status: (m.status || 'Registrado') as any,
+        isRequestTask: m.isRequestTask === true || String(m.isRequestTask).toUpperCase() === 'SI',
+        assignedTo: m.assignedTo && m.assignedTo !== 'Sin asignar' ? m.assignedTo : undefined,
+        assignedPersons: m.assignedPersons || (m.assignedTo && m.assignedTo !== 'Sin asignar' ? m.assignedTo.split(',').map((s: string) => s.trim()) : undefined),
+        assignedToRole: m.assignedToRole || undefined,
+        assignedAt: m.assignedAt ? getFormattedDateTime(m.assignedAt) : undefined,
+        isIngested: m.isIngested !== undefined ? Boolean(m.isIngested) : true,
+        isCataloged: m.isCataloged !== undefined ? Boolean(m.isCataloged) : (m.status === 'Por Archivar' || m.status === 'Finalizado'),
+        catalogedBy: m.catalogedBy && m.catalogedBy !== 'N/A' ? m.catalogedBy : undefined,
+        catalogedAt: m.catalogedAt && m.catalogedAt !== 'N/A' ? getFormattedDateTime(m.catalogedAt) : undefined,
+        isFinalized: m.isFinalized !== undefined ? Boolean(m.isFinalized) : (m.status === 'Finalizado'),
+        finalizedBy: m.finalizedBy && m.finalizedBy !== 'N/A' ? m.finalizedBy : undefined,
+        finalizedAt: m.finalizedAt && m.finalizedAt !== 'N/A' ? getFormattedDateTime(m.finalizedAt) : undefined,
+        notes: m.notes || '',
+      }))
+    );
 
     const rawPersonnel = Array.isArray(json.data.personnel) ? json.data.personnel : [];
     const personnel: Personnel[] = deduplicatePersonnel(

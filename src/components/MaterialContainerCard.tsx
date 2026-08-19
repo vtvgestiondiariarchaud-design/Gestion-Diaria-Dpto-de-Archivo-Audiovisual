@@ -210,7 +210,7 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
             const isActive = idx === activeSignalIndex;
             return (
               <button
-                key={sig.id}
+                key={`sig-pill-${sig.id || group.familyId}-${sig.signalType || 'sig'}-${idx}`}
                 onClick={() => {
                   setActiveSignalIndex(idx);
                   if (!isExpanded) setIsExpanded(true);
@@ -290,7 +290,7 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
               <div className="flex gap-1.5">
                 {group.signals.map((sig, idx) => (
                   <button
-                    key={sig.id}
+                    key={`sig-btn-${sig.id || group.familyId}-${sig.signalType || 'sig'}-${idx}`}
                     onClick={() => setActiveSignalIndex(idx)}
                     className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all ${getSignalPillStyle(
                       sig.signalType,

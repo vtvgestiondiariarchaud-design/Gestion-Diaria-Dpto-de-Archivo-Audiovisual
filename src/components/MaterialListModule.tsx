@@ -734,9 +734,9 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
             </div>
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 pt-1">
-              {paginatedFamilyGroups.map((group) => (
+              {paginatedFamilyGroups.map((group, gIdx) => (
                 <MaterialContainerCard
-                  key={group.familyId}
+                  key={`${group.familyId || 'fam'}-${gIdx}`}
                   group={group}
                   currentUser={currentUser}
                   onUpdateSignalStatus={onUpdateSignalStatus}
@@ -773,8 +773,8 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
-                  {paginatedFilteredMaterials.map((mat) => (
-                    <tr key={mat.id} className="hover:bg-slate-800/40 transition-colors">
+                  {paginatedFilteredMaterials.map((mat, mIdx) => (
+                    <tr key={`${mat.id}-${mat.signalType || 'sig'}-${mIdx}`} className="hover:bg-slate-800/40 transition-colors">
                       <td className="p-3.5 font-mono font-bold text-white">
                         <div>{mat.id}</div>
                         <div className="text-[10px] text-slate-400">FAM: {mat.familyId}</div>

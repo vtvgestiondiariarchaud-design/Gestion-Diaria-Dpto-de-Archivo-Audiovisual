@@ -164,11 +164,11 @@ export const MultiAssignModal: React.FC<MultiAssignModalProps> = ({
               No se encontraron trabajadores con ese término.
             </p>
           ) : (
-            filteredPersonnel.map((p) => {
+            filteredPersonnel.map((p, pIdx) => {
               const isSelected = selectedNames.includes(p.name);
               return (
                 <div
-                  key={p.id}
+                  key={`assign-modal-${p.id || p.name}-${pIdx}`}
                   onClick={() => togglePerson(p.name)}
                   className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer transition-all ${
                     isSelected

@@ -570,9 +570,9 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ materials }) =
                 </p>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2">
-                  {selectedDayMaterials.map((mat) => (
+                  {selectedDayMaterials.map((mat, mIdx) => (
                     <div
-                      key={mat.id}
+                      key={`daymat-${mat.id}-${mat.signalType}-${mIdx}`}
                       className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 text-xs flex items-center justify-between"
                     >
                       <div>
@@ -617,8 +617,8 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ materials }) =
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60">
-              {userTaskStats.map((user) => (
-                <tr key={user.name} className="hover:bg-slate-800/40 transition-colors">
+              {userTaskStats.map((user, uIdx) => (
+                <tr key={`userstat-${user.name}-${uIdx}`} className="hover:bg-slate-800/40 transition-colors">
                   <td className="p-3 font-semibold text-white flex items-center gap-2">
                     <div className="w-6 h-6 rounded-full bg-blue-600/30 text-blue-300 border border-blue-500/40 flex items-center justify-center font-bold text-[10px]">
                       {user.name.charAt(0)}
