@@ -29,8 +29,8 @@ const SHEET_CIERRES = "CIERRES_MENSUALES";
 const MATERIAL_HEADERS = [
   "ID Material",
   "ID Familia",
-  "Título / Descripción",
   "Tipo de Señal",
+  "Título / Descripción",
   "División",
   "Duración",
   "Fecha Creación",
@@ -42,6 +42,7 @@ const MATERIAL_HEADERS = [
   "Rol Asignado",
   "Fecha Asignación",
   "Ingestado",
+  "Ingestado Por",
   "Catalogado",
   "Catalogado Por",
   "Fecha Catalogación",
@@ -101,6 +102,10 @@ function initSheets() {
   let sMat = ss.getSheetByName(SHEET_MATERIALES);
   if (!sMat) {
     sMat = ss.insertSheet(SHEET_MATERIALES);
+    sMat.appendRow(MATERIAL_HEADERS);
+    sMat.getRange(1, 1, 1, MATERIAL_HEADERS.length).setFontWeight("bold").setBackground("#0f172a").setFontColor("#38bdf8");
+    sMat.setFrozenRows(1);
+  } else if (sMat.getLastRow() === 0) {
     sMat.appendRow(MATERIAL_HEADERS);
     sMat.getRange(1, 1, 1, MATERIAL_HEADERS.length).setFontWeight("bold").setBackground("#0f172a").setFontColor("#38bdf8");
     sMat.setFrozenRows(1);
@@ -167,19 +172,13 @@ function handleReadAllData() {
   const materials = [];
   if (sMat && sMat.getLastRow() > 1) {
     const lastCol = Math.max(sMat.getLastColumn(), MATERIAL_HEADERS.length);
-    const headerVals = sMat.getRange(1, 1, 1, lastCol).getValues()[0];
-    const colMap = {};
-    for (let c = 0; c < headerVals.length; c++) {
-      const h = String(headerVals[c] || "").trim().toLowerCase();
-      if (h) colMap[h] = c;
-    }
-
-    const getCol = function(row, headerName, defaultIdx) {
-      const lower = headerName.toLowerCase();
-      if (colMap[lower] !== undefined && colMap[lower] < row.length) {
-        return row[colMap[lower]];
+    const colMap = getMaterialColumnMapping(sMat);
+    const getCol = function(row, colIdx, defaultIdx) {
+      const idx = colIdx !== undefined ? colIdx : defaultIdx;
+      if (idx !== undefined && idx < row.length) {
+        return row[idx];
       }
-      return row[defaultIdx];
+      return "";
     };
 
     const values = sMat.getRange(2, 1, sMat.getLastRow() - 1, lastCol).getValues();
@@ -189,18 +188,18 @@ function handleReadAllData() {
     for (let i = 0; i < values.length; i++) {
       const row = values[i];
       const dispRow = displayValues[i] || [];
-      const getDispCol = function(displayRow, headerName, defaultIdx) {
-        const lower = headerName.toLowerCase();
-        if (colMap[lower] !== undefined && colMap[lower] < displayRow.length) {
-          return displayRow[colMap[lower]];
+      const getDispCol = function(displayRow, colIdx, defaultIdx) {
+        const idx = colIdx !== undefined ? colIdx : defaultIdx;
+        if (idx !== undefined && idx < displayRow.length) {
+          return displayRow[idx];
         }
-        return displayRow[defaultIdx];
+        return "";
       };
 
-      const idVal = String(getCol(row, "ID Material", 0) || "").trim();
-      let famVal = String(getCol(row, "ID Familia", 1) || idVal || "").trim();
-      let titleVal = String(getCol(row, "Título / Descripción", 2) || "").trim();
-      let signalVal = String(getCol(row, "Tipo de Señal", 3) || "Limpio").trim();
+      const idVal = String(getCol(row, colMap.id, 0) || "").trim();
+      let famVal = String(getCol(row, colMap.familyId, 1) || idVal || "").trim();
+      let signalVal = String(getCol(row, colMap.signalType, 2) || "Limpio").trim();
+      let titleVal = String(getCol(row, colMap.title, 3) || "").trim();
 
       if (!idVal && !titleVal && !signalVal) continue;
 
@@ -221,46 +220,69 @@ function handleReadAllData() {
       else if (lowerSig.indexOf("mas") !== -1) signalVal = "Master";
       else signalVal = "Limpio";
 
-      let assignedStr = String(getCol(row, "Asignado A", 11) || "");
+      let assignedStr = String(getCol(row, colMap.assignedTo, 11) || "");
       let assignedPersons = [];
       if (assignedStr && assignedStr !== "Sin asignar") {
         assignedPersons = assignedStr.split(",").map(function(s) { return s.trim(); });
       }
 
-      const rawStatus = String(getCol(row, "Estado", 9) || "Registrado");
+      const rawStatus = String(getCol(row, colMap.status, 9) || "Registrado");
       const isDiscarded = rawStatus.toLowerCase() === "descartado";
-      const isFinalized = !isDiscarded && (String(getCol(row, "Finalizado", 18)).toUpperCase() === "SI" || getCol(row, "Finalizado", 18) === true);
-      const isCataloged = !isDiscarded && (String(getCol(row, "Catalogado", 15)).toUpperCase() === "SI" || getCol(row, "Catalogado", 15) === true);
+      const isFinalized = !isDiscarded && (String(getCol(row, colMap.isFinalized, 19)).toUpperCase() === "SI" || getCol(row, colMap.isFinalized, 19) === true);
+      const isCataloged = !isDiscarded && (String(getCol(row, colMap.isCataloged, 16)).toUpperCase() === "SI" || getCol(row, colMap.isCataloged, 16) === true);
       
-      const rawDur = getDispCol(dispRow, "Duración", 5) || getCol(row, "Duración", 5);
+      const rawDur = getDispCol(dispRow, colMap.duration, 5) || getCol(row, colMap.duration, 5);
       const formattedDuration = formatDurationString(rawDur);
 
       const cleanMatId = idVal || ("MAT-REC-" + (i + 1));
+      const rawCatBy = getCol(row, colMap.catalogedBy, 17);
+      const catByStr = (rawCatBy !== null && rawCatBy !== undefined) ? String(rawCatBy).trim() : "";
+      const isCatByInvalid = !catByStr || catByStr === "N/A" || catByStr.toUpperCase() === "NO" || catByStr.toUpperCase() === "SI" || catByStr.toUpperCase() === "SIN ASIGNAR";
+      const cleanCatBy = (!isDiscarded && !isCatByInvalid) ? catByStr : undefined;
+
+      const rawCatAt = getCol(row, colMap.catalogedAt, 18);
+      const catAtStr = (rawCatAt !== null && rawCatAt !== undefined) ? String(rawCatAt).trim() : "";
+      const cleanCatAt = (!isDiscarded && catAtStr && catAtStr !== "N/A" && catAtStr.toUpperCase() !== "NO") ? formatDateString(rawCatAt) : undefined;
+
+      const rawFinBy = getCol(row, colMap.finalizedBy, 20);
+      const finByStr = (rawFinBy !== null && rawFinBy !== undefined) ? String(rawFinBy).trim() : "";
+      const isFinByInvalid = !finByStr || finByStr === "N/A" || finByStr.toUpperCase() === "NO" || finByStr.toUpperCase() === "SI" || finByStr.toUpperCase() === "SIN ASIGNAR";
+      const cleanFinBy = (!isDiscarded && !isFinByInvalid) ? finByStr : undefined;
+
+      const rawFinAt = getCol(row, colMap.finalizedAt, 21);
+      const finAtStr = (rawFinAt !== null && rawFinAt !== undefined) ? String(rawFinAt).trim() : "";
+      const cleanFinAt = (!isDiscarded && finAtStr && finAtStr !== "N/A" && finAtStr.toUpperCase() !== "NO") ? formatDateString(rawFinAt) : undefined;
+
+      const isIngestedVal = getCol(row, colMap.isIngested, 14);
+      const isIngested = String(isIngestedVal).toUpperCase() === "SI" || isIngestedVal === true || isIngestedVal === 1 || isIngestedVal === "1";
+
+      const rawNotes = getCol(row, colMap.notes, 22);
+
       const matObj = {
         id: cleanMatId,
         familyId: famVal || cleanMatId,
-        title: titleVal || ("Material " + cleanMatId),
+        title: titleVal,
         signalType: signalVal,
-        division: String(getCol(row, "División", 4) || "Prensa"),
+        division: String(getCol(row, colMap.division, 4) || "Prensa"),
         duration: formattedDuration,
-        creationDate: formatDateString(getCol(row, "Fecha Creación", 6)),
-        createdBy: String(getCol(row, "Creado Por", 7) || ""),
-        creatorRole: String(getCol(row, "Rol Creador", 8) || ""),
+        creationDate: formatDateString(getCol(row, colMap.creationDate, 6)),
+        createdBy: String(getCol(row, colMap.createdBy, 7) || ""),
+        creatorRole: String(getCol(row, colMap.creatorRole, 8) || ""),
         status: isDiscarded ? "Descartado" : rawStatus,
         isDiscarded: isDiscarded,
-        isRequestTask: String(getCol(row, "Es Solicitud / Tarea", 10)).toUpperCase() === "SI" || getCol(row, "Es Solicitud / Tarea", 10) === true,
-        assignedTo: assignedStr && assignedStr !== "Sin asignar" ? assignedStr : undefined,
+        isRequestTask: String(getCol(row, colMap.isRequestTask, 10)).toUpperCase() === "SI" || getCol(row, colMap.isRequestTask, 10) === true,
+        assignedTo: assignedStr && assignedStr !== "Sin asignar" && assignedStr.toUpperCase() !== "NO" && assignedStr.toUpperCase() !== "SI" ? assignedStr : undefined,
         assignedPersons: assignedPersons.length > 0 ? assignedPersons : undefined,
-        assignedToRole: getCol(row, "Rol Asignado", 12) ? String(getCol(row, "Rol Asignado", 12)) : undefined,
-        assignedAt: getCol(row, "Fecha Asignación", 13) ? formatDateString(getCol(row, "Fecha Asignación", 13)) : undefined,
-        isIngested: String(getCol(row, "Ingestado", 14)).toUpperCase() === "SI" || getCol(row, "Ingestado", 14) === true,
+        assignedToRole: getCol(row, colMap.assignedToRole, 12) ? String(getCol(row, colMap.assignedToRole, 12)) : undefined,
+        assignedAt: getCol(row, colMap.assignedAt, 13) ? formatDateString(getCol(row, colMap.assignedAt, 13)) : undefined,
+        isIngested: isIngested,
         isCataloged: isCataloged,
-        catalogedBy: !isDiscarded && getCol(row, "Catalogado Por", 16) && getCol(row, "Catalogado Por", 16) !== "N/A" ? String(getCol(row, "Catalogado Por", 16)) : undefined,
-        catalogedAt: !isDiscarded && getCol(row, "Fecha Catalogación", 17) && getCol(row, "Fecha Catalogación", 17) !== "N/A" ? formatDateString(getCol(row, "Fecha Catalogación", 17)) : undefined,
+        catalogedBy: cleanCatBy,
+        catalogedAt: cleanCatAt,
         isFinalized: isFinalized,
-        finalizedBy: !isDiscarded && getCol(row, "Finalizado Por", 19) && getCol(row, "Finalizado Por", 19) !== "N/A" ? String(getCol(row, "Finalizado Por", 19)) : undefined,
-        finalizedAt: !isDiscarded && getCol(row, "Fecha Finalizado", 20) && getCol(row, "Fecha Finalizado", 20) !== "N/A" ? formatDateString(getCol(row, "Fecha Finalizado", 20)) : undefined,
-        notes: getCol(row, "Notas / Observaciones", 21) ? String(getCol(row, "Notas / Observaciones", 21)) : ""
+        finalizedBy: cleanFinBy,
+        finalizedAt: cleanFinAt,
+        notes: rawNotes ? String(rawNotes) : ""
       };
 
       // Deduplicate in memory in case Google Sheets contains duplicate rows with the same ID
@@ -377,8 +399,8 @@ function getMaterialColumnMapping(sMat) {
   var map = {
     id: 0,
     familyId: 1,
-    title: 2,
-    signalType: 3,
+    signalType: 2,
+    title: 3,
     division: 4,
     duration: 5,
     creationDate: 6,
@@ -390,40 +412,66 @@ function getMaterialColumnMapping(sMat) {
     assignedToRole: 12,
     assignedAt: 13,
     isIngested: 14,
-    isCataloged: 15,
-    catalogedBy: 16,
-    catalogedAt: 17,
-    isFinalized: 18,
-    finalizedBy: 19,
-    finalizedAt: 20,
-    notes: 21
+    ingestedBy: 15,
+    isCataloged: 16,
+    catalogedBy: 17,
+    catalogedAt: 18,
+    isFinalized: 19,
+    finalizedBy: 20,
+    finalizedAt: 21,
+    notes: 22
   };
 
   for (var c = 0; c < headerVals.length; c++) {
     var h = String(headerVals[c] || "").trim().toLowerCase();
     if (!h) continue;
-    if (h.indexOf("id material") !== -1 || h === "id" || h === "codigo" || h === "código") map.id = c;
-    else if (h.indexOf("id familia") !== -1 || h.indexOf("familia") !== -1) map.familyId = c;
-    else if (h.indexOf("título") !== -1 || h.indexOf("titulo") !== -1 || h.indexOf("descripción") !== -1 || h.indexOf("descripcion") !== -1) map.title = c;
-    else if (h.indexOf("señal") !== -1 || h.indexOf("senal") !== -1 || h.indexOf("tipo") !== -1) map.signalType = c;
-    else if (h.indexOf("división") !== -1 || h.indexOf("division") !== -1) map.division = c;
-    else if (h.indexOf("duración") !== -1 || h.indexOf("duracion") !== -1 || h.indexOf("tiempo") !== -1) map.duration = c;
-    else if (h.indexOf("fecha creación") !== -1 || h.indexOf("creacion") !== -1) map.creationDate = c;
-    else if (h.indexOf("creado por") !== -1) map.createdBy = c;
-    else if (h.indexOf("rol creador") !== -1) map.creatorRole = c;
-    else if (h === "estado" || h.indexOf("status") !== -1) map.status = c;
-    else if (h.indexOf("solicitud") !== -1 || h.indexOf("tarea") !== -1) map.isRequestTask = c;
-    else if (h.indexOf("asignado a") !== -1) map.assignedTo = c;
-    else if (h.indexOf("rol asignado") !== -1) map.assignedToRole = c;
-    else if (h.indexOf("fecha asignación") !== -1 || h.indexOf("asignacion") !== -1) map.assignedAt = c;
-    else if (h.indexOf("ingestado") !== -1) map.isIngested = c;
-    else if (h === "catalogado") map.isCataloged = c;
-    else if (h.indexOf("catalogado por") !== -1) map.catalogedBy = c;
-    else if (h.indexOf("fecha catalogación") !== -1 || h.indexOf("fecha catalogacion") !== -1) map.catalogedAt = c;
-    else if (h === "finalizado") map.isFinalized = c;
-    else if (h.indexOf("finalizado por") !== -1) map.finalizedBy = c;
-    else if (h.indexOf("fecha finalizado") !== -1) map.finalizedAt = c;
-    else if (h.indexOf("notas") !== -1 || h.indexOf("observaciones") !== -1) map.notes = c;
+    if (h.indexOf("id material") !== -1 || h === "id" || h === "codigo" || h === "código") {
+      map.id = c;
+    } else if (h.indexOf("id familia") !== -1 || h.indexOf("familia") !== -1) {
+      map.familyId = c;
+    } else if (h.indexOf("tipo de señal") !== -1 || h.indexOf("tipo de senal") !== -1 || h.indexOf("tipo señal") !== -1 || h.indexOf("tipo senal") !== -1 || h === "señal" || h === "senal" || h === "tipo") {
+      map.signalType = c;
+    } else if (h.indexOf("título") !== -1 || h.indexOf("titulo") !== -1 || h.indexOf("descripción") !== -1 || h.indexOf("descripcion") !== -1 || h.indexOf("nombre del material") !== -1 || h.indexOf("nombre material") !== -1 || h.indexOf("programa") !== -1 || h === "nombre" || h === "material") {
+      map.title = c;
+    } else if (h.indexOf("división") !== -1 || h.indexOf("division") !== -1) {
+      map.division = c;
+    } else if (h.indexOf("duración") !== -1 || h.indexOf("duracion") !== -1 || h.indexOf("tiempo") !== -1) {
+      map.duration = c;
+    } else if (h.indexOf("fecha creación") !== -1 || h.indexOf("fecha creacion") !== -1 || (h.indexOf("creación") !== -1 && h.indexOf("fecha") !== -1)) {
+      map.creationDate = c;
+    } else if (h.indexOf("creado por") !== -1 || h.indexOf("creador") !== -1 || h.indexOf("autor") !== -1) {
+      map.createdBy = c;
+    } else if (h.indexOf("rol creador") !== -1 || h.indexOf("cargo creador") !== -1) {
+      map.creatorRole = c;
+    } else if (h === "estado" || h.indexOf("status") !== -1) {
+      map.status = c;
+    } else if (h.indexOf("solicitud") !== -1 || h.indexOf("tarea") !== -1) {
+      map.isRequestTask = c;
+    } else if (h.indexOf("asignado a") !== -1 || h === "asignado") {
+      map.assignedTo = c;
+    } else if (h.indexOf("rol asignado") !== -1 || h.indexOf("cargo asignado") !== -1) {
+      map.assignedToRole = c;
+    } else if (h.indexOf("fecha asignación") !== -1 || h.indexOf("fecha asignacion") !== -1 || (h.indexOf("asignación") !== -1 && h.indexOf("fecha") !== -1)) {
+      map.assignedAt = c;
+    } else if (h.indexOf("ingestado por") !== -1 || h.indexOf("ingestador") !== -1) {
+      map.ingestedBy = c;
+    } else if (h.indexOf("ingestado") !== -1 || h.indexOf("ingesta") !== -1) {
+      map.isIngested = c;
+    } else if (h.indexOf("catalogado por") !== -1 || h.indexOf("archivado por") !== -1 || h.indexOf("documentado por") !== -1 || h.indexOf("catalogador") !== -1 || h.indexOf("archivador") !== -1) {
+      map.catalogedBy = c;
+    } else if (h.indexOf("fecha catalogación") !== -1 || h.indexOf("fecha catalogacion") !== -1 || h.indexOf("fecha archivo") !== -1 || h.indexOf("fecha de archivo") !== -1 || h.indexOf("fecha documentado") !== -1) {
+      map.catalogedAt = c;
+    } else if (h === "catalogado" || h.indexOf("catalogada") !== -1 || h.indexOf("para archivar") !== -1 || h.indexOf("archivado") !== -1 || h.indexOf("archivada") !== -1) {
+      map.isCataloged = c;
+    } else if (h.indexOf("finalizado por") !== -1 || h.indexOf("finalizador") !== -1 || h.indexOf("aprobado por") !== -1) {
+      map.finalizedBy = c;
+    } else if (h.indexOf("fecha finalizado") !== -1 || h.indexOf("fecha finalizacion") !== -1 || h.indexOf("fecha finalización") !== -1 || (h.indexOf("finalizado") !== -1 && h.indexOf("fecha") !== -1)) {
+      map.finalizedAt = c;
+    } else if (h === "finalizado" || h.indexOf("finalizada") !== -1) {
+      map.isFinalized = c;
+    } else if (h.indexOf("notas") !== -1 || h.indexOf("observaciones") !== -1 || h.indexOf("comentarios") !== -1) {
+      map.notes = c;
+    }
   }
 
   return map;
@@ -448,12 +496,12 @@ function findMatchingMaterialRows(sMat, targetId, familyId, signalType) {
     var rowFam = String(row[colMap.familyId] || "").trim().toLowerCase();
     var rowSig = String(row[colMap.signalType] || "").trim().toLowerCase();
 
-    // 1. Coincidencia exacta o parcial de ID de material
-    if (cleanTargetId && (rowId === cleanTargetId || (rowId && cleanTargetId && (rowId.indexOf(cleanTargetId) !== -1 || cleanTargetId.indexOf(rowId) !== -1 && rowId.length > 5)))) {
+    // 1. Coincidencia exacta de ID de material
+    if (cleanTargetId && rowId === cleanTargetId) {
       matches.push(i + 2); // 1-based row index in Sheets
     }
     // 2. Coincidencia por Familia y Tipo de Señal
-    else if (cleanFamilyId && cleanSignal && rowFam === cleanFamilyId && (rowSig === cleanSignal || rowSig.indexOf(cleanSignal) !== -1 || cleanSignal.indexOf(rowSig) !== -1)) {
+    else if (cleanFamilyId && cleanSignal && rowFam === cleanFamilyId && rowSig === cleanSignal) {
       matches.push(i + 2);
     }
   }
@@ -474,7 +522,7 @@ function findRowIndexById(sheet, colIndex, targetId) {
   return -1;
 }
 
-function materialToRowArray(m) {
+function materialToRowArray(m, colMap) {
   let assignedStr = m.assignedTo || "";
   if (m.assignedPersons && m.assignedPersons.length > 0) {
     assignedStr = m.assignedPersons.join(", ");
@@ -486,30 +534,77 @@ function materialToRowArray(m) {
   const isCataloged = !isDiscarded && (m.isCataloged === true || status === "Por Archivar" || isFinalized);
   const cleanDuration = formatDurationString(m.duration);
 
-  return [
-    m.id || "",
-    m.familyId || m.id || "",
-    m.title || "",
-    m.signalType || "Limpio",
-    m.division || "Prensa",
-    cleanDuration,
-    m.creationDate || "",
-    m.createdBy || "",
-    m.creatorRole || m.createdByRole || "",
-    status,
-    (m.isRequestTask === true) ? "SI" : "NO",
-    assignedStr || "Sin asignar",
-    m.assignedToRole || "",
-    m.assignedAt || "",
-    (m.isIngested === true || m.isIngested === undefined) ? "SI" : "NO",
-    (isCataloged) ? "SI" : "NO",
-    isDiscarded ? "N/A" : (m.catalogedBy || "N/A"),
-    isDiscarded ? "N/A" : (m.catalogedAt || "N/A"),
-    (isFinalized) ? "SI" : "NO",
-    isDiscarded ? "N/A" : (m.finalizedBy || "N/A"),
-    isDiscarded ? "N/A" : (m.finalizedAt || "N/A"),
-    m.notes || ""
-  ];
+  const fieldValues = {
+    id: m.id || "",
+    familyId: m.familyId || m.id || "",
+    title: m.title || "",
+    signalType: m.signalType || "Limpio",
+    division: m.division || "Prensa",
+    duration: cleanDuration,
+    creationDate: m.creationDate || "",
+    createdBy: m.createdBy || "",
+    creatorRole: m.creatorRole || m.createdByRole || "",
+    status: status,
+    isRequestTask: (m.isRequestTask === true) ? "SI" : "NO",
+    assignedTo: assignedStr || "Sin asignar",
+    assignedToRole: m.assignedToRole || "",
+    assignedAt: m.assignedAt || "",
+    isIngested: (m.isIngested === true || m.isIngested === undefined) ? "SI" : "NO",
+    ingestedBy: m.ingestedBy || "",
+    isCataloged: (isCataloged) ? "SI" : "NO",
+    catalogedBy: isDiscarded ? "N/A" : (m.catalogedBy || "N/A"),
+    catalogedAt: isDiscarded ? "N/A" : (m.catalogedAt || "N/A"),
+    isFinalized: (isFinalized) ? "SI" : "NO",
+    finalizedBy: isDiscarded ? "N/A" : (m.finalizedBy || "N/A"),
+    finalizedAt: isDiscarded ? "N/A" : (m.finalizedAt || "N/A"),
+    notes: m.notes || ""
+  };
+
+  if (!colMap) {
+    return [
+      fieldValues.id,
+      fieldValues.familyId,
+      fieldValues.signalType,
+      fieldValues.title,
+      fieldValues.division,
+      fieldValues.duration,
+      fieldValues.creationDate,
+      fieldValues.createdBy,
+      fieldValues.creatorRole,
+      fieldValues.status,
+      fieldValues.isRequestTask,
+      fieldValues.assignedTo,
+      fieldValues.assignedToRole,
+      fieldValues.assignedAt,
+      fieldValues.isIngested,
+      fieldValues.ingestedBy,
+      fieldValues.isCataloged,
+      fieldValues.catalogedBy,
+      fieldValues.catalogedAt,
+      fieldValues.isFinalized,
+      fieldValues.finalizedBy,
+      fieldValues.finalizedAt,
+      fieldValues.notes
+    ];
+  }
+
+  var maxIdx = 22;
+  for (var key in colMap) {
+    if (typeof colMap[key] === "number" && colMap[key] > maxIdx) {
+      maxIdx = colMap[key];
+    }
+  }
+
+  var row = new Array(maxIdx + 1);
+  for (var i = 0; i < row.length; i++) row[i] = "";
+  for (var fieldKey in fieldValues) {
+    var cIdx = colMap[fieldKey];
+    if (typeof cIdx === "number" && cIdx >= 0) {
+      row[cIdx] = fieldValues[fieldKey];
+    }
+  }
+
+  return row;
 }
 
 function personnelToRowArray(p) {
@@ -571,10 +666,10 @@ function doPost(e) {
       materials.forEach(function(m) {
         if (!m || !m.id) return;
         const matchingRows = findMatchingMaterialRows(sMat, m.id, m.familyId, m.signalType);
-        const rowData = materialToRowArray(m);
+        const rowData = materialToRowArray(m, colMap);
         if (matchingRows.length > 0) {
           const targetRow = matchingRows[0];
-          sMat.getRange(targetRow, 1, 1, MATERIAL_HEADERS.length).setValues([rowData]);
+          sMat.getRange(targetRow, 1, 1, rowData.length).setValues([rowData]);
           sMat.getRange(targetRow, colMap.duration + 1).setNumberFormat("@").setValue(String(m.duration || "00:00:00"));
           // Eliminar duplicados si existieran
           if (matchingRows.length > 1) {
@@ -621,7 +716,8 @@ function doPost(e) {
       if (primaryRow <= 0) {
         // Si no existe en la hoja, lo insertamos
         if (body.material) {
-          sMat.appendRow(materialToRowArray(body.material));
+          const newRowData = materialToRowArray(body.material, colMap);
+          sMat.appendRow(newRowData);
           const newRow = sMat.getLastRow();
           sMat.getRange(newRow, colMap.duration + 1).setNumberFormat("@").setValue(String(body.material.duration || "00:00:00"));
           return responseJSON({ success: true, message: "Material registrado en Sheets.", row: newRow });
@@ -631,8 +727,8 @@ function doPost(e) {
 
       // Si viene el objeto completo de material, actualizamos la fila entera
       if (body.material) {
-        const rowArr = materialToRowArray(body.material);
-        sMat.getRange(primaryRow, 1, 1, MATERIAL_HEADERS.length).setValues([rowArr]);
+        const rowArr = materialToRowArray(body.material, colMap);
+        sMat.getRange(primaryRow, 1, 1, rowArr.length).setValues([rowArr]);
         sMat.getRange(primaryRow, colMap.duration + 1).setNumberFormat("@").setValue(String(body.material.duration || "00:00:00"));
       } else if (body.updates) {
         // Actualizaciones específicas de columnas
@@ -754,12 +850,18 @@ function doPost(e) {
       const sMat = ss.getSheetByName(SHEET_MATERIALES);
       if (!sMat || sMat.getLastRow() <= 1) return responseJSON({ success: true, count: 0 });
 
+      const colMap = getMaterialColumnMapping(sMat);
       const numRows = sMat.getLastRow() - 1;
-      const famValues = sMat.getRange(2, 2, numRows, 1).getValues();
-      const idValues = sMat.getRange(2, 1, numRows, 1).getValues();
+      const famValues = sMat.getRange(2, colMap.familyId + 1, numRows, 1).getValues();
+      const idValues = sMat.getRange(2, colMap.id + 1, numRows, 1).getValues();
       const searchFam = String(familyId).trim().toLowerCase();
       const u = body.updates || {};
       let updatedCount = 0;
+
+      let assignedStr = u.assignedTo;
+      if (u.assignedPersons && Array.isArray(u.assignedPersons)) {
+        assignedStr = u.assignedPersons.length > 0 ? u.assignedPersons.join(", ") : "Sin asignar";
+      }
 
       for (let i = 0; i < numRows; i++) {
         const rowFam = String(famValues[i][0]).trim().toLowerCase();
@@ -769,22 +871,28 @@ function doPost(e) {
           const isDiscarding = u.status === "Descartado" || u.isDiscarded === true;
 
           if (isDiscarding) {
-            sMat.getRange(r, 10).setValue("Descartado");
-            sMat.getRange(r, 16).setValue("NO");
-            sMat.getRange(r, 17).setValue("N/A");
-            sMat.getRange(r, 18).setValue("N/A");
-            sMat.getRange(r, 19).setValue("NO");
-            sMat.getRange(r, 20).setValue("N/A");
-            sMat.getRange(r, 21).setValue("N/A");
+            sMat.getRange(r, colMap.status + 1).setValue("Descartado");
+            sMat.getRange(r, colMap.isCataloged + 1).setValue("NO");
+            sMat.getRange(r, colMap.catalogedBy + 1).setValue("N/A");
+            sMat.getRange(r, colMap.catalogedAt + 1).setValue("N/A");
+            sMat.getRange(r, colMap.isFinalized + 1).setValue("NO");
+            sMat.getRange(r, colMap.finalizedBy + 1).setValue("N/A");
+            sMat.getRange(r, colMap.finalizedAt + 1).setValue("N/A");
           } else {
-            if (u.status !== undefined) sMat.getRange(r, 10).setValue(u.status);
-            if (u.isIngested !== undefined) sMat.getRange(r, 15).setValue(u.isIngested ? "SI" : "NO");
-            if (u.isCataloged !== undefined) sMat.getRange(r, 16).setValue(u.isCataloged ? "SI" : "NO");
-            if (u.catalogedBy !== undefined) sMat.getRange(r, 17).setValue(u.catalogedBy || "N/A");
-            if (u.catalogedAt !== undefined) sMat.getRange(r, 18).setValue(u.catalogedAt || "N/A");
-            if (u.isFinalized !== undefined) sMat.getRange(r, 19).setValue(u.isFinalized ? "SI" : "NO");
-            if (u.finalizedBy !== undefined) sMat.getRange(r, 20).setValue(u.finalizedBy || "N/A");
-            if (u.finalizedAt !== undefined) sMat.getRange(r, 21).setValue(u.finalizedAt || "N/A");
+            if (u.title !== undefined) sMat.getRange(r, colMap.title + 1).setValue(u.title);
+            if (u.division !== undefined) sMat.getRange(r, colMap.division + 1).setValue(u.division);
+            if (u.notes !== undefined) sMat.getRange(r, colMap.notes + 1).setValue(u.notes);
+            if (u.status !== undefined) sMat.getRange(r, colMap.status + 1).setValue(u.status);
+            if (u.isIngested !== undefined) sMat.getRange(r, colMap.isIngested + 1).setValue(u.isIngested ? "SI" : "NO");
+            if (u.isCataloged !== undefined) sMat.getRange(r, colMap.isCataloged + 1).setValue(u.isCataloged ? "SI" : "NO");
+            if (u.catalogedBy !== undefined) sMat.getRange(r, colMap.catalogedBy + 1).setValue(u.catalogedBy || "N/A");
+            if (u.catalogedAt !== undefined) sMat.getRange(r, colMap.catalogedAt + 1).setValue(u.catalogedAt || "N/A");
+            if (u.isFinalized !== undefined) sMat.getRange(r, colMap.isFinalized + 1).setValue(u.isFinalized ? "SI" : "NO");
+            if (u.finalizedBy !== undefined) sMat.getRange(r, colMap.finalizedBy + 1).setValue(u.finalizedBy || "N/A");
+            if (u.finalizedAt !== undefined) sMat.getRange(r, colMap.finalizedAt + 1).setValue(u.finalizedAt || "N/A");
+            if (assignedStr !== undefined) sMat.getRange(r, colMap.assignedTo + 1).setValue(assignedStr || "Sin asignar");
+            if (u.assignedToRole !== undefined) sMat.getRange(r, colMap.assignedToRole + 1).setValue(u.assignedToRole || "");
+            if (u.assignedAt !== undefined) sMat.getRange(r, colMap.assignedAt + 1).setValue(u.assignedAt || "");
           }
           updatedCount++;
         }

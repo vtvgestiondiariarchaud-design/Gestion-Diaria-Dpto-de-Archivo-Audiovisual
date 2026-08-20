@@ -245,6 +245,24 @@ export function formatHoursVerbose(totalSeconds: number): string {
   return parts.join(' ');
 }
 
+export const isValidPersonName = (name?: string | null): boolean => {
+  if (!name) return false;
+  const str = String(name).trim();
+  if (!str) return false;
+  const upper = str.toUpperCase();
+  if (
+    upper === 'N/A' ||
+    upper === 'NO' ||
+    upper === 'SI' ||
+    upper === 'SIN ASIGNAR' ||
+    upper === 'UNDEFINED' ||
+    upper === 'NULL'
+  ) {
+    return false;
+  }
+  return true;
+};
+
 const STANDARD_SIGNAL_TYPES: string[] = ['Limpio', 'Insert', 'Master'];
 
 export function sanitizeMaterialSignal(mat: any): MaterialSignal {
@@ -277,12 +295,13 @@ export function sanitizeMaterialSignal(mat: any): MaterialSignal {
     signalType = 'Limpio';
   }
 
-  // Ensure title is not empty or equal to a bare signalType
-  if (!title || STANDARD_SIGNAL_TYPES.some((st) => st.toLowerCase() === title.toLowerCase())) {
-    if (mat.notes && mat.notes.trim() && !STANDARD_SIGNAL_TYPES.some((st) => st.toLowerCase() === mat.notes.trim().toLowerCase())) {
+  // Clean title: Avoid auto-generated legacy notes as title
+  const isLegacyAutoNote = title.toLowerCase().includes('registrada automáticamente en familia') || title.toLowerCase().includes('registrada automaticamente en familia');
+  if (isLegacyAutoNote) {
+    if (mat.notes && mat.notes.trim() && !mat.notes.toLowerCase().includes('registrada autom') && !STANDARD_SIGNAL_TYPES.some((st) => st.toLowerCase() === mat.notes.trim().toLowerCase())) {
       title = mat.notes.trim();
     } else {
-      title = `Material ${mat.id || ''}`.trim();
+      title = '';
     }
   }
 
@@ -299,6 +318,10 @@ export function sanitizeMaterialSignal(mat: any): MaterialSignal {
   else if (isCataloged) status = 'Por Archivar';
   else status = (mat.status as MaterialStatus) || 'Registrado';
 
+  const cleanCatalogedBy = (!isDiscarded && isValidPersonName(mat.catalogedBy)) ? String(mat.catalogedBy).trim() : undefined;
+  const cleanFinalizedBy = (!isDiscarded && isValidPersonName(mat.finalizedBy)) ? String(mat.finalizedBy).trim() : undefined;
+  const cleanAssignedTo = isValidPersonName(mat.assignedTo) ? String(mat.assignedTo).trim() : undefined;
+
   return {
     ...mat,
     id: cleanId,
@@ -310,31 +333,75 @@ export function sanitizeMaterialSignal(mat: any): MaterialSignal {
     isCataloged,
     isFinalized,
     isIngested: mat.isIngested !== false,
+    catalogedBy: cleanCatalogedBy,
+    finalizedBy: cleanFinalizedBy,
+    assignedTo: cleanAssignedTo,
     duration: formatDurationHHMMSS(mat.duration),
     creationDate: getFormattedDateTime(mat.creationDate),
   };
 }
 
-// Group materials by Family ID and Title coherence
+// Group materials by Family ID
 export function groupMaterialsByFamily(materials: MaterialSignal[]): MaterialFamilyGroup[] {
   if (!Array.isArray(materials)) return [];
   const sanitized = materials.map(sanitizeMaterialSignal);
   const familyMap = new Map<string, MaterialSignal[]>();
 
   sanitized.forEach((mat) => {
-    // Group by familyId combined with normalized title to ensure unrelated activities
-    // are never grouped into the same card even if they shared a legacy family ID
-    const normTitle = mat.title.trim().toLowerCase();
-    const groupKey = mat.familyId ? `${mat.familyId}:::${normTitle}` : `${mat.id}:::${normTitle}`;
-    if (!familyMap.has(groupKey)) {
-      familyMap.set(groupKey, []);
+    // Group strictly by familyId so all signals of the same family stay together in one card
+    const cleanFamId = (mat.familyId && mat.familyId.trim()) ? mat.familyId.trim() : mat.id;
+    if (!familyMap.has(cleanFamId)) {
+      familyMap.set(cleanFamId, []);
     }
-    familyMap.get(groupKey)!.push(mat);
+    familyMap.get(cleanFamId)!.push(mat);
   });
 
   const groups: MaterialFamilyGroup[] = [];
 
-  familyMap.forEach((signals) => {
+  familyMap.forEach((signals, familyId) => {
+    // Determine the best clean human title for this family
+    let commonTitle = '';
+
+    // 1. Look for any genuine human title across all signals in this family
+    for (const s of signals) {
+      const t = String(s.title || '').trim();
+      const isAutoId = /^material\s+(mat|fam)-/i.test(t) || /^(mat|fam)-/i.test(t);
+      const isAutoNote = t.toLowerCase().includes('registrada autom');
+      const isStandardSig = STANDARD_SIGNAL_TYPES.some((st) => st.toLowerCase() === t.toLowerCase());
+      const isGeneric = t === 'Sin título' || t === 'Material sin título' || !t;
+
+      if (!isAutoId && !isAutoNote && !isStandardSig && !isGeneric) {
+        commonTitle = t;
+        break;
+      }
+    }
+
+    // 2. If not found in title, check if notes has a human-readable title
+    if (!commonTitle) {
+      for (const s of signals) {
+        const n = String(s.notes || '').trim();
+        const isAutoNote = n.toLowerCase().includes('registrada autom');
+        const isAutoId = /^material\s+(mat|fam)-/i.test(n) || /^(mat|fam)-/i.test(n);
+        const isStandardSig = STANDARD_SIGNAL_TYPES.some((st) => st.toLowerCase() === n.toLowerCase());
+        if (n && !isAutoNote && !isAutoId && !isStandardSig) {
+          commonTitle = n;
+          break;
+        }
+      }
+    }
+
+    // 3. Fallback: if all signals literally only had an ID or no title, use the cleanest non-empty title or 'Material sin título'
+    if (!commonTitle) {
+      const nonIdTitle = signals.find((s) => s.title && s.title.trim() && !/^material\s+(mat|fam)-/i.test(s.title) && !/^(mat|fam)-/i.test(s.title))?.title;
+      commonTitle = nonIdTitle?.trim() || signals[0]?.title?.trim() || 'Material sin título';
+    }
+
+    // Harmonize title and familyId across all signals in this family
+    signals.forEach((s) => {
+      s.title = commonTitle;
+      s.familyId = familyId;
+    });
+
     // Sort signals in logical order: Limpio, Insert, Master, then custom types
     const orderScore: Record<string, number> = { Limpio: 1, Insert: 2, Master: 3 };
     signals.sort((a, b) => (orderScore[a.signalType] || 10) - (orderScore[b.signalType] || 10));
@@ -367,8 +434,8 @@ export function groupMaterialsByFamily(materials: MaterialSignal[]): MaterialFam
     const isAllFinalized = activeSignals.length > 0 && activeSignals.every((s) => s.isFinalized);
 
     groups.push({
-      familyId: mainSignal.familyId || mainSignal.id,
-      title: mainSignal.title,
+      familyId: familyId,
+      title: commonTitle,
       division: mainSignal.division,
       creationDate: mainSignal.creationDate,
       createdBy: mainSignal.createdBy,
@@ -424,12 +491,24 @@ export function deduplicateMaterials(list: MaterialSignal[]): MaterialSignal[] {
         effectiveDuration = mat.duration;
       }
 
+      const catalogedBy = isDiscarded
+        ? undefined
+        : (isValidPersonName(mat.catalogedBy) ? mat.catalogedBy : (isValidPersonName(existing.catalogedBy) ? existing.catalogedBy : undefined));
+      const finalizedBy = isDiscarded
+        ? undefined
+        : (isValidPersonName(mat.finalizedBy) ? mat.finalizedBy : (isValidPersonName(existing.finalizedBy) ? existing.finalizedBy : undefined));
+      const assignedTo = isValidPersonName(mat.assignedTo) ? mat.assignedTo : (isValidPersonName(existing.assignedTo) ? existing.assignedTo : undefined);
+
+      const isMatTitleAuto = !mat.title || /^material\s+(mat|fam)-/i.test(mat.title) || /^(mat|fam)-/i.test(mat.title) || mat.title === 'Sin título' || mat.title === 'Material sin título' || mat.title.toLowerCase().includes('registrada autom');
+      const isExtTitleAuto = !existing.title || /^material\s+(mat|fam)-/i.test(existing.title) || /^(mat|fam)-/i.test(existing.title) || existing.title === 'Sin título' || existing.title === 'Material sin título' || existing.title.toLowerCase().includes('registrada autom');
+      const effectiveTitle = (!isMatTitleAuto ? mat.title : (!isExtTitleAuto ? existing.title : (mat.title || existing.title || 'Material sin título')));
+
       map.set(cleanId, {
         ...existing,
         ...mat,
         id: cleanId,
         familyId: mat.familyId || existing.familyId || cleanId,
-        title: mat.title || existing.title,
+        title: effectiveTitle,
         signalType: mat.signalType || existing.signalType,
         duration: effectiveDuration,
         notes: mat.notes || existing.notes,
@@ -438,11 +517,11 @@ export function deduplicateMaterials(list: MaterialSignal[]): MaterialSignal[] {
         isCataloged,
         isIngested,
         status,
-        catalogedBy: isDiscarded ? undefined : (mat.catalogedBy || existing.catalogedBy),
+        catalogedBy,
         catalogedAt: isDiscarded ? undefined : (mat.catalogedAt || existing.catalogedAt),
-        finalizedBy: isDiscarded ? undefined : (mat.finalizedBy || existing.finalizedBy),
+        finalizedBy,
         finalizedAt: isDiscarded ? undefined : (mat.finalizedAt || existing.finalizedAt),
-        assignedTo: mat.assignedTo || existing.assignedTo,
+        assignedTo,
         assignedPersons: mat.assignedPersons || existing.assignedPersons,
       });
     }
@@ -559,21 +638,63 @@ export function mergeMaterials(
       const isRemoteDiscarded = remoteItem.status === 'Descartado' || Boolean(remoteItem.isDiscarded);
 
       // Si el local tiene un estado más avanzado o diferente (ej. descartado, finalizado o duración modificada)
-      if (
+      const hasMoreAdvancedState =
         (isLocalDiscarded && !isRemoteDiscarded) ||
         (localItem.status === 'Descartado' && remoteItem.status !== 'Descartado') ||
         (localItem.isFinalized && !remoteItem.isFinalized) ||
         (localItem.isCataloged && !remoteItem.isCataloged) ||
-        (localDurSecs > 0 && localDurSecs !== remoteDurSecs)
-      ) {
+        (localDurSecs > 0 && localDurSecs !== remoteDurSecs) ||
+        (isValidPersonName(localItem.catalogedBy) && !isValidPersonName(remoteItem.catalogedBy)) ||
+        (isValidPersonName(localItem.finalizedBy) && !isValidPersonName(remoteItem.finalizedBy)) ||
+        (isValidPersonName(localItem.assignedTo) && !isValidPersonName(remoteItem.assignedTo));
+
+      const isLocalTitleAuto = !localItem.title || /^material\s+(mat|fam)-/i.test(localItem.title) || /^(mat|fam)-/i.test(localItem.title) || localItem.title.toLowerCase().includes('registrada autom');
+      const isRemoteTitleAuto = !remoteItem.title || /^material\s+(mat|fam)-/i.test(remoteItem.title) || /^(mat|fam)-/i.test(remoteItem.title) || remoteItem.title.toLowerCase().includes('registrada autom');
+      const bestTitle = (!isRemoteTitleAuto ? remoteItem.title : (!isLocalTitleAuto ? localItem.title : (remoteItem.title || localItem.title || 'Material sin título')));
+
+      if (hasMoreAdvancedState) {
+        const catBy = isValidPersonName(localItem.catalogedBy)
+          ? localItem.catalogedBy
+          : (isValidPersonName(remoteItem.catalogedBy) ? remoteItem.catalogedBy : undefined);
+        const finBy = isValidPersonName(localItem.finalizedBy)
+          ? localItem.finalizedBy
+          : (isValidPersonName(remoteItem.finalizedBy) ? remoteItem.finalizedBy : undefined);
+        const assTo = isValidPersonName(localItem.assignedTo)
+          ? localItem.assignedTo
+          : (isValidPersonName(remoteItem.assignedTo) ? remoteItem.assignedTo : undefined);
+
         mergedMap.set(localItem.id, {
           ...remoteItem,
           ...localItem,
+          title: bestTitle,
           duration: localDurSecs > 0 ? localItem.duration : remoteItem.duration,
           status: isLocalDiscarded ? 'Descartado' : (localItem.status || remoteItem.status),
           isDiscarded: isLocalDiscarded || isRemoteDiscarded,
+          catalogedBy: catBy,
+          finalizedBy: finBy,
+          assignedTo: assTo,
         });
         hasLocalUnsynced = true;
+      } else {
+        // Enriquecer registro remoto con datos de auditoría válidos si faltaban en Sheets
+        const catBy = isValidPersonName(remoteItem.catalogedBy)
+          ? remoteItem.catalogedBy
+          : (isValidPersonName(localItem.catalogedBy) ? localItem.catalogedBy : undefined);
+        const finBy = isValidPersonName(remoteItem.finalizedBy)
+          ? remoteItem.finalizedBy
+          : (isValidPersonName(localItem.finalizedBy) ? localItem.finalizedBy : undefined);
+        const assTo = isValidPersonName(remoteItem.assignedTo)
+          ? remoteItem.assignedTo
+          : (isValidPersonName(localItem.assignedTo) ? localItem.assignedTo : undefined);
+
+        mergedMap.set(localItem.id, {
+          ...localItem,
+          ...remoteItem,
+          title: bestTitle,
+          catalogedBy: catBy,
+          finalizedBy: finBy,
+          assignedTo: assTo,
+        });
       }
     }
   });
@@ -1076,10 +1197,12 @@ export function formatMaterialForSheet(m: MaterialSignal) {
     creationDate: m.creationDate,
     createdBy: m.createdBy,
     createdByRole: m.creatorRole || m.createdByRole || '',
+    creatorRole: m.creatorRole || m.createdByRole || '',
     status: status,
     isDiscarded: isDiscarded,
     isRequestTask: m.isRequestTask ? true : false,
     assignedTo: assignedStr,
+    assignedPersons: m.assignedPersons,
     assignedToRole: m.assignedToRole || '',
     assignedAt: m.assignedAt || '',
     isIngested: m.isIngested !== undefined ? m.isIngested : true,
@@ -1303,39 +1426,7 @@ export async function fetchRemoteSheetData(url: string): Promise<{
 
     const rawMats = Array.isArray(json.data.materials) ? json.data.materials : [];
     const materials: MaterialSignal[] = deduplicateMaterials(
-      rawMats.map((m: any) => {
-        const isDiscarded = m.status === 'Descartado' || m.isDiscarded === true || String(m.isDiscarded).toUpperCase() === 'SI';
-        const status = isDiscarded ? 'Descartado' : (m.status || 'Registrado');
-        const isFinalized = !isDiscarded && (m.isFinalized !== undefined ? Boolean(m.isFinalized) : (m.status === 'Finalizado'));
-        const isCataloged = !isDiscarded && (m.isCataloged !== undefined ? Boolean(m.isCataloged) : (m.status === 'Por Archivar' || m.status === 'Finalizado'));
-
-        return {
-          id: String(m.id || `MAT-${Date.now()}`),
-          familyId: String(m.familyId || m.id || ''),
-          title: String(m.title || 'Sin título'),
-          signalType: (m.signalType || 'Limpio') as any,
-          division: (m.division || 'Prensa') as any,
-          duration: formatDurationHHMMSS(m.duration),
-          creationDate: getFormattedDateTime(m.creationDate),
-          createdBy: String(m.createdBy || 'Operador VTV'),
-          creatorRole: m.creatorRole || m.createdByRole || '',
-          status: status as any,
-          isDiscarded,
-          isRequestTask: m.isRequestTask === true || String(m.isRequestTask).toUpperCase() === 'SI',
-          assignedTo: m.assignedTo && m.assignedTo !== 'Sin asignar' ? m.assignedTo : undefined,
-          assignedPersons: m.assignedPersons || (m.assignedTo && m.assignedTo !== 'Sin asignar' ? m.assignedTo.split(',').map((s: string) => s.trim()) : undefined),
-          assignedToRole: m.assignedToRole || undefined,
-          assignedAt: m.assignedAt ? getFormattedDateTime(m.assignedAt) : undefined,
-          isIngested: m.isIngested !== undefined ? Boolean(m.isIngested) : true,
-          isCataloged,
-          catalogedBy: !isDiscarded && m.catalogedBy && m.catalogedBy !== 'N/A' ? m.catalogedBy : undefined,
-          catalogedAt: !isDiscarded && m.catalogedAt && m.catalogedAt !== 'N/A' ? getFormattedDateTime(m.catalogedAt) : undefined,
-          isFinalized,
-          finalizedBy: !isDiscarded && m.finalizedBy && m.finalizedBy !== 'N/A' ? m.finalizedBy : undefined,
-          finalizedAt: !isDiscarded && m.finalizedAt && m.finalizedAt !== 'N/A' ? getFormattedDateTime(m.finalizedAt) : undefined,
-          notes: m.notes || '',
-        };
-      })
+      rawMats.map((m: any) => sanitizeMaterialSignal(m))
     );
 
     const rawPersonnel = Array.isArray(json.data.personnel) ? json.data.personnel : [];

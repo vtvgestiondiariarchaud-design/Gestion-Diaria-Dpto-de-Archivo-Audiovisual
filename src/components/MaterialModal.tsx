@@ -192,7 +192,7 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
           isRequestTask,
           catalogedBy: !isDiscarded && isRequestTask ? currentUser.name : undefined,
           catalogedAt: !isDiscarded && isRequestTask ? fullCreationTimestamp : undefined,
-          notes: notes.trim() || `Señal ${stype} registrada automáticamente en familia.`,
+          notes: notes.trim(),
         });
       });
     } else {

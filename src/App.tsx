@@ -412,18 +412,59 @@ export default function App() {
   };
 
   const handleSaveEditSignal = (updatedSignal: MaterialSignal) => {
+    const timestampStr = getFormattedDateTime();
     setState((prev) => {
-      const updatedMaterials = prev.materials.map((m) =>
-        m.id === updatedSignal.id ? updatedSignal : m
-      );
+      const isDiscarded = updatedSignal.status === 'Descartado' || updatedSignal.isDiscarded;
+      const isFinalized = !isDiscarded && (updatedSignal.status === 'Finalizado' || updatedSignal.isFinalized);
+      const isCataloged = !isDiscarded && (updatedSignal.status === 'Por Archivar' || updatedSignal.isCataloged || isFinalized);
+
+      const finalSignal: MaterialSignal = {
+        ...updatedSignal,
+        isDiscarded,
+        isCataloged,
+        isFinalized,
+        status: isDiscarded ? 'Descartado' : isFinalized ? 'Finalizado' : isCataloged ? 'Por Archivar' : 'Registrado',
+      };
+
+      if (isDiscarded) {
+        finalSignal.catalogedBy = undefined;
+        finalSignal.catalogedAt = undefined;
+        finalSignal.finalizedBy = undefined;
+        finalSignal.finalizedAt = undefined;
+      } else {
+        if (isCataloged && (!finalSignal.catalogedBy || finalSignal.catalogedBy === 'N/A')) {
+          finalSignal.catalogedBy = prev.currentUser.name;
+          finalSignal.catalogedAt = timestampStr;
+        }
+        if (isFinalized && (!finalSignal.finalizedBy || finalSignal.finalizedBy === 'N/A')) {
+          finalSignal.finalizedBy = prev.currentUser.name;
+          finalSignal.finalizedAt = timestampStr;
+        }
+      }
+
+      const updatedMaterials = prev.materials.map((m) => {
+        if (m.id === finalSignal.id) return finalSignal;
+        if (m.familyId && m.familyId === finalSignal.familyId && finalSignal.title) {
+          return { ...m, title: finalSignal.title, division: finalSignal.division };
+        }
+        return m;
+      });
       saveLocalMaterials(updatedMaterials);
 
       if (prev.appsScriptUrl) {
-        apiUpdateMaterial(prev.appsScriptUrl, updatedSignal.id, undefined, updatedSignal)
+        // If family title changed, also sync family batch title to Sheets
+        if (finalSignal.familyId && finalSignal.title) {
+          apiBatchUpdateFamily(prev.appsScriptUrl, finalSignal.familyId, {
+            title: finalSignal.title,
+            division: finalSignal.division
+          }).catch((e) => console.warn('Family title sync error:', e));
+        }
+
+        apiUpdateMaterial(prev.appsScriptUrl, finalSignal.id, undefined, finalSignal)
           .then((res) => {
             if (res.success) {
               markSyncSuccess();
-              showToast(`Señal ${updatedSignal.id} sincronizada en Google Sheets.`, 'success');
+              showToast(`Señal ${finalSignal.id} sincronizada en Google Sheets.`, 'success');
             } else {
               showToast(`Aviso de Sheets: ${res.message || 'No se pudo actualizar en la hoja'}`, 'error');
             }
@@ -466,13 +507,34 @@ export default function App() {
             isDiscarded,
           };
 
-          if (isCataloged) {
-            updated.catalogedBy = updated.catalogedBy || prev.currentUser.name;
-            updated.catalogedAt = updated.catalogedAt || timestampStr;
-          }
-          if (isFinalized) {
-            updated.finalizedBy = updated.finalizedBy || prev.currentUser.name;
-            updated.finalizedAt = updated.finalizedAt || timestampStr;
+          if (isDiscarded) {
+            updated.catalogedBy = undefined;
+            updated.catalogedAt = undefined;
+            updated.finalizedBy = undefined;
+            updated.finalizedAt = undefined;
+          } else if (newStatus === 'Registrado') {
+            updated.catalogedBy = undefined;
+            updated.catalogedAt = undefined;
+            updated.finalizedBy = undefined;
+            updated.finalizedAt = undefined;
+          } else {
+            if (isCataloged) {
+              updated.catalogedBy = (!updated.catalogedBy || updated.catalogedBy === 'N/A') ? prev.currentUser.name : updated.catalogedBy;
+              updated.catalogedAt = (!updated.catalogedAt || updated.catalogedAt === 'N/A') ? timestampStr : updated.catalogedAt;
+              if (!updated.assignedTo) {
+                updated.assignedTo = prev.currentUser.name;
+                updated.assignedToRole = prev.currentUser.role;
+                updated.assignedAt = timestampStr;
+              }
+            }
+            if (isFinalized) {
+              updated.finalizedBy = prev.currentUser.name;
+              updated.finalizedAt = timestampStr;
+              if (!updated.catalogedBy || updated.catalogedBy === 'N/A') {
+                updated.catalogedBy = prev.currentUser.name;
+                updated.catalogedAt = timestampStr;
+              }
+            }
           }
 
           updatedTarget = updated;
@@ -522,29 +584,46 @@ export default function App() {
               updated.status = 'Descartado';
               updated.isCataloged = false;
               updated.isFinalized = false;
+              updated.catalogedBy = undefined;
+              updated.catalogedAt = undefined;
+              updated.finalizedBy = undefined;
+              updated.finalizedAt = undefined;
             } else {
               updated.status = 'Registrado';
             }
           }
-          if (flag === 'isCataloged' && newVal) {
-            updated.catalogedBy = prev.currentUser.name;
-            updated.catalogedAt = timestampStr;
-            updated.isDiscarded = false;
-            // Auto assign if not assigned
-            if (!updated.assignedTo) {
-              updated.assignedTo = prev.currentUser.name;
-              updated.assignedToRole = prev.currentUser.role;
-              updated.assignedAt = timestampStr;
-            }
-          }
-          if (flag === 'isFinalized' && newVal) {
-            updated.finalizedBy = prev.currentUser.name;
-            updated.finalizedAt = timestampStr;
-            updated.isCataloged = true; // Auto mark cataloged if finalized
-            updated.isDiscarded = false;
-            if (!updated.catalogedBy) {
+          if (flag === 'isCataloged') {
+            if (newVal) {
               updated.catalogedBy = prev.currentUser.name;
               updated.catalogedAt = timestampStr;
+              updated.isDiscarded = false;
+              // Auto assign if not assigned
+              if (!updated.assignedTo) {
+                updated.assignedTo = prev.currentUser.name;
+                updated.assignedToRole = prev.currentUser.role;
+                updated.assignedAt = timestampStr;
+              }
+            } else {
+              updated.catalogedBy = undefined;
+              updated.catalogedAt = undefined;
+              updated.isFinalized = false;
+              updated.finalizedBy = undefined;
+              updated.finalizedAt = undefined;
+            }
+          }
+          if (flag === 'isFinalized') {
+            if (newVal) {
+              updated.finalizedBy = prev.currentUser.name;
+              updated.finalizedAt = timestampStr;
+              updated.isCataloged = true; // Auto mark cataloged if finalized
+              updated.isDiscarded = false;
+              if (!updated.catalogedBy || updated.catalogedBy === 'N/A') {
+                updated.catalogedBy = prev.currentUser.name;
+                updated.catalogedAt = timestampStr;
+              }
+            } else {
+              updated.finalizedBy = undefined;
+              updated.finalizedAt = undefined;
             }
           }
 
@@ -574,33 +653,37 @@ export default function App() {
     showToast(`Señal ${signalId}: ${flag} actualizado.`);
   };
 
-  // Assign or Unassign Signal to Documentalista
+  // Assign or Unassign Signal / ENTIRE FAMILY to Documentalista
   const handleAssignSignal = (signalId: string, assignToUser: string | null) => {
     const timestampStr = getFormattedDateTime();
+    const targetMat = state.materials.find((m) => m.id === signalId);
+    const targetFamilyId = targetMat?.familyId || signalId;
 
     setState((prev) => {
-      let updatedTarget: MaterialSignal | undefined;
+      let assignedRole: string | undefined;
+      if (assignToUser) {
+        const targetUser = prev.personnel.find((u) => u.name === assignToUser) || prev.currentUser;
+        assignedRole = targetUser.role;
+      }
+
       const updatedMaterials = prev.materials.map((mat) => {
-        if (mat.id === signalId) {
+        if (mat.familyId === targetFamilyId || mat.id === signalId) {
           if (assignToUser) {
-            const targetUser = prev.personnel.find((u) => u.name === assignToUser) || prev.currentUser;
-            const updated = {
+            return {
               ...mat,
               assignedTo: assignToUser,
-              assignedToRole: targetUser.role,
+              assignedPersons: [assignToUser],
+              assignedToRole: assignedRole,
               assignedAt: timestampStr,
             };
-            updatedTarget = updated;
-            return updated;
           } else {
-            const updated = {
+            return {
               ...mat,
               assignedTo: undefined,
+              assignedPersons: undefined,
               assignedToRole: undefined,
               assignedAt: undefined,
             };
-            updatedTarget = updated;
-            return updated;
           }
         }
         return mat;
@@ -608,55 +691,81 @@ export default function App() {
 
       saveLocalMaterials(updatedMaterials);
 
-      if (prev.appsScriptUrl && updatedTarget) {
-        apiUpdateMaterial(prev.appsScriptUrl, signalId, undefined, updatedTarget)
+      if (prev.appsScriptUrl) {
+        apiBatchUpdateFamily(prev.appsScriptUrl, targetFamilyId, {
+          assignedTo: assignToUser || 'Sin asignar',
+          assignedPersons: assignToUser ? [assignToUser] : [],
+          assignedToRole: assignedRole || '',
+          assignedAt: assignToUser ? timestampStr : '',
+        })
           .then((res) => { if (res.success) markSyncSuccess(); })
-          .catch((err) => console.warn('Error assigning signal in Sheets:', err));
+          .catch((err) => console.warn('Error assigning family in Sheets:', err));
       }
 
       return { ...prev, materials: updatedMaterials };
     });
 
     if (assignToUser) {
-      showToast(`Señal ${signalId} asignada a ${assignToUser}.`);
+      showToast(`Familia completa (${targetMat?.title || targetFamilyId}) asignada a ${assignToUser}.`);
     } else {
-      showToast(`Señal ${signalId} liberada (sin asignación).`);
+      showToast(`Familia completa (${targetMat?.title || targetFamilyId}) liberada.`);
     }
   };
 
-  // Assign Multiple Persons to Signal or Task
+  // Assign Multiple Persons to ENTIRE FAMILY
   const handleAssignMultiplePersons = (signalId: string, assignedPersons: string[]) => {
     const timestampStr = getFormattedDateTime();
+    const targetMat = state.materials.find((m) => m.id === signalId);
+    const targetFamilyId = targetMat?.familyId || signalId;
+    const mainAssignee = assignedPersons.length > 0 ? assignedPersons[0] : undefined;
 
     setState((prev) => {
-      let updatedTarget: MaterialSignal | undefined;
+      let mainRole: string | undefined;
+      if (mainAssignee) {
+        const targetUser = prev.personnel.find((u) => u.name === mainAssignee) || prev.currentUser;
+        mainRole = targetUser.role;
+      }
+
       const updatedMaterials = prev.materials.map((mat) => {
-        if (mat.id === signalId) {
-          const mainAssignee = assignedPersons.length > 0 ? assignedPersons[0] : undefined;
-          const updated = {
-            ...mat,
-            assignedPersons,
-            assignedTo: mainAssignee || mat.assignedTo,
-            assignedAt: timestampStr,
-          };
-          updatedTarget = updated;
-          return updated;
+        if (mat.familyId === targetFamilyId || mat.id === signalId) {
+          if (assignedPersons.length > 0) {
+            return {
+              ...mat,
+              assignedPersons: [...assignedPersons],
+              assignedTo: assignedPersons.join(', '),
+              assignedToRole: mainRole || mat.assignedToRole,
+              assignedAt: timestampStr,
+            };
+          } else {
+            return {
+              ...mat,
+              assignedPersons: undefined,
+              assignedTo: undefined,
+              assignedToRole: undefined,
+              assignedAt: undefined,
+            };
+          }
         }
         return mat;
       });
 
       saveLocalMaterials(updatedMaterials);
 
-      if (prev.appsScriptUrl && updatedTarget) {
-        apiUpdateMaterial(prev.appsScriptUrl, signalId, undefined, updatedTarget)
+      if (prev.appsScriptUrl) {
+        apiBatchUpdateFamily(prev.appsScriptUrl, targetFamilyId, {
+          assignedPersons: assignedPersons,
+          assignedTo: assignedPersons.length > 0 ? assignedPersons.join(', ') : 'Sin asignar',
+          assignedToRole: mainRole || '',
+          assignedAt: assignedPersons.length > 0 ? timestampStr : '',
+        })
           .then((res) => { if (res.success) markSyncSuccess(); })
-          .catch((err) => console.warn('Error assigning persons in Sheets:', err));
+          .catch((err) => console.warn('Error assigning team to family in Sheets:', err));
       }
 
       return { ...prev, materials: updatedMaterials };
     });
 
-    showToast(`Asignación de equipo actualizada (${assignedPersons.length} persona(s)).`);
+    showToast(`Familia completa (${targetMat?.title || targetFamilyId}) asignada a ${assignedPersons.length > 0 ? `${assignedPersons.length} persona(s)` : 'nadie (liberada)'}.`);
   };
 
   // Batch Toggle Family Boolean
@@ -682,20 +791,41 @@ export default function App() {
               updated.status = 'Descartado';
               updated.isCataloged = false;
               updated.isFinalized = false;
+              updated.catalogedBy = undefined;
+              updated.catalogedAt = undefined;
+              updated.finalizedBy = undefined;
+              updated.finalizedAt = undefined;
             } else {
               updated.status = 'Registrado';
             }
           }
-          if (flag === 'isCataloged' && value) {
-            updated.catalogedBy = updated.catalogedBy || prev.currentUser.name;
-            updated.catalogedAt = updated.catalogedAt || timestampStr;
-            updated.isDiscarded = false;
+          if (flag === 'isCataloged') {
+            if (value) {
+              updated.catalogedBy = prev.currentUser.name;
+              updated.catalogedAt = timestampStr;
+              updated.isDiscarded = false;
+            } else {
+              updated.catalogedBy = undefined;
+              updated.catalogedAt = undefined;
+              updated.isFinalized = false;
+              updated.finalizedBy = undefined;
+              updated.finalizedAt = undefined;
+            }
           }
-          if (flag === 'isFinalized' && value) {
-            updated.finalizedBy = updated.finalizedBy || prev.currentUser.name;
-            updated.finalizedAt = updated.finalizedAt || timestampStr;
-            updated.isCataloged = true;
-            updated.isDiscarded = false;
+          if (flag === 'isFinalized') {
+            if (value) {
+              updated.finalizedBy = prev.currentUser.name;
+              updated.finalizedAt = timestampStr;
+              updated.isCataloged = true;
+              updated.isDiscarded = false;
+              if (!updated.catalogedBy || updated.catalogedBy === 'N/A') {
+                updated.catalogedBy = prev.currentUser.name;
+                updated.catalogedAt = timestampStr;
+              }
+            } else {
+              updated.finalizedBy = undefined;
+              updated.finalizedAt = undefined;
+            }
           }
 
           if (updated.isDiscarded) updated.status = 'Descartado';
@@ -710,18 +840,45 @@ export default function App() {
 
       if (flag === 'isDiscarded') {
         auditUpdates.status = value ? 'Descartado' : 'Registrado';
+        if (value) {
+          auditUpdates.isCataloged = false;
+          auditUpdates.isFinalized = false;
+          auditUpdates.catalogedBy = 'N/A';
+          auditUpdates.catalogedAt = 'N/A';
+          auditUpdates.finalizedBy = 'N/A';
+          auditUpdates.finalizedAt = 'N/A';
+        }
       }
-      if (flag === 'isCataloged' && value) {
-        auditUpdates.catalogedBy = prev.currentUser.name;
-        auditUpdates.catalogedAt = timestampStr;
-        auditUpdates.isDiscarded = false;
+      if (flag === 'isCataloged') {
+        if (value) {
+          auditUpdates.catalogedBy = prev.currentUser.name;
+          auditUpdates.catalogedAt = timestampStr;
+          auditUpdates.isDiscarded = false;
+          auditUpdates.status = 'Por Archivar';
+        } else {
+          auditUpdates.catalogedBy = 'N/A';
+          auditUpdates.catalogedAt = 'N/A';
+          auditUpdates.isFinalized = false;
+          auditUpdates.finalizedBy = 'N/A';
+          auditUpdates.finalizedAt = 'N/A';
+          auditUpdates.status = 'Registrado';
+        }
       }
-      if (flag === 'isFinalized' && value) {
-        auditUpdates.finalizedBy = prev.currentUser.name;
-        auditUpdates.finalizedAt = timestampStr;
-        auditUpdates.isCataloged = true;
-        auditUpdates.status = 'Finalizado';
-        auditUpdates.isDiscarded = false;
+      if (flag === 'isFinalized') {
+        if (value) {
+          auditUpdates.finalizedBy = prev.currentUser.name;
+          auditUpdates.finalizedAt = timestampStr;
+          auditUpdates.isCataloged = true;
+          auditUpdates.status = 'Finalizado';
+          auditUpdates.isDiscarded = false;
+          auditUpdates.catalogedBy = prev.currentUser.name;
+          auditUpdates.catalogedAt = timestampStr;
+        } else {
+          auditUpdates.finalizedBy = 'N/A';
+          auditUpdates.finalizedAt = 'N/A';
+          auditUpdates.isFinalized = false;
+          auditUpdates.status = 'Por Archivar';
+        }
       }
 
       saveLocalMaterials(updatedMaterials);
@@ -762,13 +919,26 @@ export default function App() {
         isDiscarded,
       };
 
-      if (isCataloged) {
+      if (isDiscarded) {
+        familyUpdates.catalogedBy = 'N/A';
+        familyUpdates.catalogedAt = 'N/A';
+        familyUpdates.finalizedBy = 'N/A';
+        familyUpdates.finalizedAt = 'N/A';
+      } else if (newStatus === 'Registrado') {
+        familyUpdates.catalogedBy = 'N/A';
+        familyUpdates.catalogedAt = 'N/A';
+        familyUpdates.finalizedBy = 'N/A';
+        familyUpdates.finalizedAt = 'N/A';
+      } else if (newStatus === 'Por Archivar') {
         familyUpdates.catalogedBy = prev.currentUser.name;
         familyUpdates.catalogedAt = timestampStr;
-      }
-      if (isFinalized) {
+        familyUpdates.finalizedBy = 'N/A';
+        familyUpdates.finalizedAt = 'N/A';
+      } else if (newStatus === 'Finalizado') {
         familyUpdates.finalizedBy = prev.currentUser.name;
         familyUpdates.finalizedAt = timestampStr;
+        familyUpdates.catalogedBy = prev.currentUser.name;
+        familyUpdates.catalogedAt = timestampStr;
       }
 
       const updatedMaterials = prev.materials.map((mat) => {
@@ -782,13 +952,23 @@ export default function App() {
             isDiscarded,
           };
 
-          if (isCataloged) {
-            updated.catalogedBy = updated.catalogedBy || prev.currentUser.name;
-            updated.catalogedAt = updated.catalogedAt || timestampStr;
-          }
-          if (isFinalized) {
-            updated.finalizedBy = updated.finalizedBy || prev.currentUser.name;
-            updated.finalizedAt = updated.finalizedAt || timestampStr;
+          if (isDiscarded || newStatus === 'Registrado') {
+            updated.catalogedBy = undefined;
+            updated.catalogedAt = undefined;
+            updated.finalizedBy = undefined;
+            updated.finalizedAt = undefined;
+          } else if (newStatus === 'Por Archivar') {
+            updated.catalogedBy = prev.currentUser.name;
+            updated.catalogedAt = timestampStr;
+            updated.finalizedBy = undefined;
+            updated.finalizedAt = undefined;
+          } else if (newStatus === 'Finalizado') {
+            updated.finalizedBy = prev.currentUser.name;
+            updated.finalizedAt = timestampStr;
+            if (!updated.catalogedBy || updated.catalogedBy === 'N/A') {
+              updated.catalogedBy = prev.currentUser.name;
+              updated.catalogedAt = timestampStr;
+            }
           }
 
           return updated;
