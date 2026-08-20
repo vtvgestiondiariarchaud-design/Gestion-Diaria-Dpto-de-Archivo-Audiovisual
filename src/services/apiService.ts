@@ -16,7 +16,13 @@ export function durationToSeconds(durationInput?: string | number | null): numbe
   if (typeof durationInput === 'number') {
     if (isNaN(durationInput) || durationInput < 0) return 0;
     if (durationInput > 86400 * 30) return 0;
-    return Math.floor(durationInput);
+    let secs = Math.floor(durationInput);
+    let hh = Math.floor(secs / 3600);
+    if (hh >= 19 && hh <= 23) {
+      hh = (hh + 4) % 24;
+      secs = hh * 3600 + (secs % 3600);
+    }
+    return secs;
   }
 
   const str = String(durationInput).trim();
@@ -25,11 +31,14 @@ export function durationToSeconds(durationInput?: string | number | null): numbe
   // Extract time from ISO timestamp or date prefix (e.g., "1899-12-30T01:15:00.000Z")
   const timeMatch = str.match(/(?:[T\s]|^)(\d{1,2}):(\d{2})(?::(\d{2}))?/);
   if (timeMatch && (str.includes('-') || str.includes('/') || str.toLowerCase().includes('t') || str.toLowerCase().includes('gmt'))) {
-    const hh = parseInt(timeMatch[1], 10) || 0;
+    let hh = parseInt(timeMatch[1], 10) || 0;
     const mm = parseInt(timeMatch[2], 10) || 0;
     const ss = parseInt(timeMatch[3], 10) || 0;
-    const safeH = hh >= 1800 ? 0 : hh;
-    return safeH * 3600 + mm * 60 + ss;
+    if (hh >= 1800) hh = 0;
+    if (hh >= 19 && hh <= 23) {
+      hh = (hh + 4) % 24;
+    }
+    return hh * 3600 + mm * 60 + ss;
   }
 
   // Standard split by ":"
@@ -39,6 +48,9 @@ export function durationToSeconds(durationInput?: string | number | null): numbe
     const mm = parseInt(parts[1], 10) || 0;
     const ss = parseInt(parts[2], 10) || 0;
     if (hh >= 1800) hh = 0; // Guard against corrupt 1899 hours from Sheets epoch
+    if (hh >= 19 && hh <= 23) {
+      hh = (hh + 4) % 24;
+    }
     return hh * 3600 + mm * 60 + ss;
   } else if (parts.length === 2) {
     const mm = parseInt(parts[0], 10) || 0;
@@ -47,7 +59,13 @@ export function durationToSeconds(durationInput?: string | number | null): numbe
   } else if (parts.length === 1 && !isNaN(Number(str))) {
     const val = Number(str);
     if (val > 86400 * 30) return 0;
-    return Math.floor(val);
+    let secs = Math.floor(val);
+    let hh = Math.floor(secs / 3600);
+    if (hh >= 19 && hh <= 23) {
+      hh = (hh + 4) % 24;
+      secs = hh * 3600 + (secs % 3600);
+    }
+    return secs;
   }
 
   return 0;
@@ -227,42 +245,41 @@ export function formatHoursVerbose(totalSeconds: number): string {
   return parts.join(' ');
 }
 
-const VALID_SIGNAL_TYPES: SignalType[] = ['Limpio', 'Insert', 'Master'];
+const STANDARD_SIGNAL_TYPES: string[] = ['Limpio', 'Insert', 'Master'];
 
 export function sanitizeMaterialSignal(mat: any): MaterialSignal {
   if (!mat) return mat;
   let title = String(mat.title || '').trim();
-  let signalType = String(mat.signalType || 'Limpio').trim();
+  let rawSignalType = String(mat.signalType || '').trim();
+  let signalType: SignalType = 'Limpio';
 
   // Detect and fix inverted Title <-> SignalType (e.g. title is 'Limpio' and signalType is the actual program title)
-  const isTitleASignalType = VALID_SIGNAL_TYPES.some(
+  const isTitleAStandardSignal = STANDARD_SIGNAL_TYPES.some(
     (st) => st.toLowerCase() === title.toLowerCase()
   );
-  const isSignalTypeASignalType = VALID_SIGNAL_TYPES.some(
-    (st) => st.toLowerCase() === signalType.toLowerCase()
+  const isSignalTypeStandard = STANDARD_SIGNAL_TYPES.some(
+    (st) => st.toLowerCase() === rawSignalType.toLowerCase()
   );
 
-  if (isTitleASignalType && !isSignalTypeASignalType && signalType.length > 0) {
+  if (isTitleAStandardSignal && !isSignalTypeStandard && rawSignalType.length > 0) {
     // Inverted! Swap them
     const tempTitle = title;
-    title = signalType;
-    const matched = VALID_SIGNAL_TYPES.find((st) => st.toLowerCase() === tempTitle.toLowerCase());
+    title = rawSignalType;
+    const matched = STANDARD_SIGNAL_TYPES.find((st) => st.toLowerCase() === tempTitle.toLowerCase());
     signalType = matched || 'Limpio';
-  } else if (isSignalTypeASignalType) {
-    const matched = VALID_SIGNAL_TYPES.find((st) => st.toLowerCase() === signalType.toLowerCase());
-    if (matched) signalType = matched;
+  } else if (isSignalTypeStandard) {
+    const matched = STANDARD_SIGNAL_TYPES.find((st) => st.toLowerCase() === rawSignalType.toLowerCase());
+    signalType = matched || 'Limpio';
+  } else if (rawSignalType.length > 0) {
+    // Custom Signal Type (e.g., 'Promo', 'Clip', 'Cápsula', 'Extra', 'Resumen', 'Audio', etc.)
+    signalType = rawSignalType;
   } else {
-    // If signalType is not a valid signal type:
-    const lowerSig = signalType.toLowerCase();
-    if (lowerSig.includes('limp')) signalType = 'Limpio';
-    else if (lowerSig.includes('ins')) signalType = 'Insert';
-    else if (lowerSig.includes('mas')) signalType = 'Master';
-    else signalType = 'Limpio';
+    signalType = 'Limpio';
   }
 
   // Ensure title is not empty or equal to a bare signalType
-  if (!title || VALID_SIGNAL_TYPES.some((st) => st.toLowerCase() === title.toLowerCase())) {
-    if (mat.notes && mat.notes.trim() && !VALID_SIGNAL_TYPES.some((st) => st.toLowerCase() === mat.notes.trim().toLowerCase())) {
+  if (!title || STANDARD_SIGNAL_TYPES.some((st) => st.toLowerCase() === title.toLowerCase())) {
+    if (mat.notes && mat.notes.trim() && !STANDARD_SIGNAL_TYPES.some((st) => st.toLowerCase() === mat.notes.trim().toLowerCase())) {
       title = mat.notes.trim();
     } else {
       title = `Material ${mat.id || ''}`.trim();
@@ -272,12 +289,27 @@ export function sanitizeMaterialSignal(mat: any): MaterialSignal {
   const cleanId = String(mat.id || `MAT-${Date.now()}`).trim();
   const cleanFamilyId = String(mat.familyId || cleanId).trim();
 
+  const isDiscarded = mat.status === 'Descartado' || Boolean(mat.isDiscarded);
+  const isFinalized = !isDiscarded && Boolean(mat.isFinalized || mat.status === 'Finalizado');
+  const isCataloged = !isDiscarded && Boolean(mat.isCataloged || mat.status === 'Por Archivar' || isFinalized);
+
+  let status: MaterialStatus = 'Registrado';
+  if (isDiscarded) status = 'Descartado';
+  else if (isFinalized) status = 'Finalizado';
+  else if (isCataloged) status = 'Por Archivar';
+  else status = (mat.status as MaterialStatus) || 'Registrado';
+
   return {
     ...mat,
     id: cleanId,
     familyId: cleanFamilyId,
     title,
     signalType: signalType as SignalType,
+    status,
+    isDiscarded,
+    isCataloged,
+    isFinalized,
+    isIngested: mat.isIngested !== false,
     duration: formatDurationHHMMSS(mat.duration),
     creationDate: getFormattedDateTime(mat.creationDate),
   };
@@ -303,28 +335,36 @@ export function groupMaterialsByFamily(materials: MaterialSignal[]): MaterialFam
   const groups: MaterialFamilyGroup[] = [];
 
   familyMap.forEach((signals) => {
-    // Sort signals in logical order: Limpio, Insert, Master
+    // Sort signals in logical order: Limpio, Insert, Master, then custom types
     const orderScore: Record<string, number> = { Limpio: 1, Insert: 2, Master: 3 };
-    signals.sort((a, b) => (orderScore[a.signalType] || 4) - (orderScore[b.signalType] || 4));
+    signals.sort((a, b) => (orderScore[a.signalType] || 10) - (orderScore[b.signalType] || 10));
 
     const mainSignal = signals[0];
+    // Ingested duration sums all signals including discarded ones as requested
     const totalDurationSecs = signals.reduce((acc, s) => acc + durationToSeconds(s.duration), 0);
 
-    // Calculate overall status
-    let overallStatus: MaterialSignal['status'] = 'Registrado';
-    const allFinalized = signals.every((s) => s.isFinalized || s.status === 'Finalizado');
-    const anyPorArchivar = signals.some((s) => s.isCataloged || s.status === 'Por Archivar');
+    const activeSignals = signals.filter((s) => s.status !== 'Descartado' && !s.isDiscarded);
+    const isAllDiscarded = signals.length > 0 && activeSignals.length === 0;
 
-    if (allFinalized) {
-      overallStatus = 'Finalizado';
-    } else if (anyPorArchivar || signals.some((s) => s.isFinalized)) {
-      overallStatus = 'Por Archivar';
+    // Calculate overall status: discarded signals do not count as tasks for archiving
+    let overallStatus: MaterialStatus = 'Registrado';
+    if (isAllDiscarded) {
+      overallStatus = 'Descartado';
+    } else {
+      const allFinalized = activeSignals.length > 0 && activeSignals.every((s) => s.isFinalized || s.status === 'Finalizado');
+      const anyPorArchivar = activeSignals.some((s) => s.isCataloged || s.status === 'Por Archivar');
+
+      if (allFinalized) {
+        overallStatus = 'Finalizado';
+      } else if (anyPorArchivar || activeSignals.some((s) => s.isFinalized)) {
+        overallStatus = 'Por Archivar';
+      }
     }
 
     const hasIngested = signals.some((s) => s.isIngested !== false);
-    const hasCataloged = signals.some((s) => s.isCataloged);
-    const hasFinalizedSignal = signals.some((s) => s.isFinalized);
-    const isAllFinalized = signals.every((s) => s.isFinalized);
+    const hasCataloged = activeSignals.some((s) => s.isCataloged);
+    const hasFinalizedSignal = activeSignals.some((s) => s.isFinalized);
+    const isAllFinalized = activeSignals.length > 0 && activeSignals.every((s) => s.isFinalized);
 
     groups.push({
       familyId: mainSignal.familyId || mainSignal.id,
@@ -339,6 +379,7 @@ export function groupMaterialsByFamily(materials: MaterialSignal[]): MaterialFam
       hasCataloged,
       isAllFinalized,
       hasFinalizedSignal,
+      isAllDiscarded,
     });
   });
 
@@ -363,13 +404,25 @@ export function deduplicateMaterials(list: MaterialSignal[]): MaterialSignal[] {
     } else {
       // If we already have this ID, merge preserving the most complete/advanced state
       const existing = map.get(cleanId)!;
-      const isFinalized = Boolean(mat.isFinalized || existing.isFinalized || mat.status === 'Finalizado' || existing.status === 'Finalizado');
-      const isCataloged = Boolean(mat.isCataloged || existing.isCataloged || isFinalized || mat.status === 'Por Archivar' || existing.status === 'Por Archivar');
+      const isDiscarded = mat.status === 'Descartado' || mat.isDiscarded === true || existing.status === 'Descartado' || existing.isDiscarded === true;
+      const isFinalized = !isDiscarded && Boolean(mat.isFinalized || existing.isFinalized || mat.status === 'Finalizado' || existing.status === 'Finalizado');
+      const isCataloged = !isDiscarded && Boolean(mat.isCataloged || existing.isCataloged || isFinalized || mat.status === 'Por Archivar' || existing.status === 'Por Archivar');
       const isIngested = mat.isIngested !== false && existing.isIngested !== false;
 
       let status = mat.status || existing.status || 'Registrado';
-      if (isFinalized) status = 'Finalizado';
+      if (isDiscarded) status = 'Descartado';
+      else if (isFinalized) status = 'Finalizado';
       else if (isCataloged) status = 'Por Archivar';
+
+      // Pick valid non-zero duration
+      let effectiveDuration = mat.duration;
+      const matDurSecs = durationToSeconds(mat.duration);
+      const extDurSecs = durationToSeconds(existing.duration);
+      if (matDurSecs <= 0 && extDurSecs > 0) {
+        effectiveDuration = existing.duration;
+      } else if (matDurSecs > 0) {
+        effectiveDuration = mat.duration;
+      }
 
       map.set(cleanId, {
         ...existing,
@@ -378,14 +431,17 @@ export function deduplicateMaterials(list: MaterialSignal[]): MaterialSignal[] {
         familyId: mat.familyId || existing.familyId || cleanId,
         title: mat.title || existing.title,
         signalType: mat.signalType || existing.signalType,
+        duration: effectiveDuration,
+        notes: mat.notes || existing.notes,
+        isDiscarded,
         isFinalized,
         isCataloged,
         isIngested,
         status,
-        catalogedBy: mat.catalogedBy || existing.catalogedBy,
-        catalogedAt: mat.catalogedAt || existing.catalogedAt,
-        finalizedBy: mat.finalizedBy || existing.finalizedBy,
-        finalizedAt: mat.finalizedAt || existing.finalizedAt,
+        catalogedBy: isDiscarded ? undefined : (mat.catalogedBy || existing.catalogedBy),
+        catalogedAt: isDiscarded ? undefined : (mat.catalogedAt || existing.catalogedAt),
+        finalizedBy: isDiscarded ? undefined : (mat.finalizedBy || existing.finalizedBy),
+        finalizedAt: isDiscarded ? undefined : (mat.finalizedAt || existing.finalizedAt),
         assignedTo: mat.assignedTo || existing.assignedTo,
         assignedPersons: mat.assignedPersons || existing.assignedPersons,
       });
@@ -468,14 +524,15 @@ export function mergeMaterials(
   remote: MaterialSignal[]
 ): { merged: MaterialSignal[]; hasLocalUnsynced: boolean } {
   if (!remote || remote.length === 0) {
-    return { merged: local || [], hasLocalUnsynced: (local && local.length > 0) };
+    return { merged: deduplicateMaterials(local || []), hasLocalUnsynced: (local && local.length > 0) };
   }
   if (!local || local.length === 0) {
-    return { merged: remote, hasLocalUnsynced: false };
+    return { merged: deduplicateMaterials(remote), hasLocalUnsynced: false };
   }
 
+  const cleanRemote = deduplicateMaterials(remote);
   const remoteMap = new Map<string, MaterialSignal>();
-  remote.forEach((m) => {
+  cleanRemote.forEach((m) => {
     if (m && m.id) remoteMap.set(m.id, m);
   });
 
@@ -483,7 +540,7 @@ export function mergeMaterials(
   const mergedMap = new Map<string, MaterialSignal>();
 
   // 1. Agregar todos los remotos
-  remote.forEach((m) => {
+  cleanRemote.forEach((m) => {
     if (m && m.id) mergedMap.set(m.id, m);
   });
 
@@ -496,12 +553,26 @@ export function mergeMaterials(
       hasLocalUnsynced = true;
     } else {
       const remoteItem = remoteMap.get(localItem.id)!;
-      // Si el local tiene un estado más avanzado (ej. finalizado o catalogado) que el remoto
+      const localDurSecs = durationToSeconds(localItem.duration);
+      const remoteDurSecs = durationToSeconds(remoteItem.duration);
+      const isLocalDiscarded = localItem.status === 'Descartado' || Boolean(localItem.isDiscarded);
+      const isRemoteDiscarded = remoteItem.status === 'Descartado' || Boolean(remoteItem.isDiscarded);
+
+      // Si el local tiene un estado más avanzado o diferente (ej. descartado, finalizado o duración modificada)
       if (
+        (isLocalDiscarded && !isRemoteDiscarded) ||
+        (localItem.status === 'Descartado' && remoteItem.status !== 'Descartado') ||
         (localItem.isFinalized && !remoteItem.isFinalized) ||
-        (localItem.isCataloged && !remoteItem.isCataloged)
+        (localItem.isCataloged && !remoteItem.isCataloged) ||
+        (localDurSecs > 0 && localDurSecs !== remoteDurSecs)
       ) {
-        mergedMap.set(localItem.id, localItem);
+        mergedMap.set(localItem.id, {
+          ...remoteItem,
+          ...localItem,
+          duration: localDurSecs > 0 ? localItem.duration : remoteItem.duration,
+          status: isLocalDiscarded ? 'Descartado' : (localItem.status || remoteItem.status),
+          isDiscarded: isLocalDiscarded || isRemoteDiscarded,
+        });
         hasLocalUnsynced = true;
       }
     }
@@ -558,26 +629,44 @@ export function loadInitialState(): AppState {
     const localMats = localStorage.getItem(LOCAL_STORAGE_KEY_MATERIALS);
     if (localMats) {
       const parsed = JSON.parse(localMats);
-      materials = deduplicateMaterials(parsed.map((m: any) => ({
-        ...m,
-        duration: formatDurationHHMMSS(m.duration),
-        creationDate: getFormattedDateTime(m.creationDate),
-        catalogedAt: m.catalogedAt ? getFormattedDateTime(m.catalogedAt) : undefined,
-        finalizedAt: m.finalizedAt ? getFormattedDateTime(m.finalizedAt) : undefined,
-        assignedAt: m.assignedAt ? getFormattedDateTime(m.assignedAt) : undefined,
-        isIngested: m.isIngested !== undefined ? m.isIngested : true,
-        isCataloged: m.isCataloged !== undefined ? m.isCataloged : (m.status === 'Por Archivar' || m.status === 'Finalizado'),
-        isFinalized: m.isFinalized !== undefined ? m.isFinalized : (m.status === 'Finalizado'),
-      })));
+      materials = deduplicateMaterials(parsed.map((m: any) => {
+        const isDiscarded = m.status === 'Descartado' || m.isDiscarded === true || String(m.isDiscarded).toUpperCase() === 'SI';
+        const status = isDiscarded ? 'Descartado' : (m.status || 'Registrado');
+        const isFinalized = !isDiscarded && (m.isFinalized !== undefined ? Boolean(m.isFinalized) : (m.status === 'Finalizado'));
+        const isCataloged = !isDiscarded && (m.isCataloged !== undefined ? Boolean(m.isCataloged) : (m.status === 'Por Archivar' || m.status === 'Finalizado'));
+        return {
+          ...m,
+          status,
+          isDiscarded,
+          isCataloged,
+          isFinalized,
+          duration: formatDurationHHMMSS(m.duration),
+          creationDate: getFormattedDateTime(m.creationDate),
+          catalogedAt: !isDiscarded && m.catalogedAt ? getFormattedDateTime(m.catalogedAt) : undefined,
+          finalizedAt: !isDiscarded && m.finalizedAt ? getFormattedDateTime(m.finalizedAt) : undefined,
+          assignedAt: m.assignedAt ? getFormattedDateTime(m.assignedAt) : undefined,
+          isIngested: m.isIngested !== undefined ? m.isIngested : true,
+        };
+      }));
     } else {
-      materials = deduplicateMaterials(INITIAL_MATERIALS.map((m) => ({
-        ...m,
-        duration: formatDurationHHMMSS(m.duration),
-        creationDate: getFormattedDateTime(m.creationDate),
-        catalogedAt: m.catalogedAt ? getFormattedDateTime(m.catalogedAt) : undefined,
-        finalizedAt: m.finalizedAt ? getFormattedDateTime(m.finalizedAt) : undefined,
-        assignedAt: m.assignedAt ? getFormattedDateTime(m.assignedAt) : undefined,
-      })));
+      materials = deduplicateMaterials(INITIAL_MATERIALS.map((m) => {
+        const isDiscarded = m.status === 'Descartado' || Boolean(m.isDiscarded);
+        const status = isDiscarded ? 'Descartado' : (m.status || 'Registrado');
+        const isFinalized = !isDiscarded && (m.isFinalized !== undefined ? Boolean(m.isFinalized) : (m.status === 'Finalizado'));
+        const isCataloged = !isDiscarded && (m.isCataloged !== undefined ? Boolean(m.isCataloged) : (m.status === 'Por Archivar' || m.status === 'Finalizado'));
+        return {
+          ...m,
+          status,
+          isDiscarded,
+          isCataloged,
+          isFinalized,
+          duration: formatDurationHHMMSS(m.duration),
+          creationDate: getFormattedDateTime(m.creationDate),
+          catalogedAt: !isDiscarded && m.catalogedAt ? getFormattedDateTime(m.catalogedAt) : undefined,
+          finalizedAt: !isDiscarded && m.finalizedAt ? getFormattedDateTime(m.finalizedAt) : undefined,
+          assignedAt: m.assignedAt ? getFormattedDateTime(m.assignedAt) : undefined,
+        };
+      }));
     }
 
     const localPer = localStorage.getItem(LOCAL_STORAGE_KEY_PERSONNEL);
@@ -606,8 +695,8 @@ export function loadInitialState(): AppState {
     }
 
     const localUrl = localStorage.getItem(LOCAL_STORAGE_KEY_APPS_SCRIPT_URL);
-    const oldUrlSig = 'AKfycby2Vn7FENScbW6HQpNcyQ8SIeOl';
-    if (localUrl && localUrl.trim() && !localUrl.includes(oldUrlSig)) {
+    const oldUrlSigs = ['AKfycby2Vn7FENScbW6HQpNcyQ8SIeOl', 'AKfycbx14c_iwM0YESVMAQ-ipcDt7cpaD163YMRIjmVt-nqc_pVjuzB6YZHoAK6_2gw0cXjmbA'];
+    if (localUrl && localUrl.trim() && !oldUrlSigs.some(sig => localUrl.includes(sig))) {
       appsScriptUrl = localUrl.trim();
     } else {
       appsScriptUrl = DEFAULT_APPS_SCRIPT_URL;
@@ -972,6 +1061,11 @@ export function formatMaterialForSheet(m: MaterialSignal) {
     assignedStr = m.assignedTo;
   }
 
+  const isDiscarded = m.status === 'Descartado' || Boolean(m.isDiscarded);
+  const status = isDiscarded ? 'Descartado' : (m.status || 'Registrado');
+  const isFinalized = !isDiscarded && Boolean(m.isFinalized || status === 'Finalizado');
+  const isCataloged = !isDiscarded && Boolean(m.isCataloged || status === 'Por Archivar' || isFinalized);
+
   return {
     id: m.id,
     familyId: m.familyId || m.id,
@@ -982,18 +1076,19 @@ export function formatMaterialForSheet(m: MaterialSignal) {
     creationDate: m.creationDate,
     createdBy: m.createdBy,
     createdByRole: m.creatorRole || m.createdByRole || '',
-    status: m.status,
+    status: status,
+    isDiscarded: isDiscarded,
     isRequestTask: m.isRequestTask ? true : false,
     assignedTo: assignedStr,
     assignedToRole: m.assignedToRole || '',
     assignedAt: m.assignedAt || '',
     isIngested: m.isIngested !== undefined ? m.isIngested : true,
-    isCataloged: m.isCataloged !== undefined ? m.isCataloged : (m.status === 'Por Archivar' || m.status === 'Finalizado'),
-    catalogedBy: m.catalogedBy || 'N/A',
-    catalogedAt: m.catalogedAt || 'N/A',
-    isFinalized: m.isFinalized !== undefined ? m.isFinalized : (m.status === 'Finalizado'),
-    finalizedBy: m.finalizedBy || 'N/A',
-    finalizedAt: m.finalizedAt || 'N/A',
+    isCataloged: isCataloged,
+    catalogedBy: isDiscarded ? 'N/A' : (m.catalogedBy || 'N/A'),
+    catalogedAt: isDiscarded ? 'N/A' : (m.catalogedAt || 'N/A'),
+    isFinalized: isFinalized,
+    finalizedBy: isDiscarded ? 'N/A' : (m.finalizedBy || 'N/A'),
+    finalizedAt: isDiscarded ? 'N/A' : (m.finalizedAt || 'N/A'),
     notes: m.notes || '',
   };
 }
@@ -1025,6 +1120,153 @@ export function formatGuardShiftForSheet(s: GuardShiftRecord) {
   };
 }
 
+// -------------------------------------------------------------
+// HELPER RESILIENTE PARA COMUNICACIÓN CON GOOGLE APPS SCRIPT
+// -------------------------------------------------------------
+
+export function isAbortOrTimeoutError(err: any): boolean {
+  if (!err) return false;
+  const name = String(err.name || '').toLowerCase();
+  const msg = String(err.message || err || '').toLowerCase();
+  return (
+    name === 'aborterror' ||
+    name === 'timeouterror' ||
+    msg.includes('aborted') ||
+    msg.includes('abort') ||
+    msg.includes('timeout')
+  );
+}
+
+export function formatNetworkErrorMessage(err: any, context = 'Google Sheets'): string {
+  if (isAbortOrTimeoutError(err)) {
+    return `Tiempo de espera agotado al comunicar con ${context}. Google Apps Script tardó en responder. Por favor reintente en unos segundos.`;
+  }
+  const str = String(err?.message || err || '');
+  if (str.includes('Failed to fetch') || str.includes('NetworkError') || str.includes('Load failed')) {
+    return `Error de conexión con ${context} (Failed to fetch). Verifique en Google Apps Script: "Desplegar" → "Quién tiene acceso" = "Cualquier persona (Anyone)" y haber guardado una "Nueva versión".`;
+  }
+  return `Error de conexión con ${context}: ${str}`;
+}
+
+export interface SafeFetchOptions {
+  timeoutMs?: number;
+  retries?: number;
+}
+
+export async function safeFetchAppsScript(
+  url: string,
+  payload: any,
+  options: SafeFetchOptions = {}
+): Promise<{ success: boolean; data?: any; message?: string; raw?: any }> {
+  const cleanUrl = (url || '').trim();
+  if (!cleanUrl || !cleanUrl.startsWith('http')) {
+    return {
+      success: false,
+      message: 'URL de Google Apps Script no configurada o no válida.',
+    };
+  }
+
+  const timeoutMs = options.timeoutMs ?? 45000;
+  const maxRetries = options.retries ?? 1;
+
+  let lastError: any = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    let isTimedOut = false;
+    const timeoutId = setTimeout(() => {
+      isTimedOut = true;
+      try {
+        controller.abort(new DOMException('Tiempo de espera agotado al comunicar con Google Sheets', 'TimeoutError'));
+      } catch {
+        controller.abort();
+      }
+    }, timeoutMs);
+
+    try {
+      const response = await fetch(cleanUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/plain;charset=utf-8',
+        },
+        body: typeof payload === 'string' ? payload : JSON.stringify(payload),
+        redirect: 'follow',
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      const text = await response.text();
+      let json: any;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        if (text.includes('Google Drive') || text.includes('script.google.com')) {
+          throw new Error('Respuesta de Google no válida (posible error de permisos o despliegue en Google Apps Script).');
+        }
+        throw new Error(`Respuesta no JSON recibida del servidor: ${text.substring(0, 150)}`);
+      }
+
+      return {
+        success: json.success !== false,
+        data: json.data || json,
+        message: json.message,
+        raw: json,
+      };
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      lastError = isTimedOut
+        ? new DOMException('Tiempo de espera agotado al comunicar con Google Sheets', 'TimeoutError')
+        : err;
+
+      if (attempt < maxRetries) {
+        console.warn(`[safeFetchAppsScript] Intento ${attempt + 1} falló (${err?.message || err}), reintentando en 1.5s...`);
+        await new Promise((res) => setTimeout(res, 1500));
+        continue;
+      }
+    }
+  }
+
+  // Fallback GET si es readAllData y falló POST
+  if (payload?.action === 'readAllData') {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      try {
+        controller.abort(new DOMException('Tiempo de espera agotado en fallback GET', 'TimeoutError'));
+      } catch {
+        controller.abort();
+      }
+    }, 35000);
+
+    try {
+      const getUrl = cleanUrl + (cleanUrl.includes('?') ? '&' : '?') + 'action=readAllData&_t=' + Date.now();
+      const response = await fetch(getUrl, {
+        method: 'GET',
+        mode: 'cors',
+        redirect: 'follow',
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      const json = await response.json();
+      return {
+        success: json.success !== false,
+        data: json.data || json,
+        message: json.message,
+        raw: json,
+      };
+    } catch (fallbackErr: any) {
+      clearTimeout(timeoutId);
+      lastError = fallbackErr;
+    }
+  }
+
+  const errorMessage = formatNetworkErrorMessage(lastError);
+  return {
+    success: false,
+    message: errorMessage,
+  };
+}
+
 // Google Apps Script API Services - Sincronización de Base de Datos Central (Multi-dispositivo)
 export async function fetchRemoteSheetData(url: string): Promise<{
   success: boolean;
@@ -1036,66 +1278,23 @@ export async function fetchRemoteSheetData(url: string): Promise<{
   };
   message: string;
 }> {
-  const cleanUrl = (url || '').trim();
-  if (!cleanUrl || !cleanUrl.startsWith('http')) {
+  const result = await safeFetchAppsScript(
+    url,
+    { action: 'readAllData' },
+    { timeoutMs: 45000, retries: 1 }
+  );
+
+  if (!result.success || !result.data) {
     return {
       success: false,
-      message: 'URL de Google Apps Script no configurada o no válida.',
+      message: result.message || 'Error al conectar con Google Sheets.',
     };
   }
 
-  let json: any = null;
-
-  // Intento 1: Vía GET
-  try {
-    const fetchUrl = cleanUrl + (cleanUrl.includes('?') ? '&' : '?') + 'action=readAllData&_t=' + Date.now();
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
-
-    const response = await fetch(fetchUrl, {
-      method: 'GET',
-      mode: 'cors',
-      redirect: 'follow',
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    json = await response.json();
-  } catch (errGet: any) {
-    console.warn('Fallo petición GET hacia Apps Script, intentando fallback POST...', errGet);
-
-    // Intento 2: Fallback vía POST
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 20000);
-
-      const response = await fetch(cleanUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'readAllData' }),
-        redirect: 'follow',
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      json = await response.json();
-    } catch (errPost: any) {
-      console.error('Error final conectando con Google Sheets:', errPost);
-      const isFailedToFetch = String(errPost?.message || errPost).includes('Failed to fetch') || String(errGet?.message || errGet).includes('Failed to fetch');
-      
-      const errorMessage = isFailedToFetch
-        ? 'Error de conexión con Google Sheets (Failed to fetch). Verifique en Google Apps Script que en "Desplegar" -> "Quién tiene acceso" esté en "Cualquier persona" (Anyone) y haya guardado una "Nueva versión".'
-        : `Error al conectar con Google Sheets: ${errPost.name === 'AbortError' ? 'Tiempo de espera agotado.' : (errPost.message || errPost.toString())}`;
-
-      return {
-        success: false,
-        message: errorMessage,
-      };
-    }
-  }
+  const json = result.raw || result.data;
 
   try {
-    if (!json || !json.success || !json.data) {
+    if (!json || !json.data) {
       return {
         success: false,
         message: json?.message || 'Respuesta inválida desde Google Sheets.',
@@ -1104,31 +1303,39 @@ export async function fetchRemoteSheetData(url: string): Promise<{
 
     const rawMats = Array.isArray(json.data.materials) ? json.data.materials : [];
     const materials: MaterialSignal[] = deduplicateMaterials(
-      rawMats.map((m: any) => ({
-        id: String(m.id || `MAT-${Date.now()}`),
-        familyId: String(m.familyId || m.id || ''),
-        title: String(m.title || 'Sin título'),
-        signalType: (m.signalType || 'Limpio') as any,
-        division: (m.division || 'Prensa') as any,
-        duration: formatDurationHHMMSS(m.duration),
-        creationDate: getFormattedDateTime(m.creationDate),
-        createdBy: String(m.createdBy || 'Operador VTV'),
-        creatorRole: m.creatorRole || m.createdByRole || '',
-        status: (m.status || 'Registrado') as any,
-        isRequestTask: m.isRequestTask === true || String(m.isRequestTask).toUpperCase() === 'SI',
-        assignedTo: m.assignedTo && m.assignedTo !== 'Sin asignar' ? m.assignedTo : undefined,
-        assignedPersons: m.assignedPersons || (m.assignedTo && m.assignedTo !== 'Sin asignar' ? m.assignedTo.split(',').map((s: string) => s.trim()) : undefined),
-        assignedToRole: m.assignedToRole || undefined,
-        assignedAt: m.assignedAt ? getFormattedDateTime(m.assignedAt) : undefined,
-        isIngested: m.isIngested !== undefined ? Boolean(m.isIngested) : true,
-        isCataloged: m.isCataloged !== undefined ? Boolean(m.isCataloged) : (m.status === 'Por Archivar' || m.status === 'Finalizado'),
-        catalogedBy: m.catalogedBy && m.catalogedBy !== 'N/A' ? m.catalogedBy : undefined,
-        catalogedAt: m.catalogedAt && m.catalogedAt !== 'N/A' ? getFormattedDateTime(m.catalogedAt) : undefined,
-        isFinalized: m.isFinalized !== undefined ? Boolean(m.isFinalized) : (m.status === 'Finalizado'),
-        finalizedBy: m.finalizedBy && m.finalizedBy !== 'N/A' ? m.finalizedBy : undefined,
-        finalizedAt: m.finalizedAt && m.finalizedAt !== 'N/A' ? getFormattedDateTime(m.finalizedAt) : undefined,
-        notes: m.notes || '',
-      }))
+      rawMats.map((m: any) => {
+        const isDiscarded = m.status === 'Descartado' || m.isDiscarded === true || String(m.isDiscarded).toUpperCase() === 'SI';
+        const status = isDiscarded ? 'Descartado' : (m.status || 'Registrado');
+        const isFinalized = !isDiscarded && (m.isFinalized !== undefined ? Boolean(m.isFinalized) : (m.status === 'Finalizado'));
+        const isCataloged = !isDiscarded && (m.isCataloged !== undefined ? Boolean(m.isCataloged) : (m.status === 'Por Archivar' || m.status === 'Finalizado'));
+
+        return {
+          id: String(m.id || `MAT-${Date.now()}`),
+          familyId: String(m.familyId || m.id || ''),
+          title: String(m.title || 'Sin título'),
+          signalType: (m.signalType || 'Limpio') as any,
+          division: (m.division || 'Prensa') as any,
+          duration: formatDurationHHMMSS(m.duration),
+          creationDate: getFormattedDateTime(m.creationDate),
+          createdBy: String(m.createdBy || 'Operador VTV'),
+          creatorRole: m.creatorRole || m.createdByRole || '',
+          status: status as any,
+          isDiscarded,
+          isRequestTask: m.isRequestTask === true || String(m.isRequestTask).toUpperCase() === 'SI',
+          assignedTo: m.assignedTo && m.assignedTo !== 'Sin asignar' ? m.assignedTo : undefined,
+          assignedPersons: m.assignedPersons || (m.assignedTo && m.assignedTo !== 'Sin asignar' ? m.assignedTo.split(',').map((s: string) => s.trim()) : undefined),
+          assignedToRole: m.assignedToRole || undefined,
+          assignedAt: m.assignedAt ? getFormattedDateTime(m.assignedAt) : undefined,
+          isIngested: m.isIngested !== undefined ? Boolean(m.isIngested) : true,
+          isCataloged,
+          catalogedBy: !isDiscarded && m.catalogedBy && m.catalogedBy !== 'N/A' ? m.catalogedBy : undefined,
+          catalogedAt: !isDiscarded && m.catalogedAt && m.catalogedAt !== 'N/A' ? getFormattedDateTime(m.catalogedAt) : undefined,
+          isFinalized,
+          finalizedBy: !isDiscarded && m.finalizedBy && m.finalizedBy !== 'N/A' ? m.finalizedBy : undefined,
+          finalizedAt: !isDiscarded && m.finalizedAt && m.finalizedAt !== 'N/A' ? getFormattedDateTime(m.finalizedAt) : undefined,
+          notes: m.notes || '',
+        };
+      })
     );
 
     const rawPersonnel = Array.isArray(json.data.personnel) ? json.data.personnel : [];
@@ -1195,33 +1402,18 @@ export async function fetchRemoteSheetData(url: string): Promise<{
 /**
  * Función Genérica para Ejecutar Acciones Atómicas en Google Apps Script
  */
-export async function apiSendAction(url: string, payload: any): Promise<{ success: boolean; message?: string; data?: any; counts?: any }> {
-  if (!url || !url.startsWith('http')) {
-    return { success: false, message: 'URL de Google Apps Script no configurada.' };
-  }
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 20000);
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'text/plain;charset=utf-8',
-      },
-      body: JSON.stringify(payload),
-      redirect: 'follow',
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    const json = await response.json();
-    return json;
-  } catch (err: any) {
-    clearTimeout(timeoutId);
-    console.error(`Error al ejecutar acción '${payload?.action}' en Google Sheets:`, err);
+export async function apiSendAction(
+  url: string,
+  payload: any
+): Promise<{ success: boolean; message?: string; data?: any; counts?: any }> {
+  const result = await safeFetchAppsScript(url, payload, { timeoutMs: 35000, retries: 1 });
+  if (!result.success) {
     return {
       success: false,
-      message: err.name === 'AbortError' ? 'Tiempo de espera agotado al comunicar con Google Sheets.' : (err.message || String(err)),
+      message: result.message || 'Error al ejecutar acción en Google Sheets.',
     };
   }
+  return result.raw || { success: true, ...result };
 }
 
 // -------------------------------------------------------------
@@ -1265,6 +1457,12 @@ export async function apiPurgeFinalizedMaterials(url: string, signalIds: string[
     action: 'purgeFinalizedMaterials',
     signalIds: signalIds,
     monthlyLog: monthlyLog,
+  });
+}
+
+export async function apiCleanAndDeduplicateSheet(url: string) {
+  return apiSendAction(url, {
+    action: 'cleanAndDeduplicateSheet',
   });
 }
 
@@ -1345,39 +1543,7 @@ export async function pushAllDataToRemoteSheet(
   }
 
   try {
-    const formattedMaterials = data.materials.map((m) => {
-      let assignedStr = 'Sin asignar';
-      if (m.assignedPersons && m.assignedPersons.length > 0) {
-        assignedStr = m.assignedPersons.join(', ');
-      } else if (m.assignedTo) {
-        assignedStr = m.assignedTo;
-      }
-
-      return {
-        id: m.id,
-        familyId: m.familyId || m.id,
-        title: m.title,
-        signalType: m.signalType,
-        division: m.division,
-        duration: formatDurationHHMMSS(m.duration),
-        creationDate: m.creationDate,
-        createdBy: m.createdBy,
-        createdByRole: m.creatorRole || m.createdByRole || '',
-        status: m.status,
-        isRequestTask: m.isRequestTask ? true : false,
-        assignedTo: assignedStr,
-        assignedToRole: m.assignedToRole || '',
-        assignedAt: m.assignedAt || '',
-        isIngested: m.isIngested !== undefined ? m.isIngested : true,
-        isCataloged: m.isCataloged !== undefined ? m.isCataloged : (m.status === 'Por Archivar' || m.status === 'Finalizado'),
-        catalogedBy: m.catalogedBy || 'N/A',
-        catalogedAt: m.catalogedAt || 'N/A',
-        isFinalized: m.isFinalized !== undefined ? m.isFinalized : (m.status === 'Finalizado'),
-        finalizedBy: m.finalizedBy || 'N/A',
-        finalizedAt: m.finalizedAt || 'N/A',
-        notes: m.notes || '',
-      };
-    });
+    const formattedMaterials = data.materials.map(formatMaterialForSheet);
 
     const formattedPersonnel = (data.personnel || []).map((p) => ({
       id: p.id,
@@ -1413,42 +1579,32 @@ export async function pushAllDataToRemoteSheet(
       totalDurationSeconds: a.totalDurationSeconds || 0,
     }));
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 25000);
+    const payload = {
+      action: 'syncAllData',
+      materials: formattedMaterials,
+      personnel: formattedPersonnel,
+      guardShifts: formattedShifts,
+      monthlyArchives: formattedArchives,
+    };
 
-    const response = await fetch(url, {
-      method: 'POST',
-      mode: 'cors',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      signal: controller.signal,
-      body: JSON.stringify({
-        action: 'syncAllData',
-        materials: formattedMaterials,
-        personnel: formattedPersonnel,
-        guardShifts: formattedShifts,
-        monthlyArchives: formattedArchives,
-      }),
-    });
-    clearTimeout(timeoutId);
-
-    const resJson = await response.json();
-    if (resJson && resJson.success) {
+    const result = await safeFetchAppsScript(url, payload, { timeoutMs: 60000, retries: 1 });
+    if (result.success) {
       return {
         success: true,
-        message: resJson.message || 'Datos guardados correctamente en Google Sheets.',
-        counts: resJson.counts,
+        message: result.message || 'Datos guardados correctamente en Google Sheets.',
+        counts: result.raw?.counts,
       };
     } else {
       return {
         success: false,
-        message: resJson?.message || 'Error al guardar datos en Google Sheets.',
+        message: result.message || 'Error al guardar datos en Google Sheets.',
       };
     }
   } catch (err: any) {
     console.error('Error pushing data to Google Sheets:', err);
     return {
       success: false,
-      message: `Error al enviar a Google Sheets: ${err.name === 'AbortError' ? 'Tiempo de espera agotado.' : (err.message || err.toString())}`,
+      message: formatNetworkErrorMessage(err, 'Google Sheets'),
     };
   }
 }
@@ -1576,65 +1732,31 @@ export async function createDailyBackupInDrive(
   }
 
   try {
-    const formattedMaterials = materials.map((m) => {
-      let assignedStr = 'Sin asignar';
-      if (m.assignedPersons && m.assignedPersons.length > 0) {
-        assignedStr = m.assignedPersons.join(', ');
-      } else if (m.assignedTo) {
-        assignedStr = m.assignedTo;
-      }
+    const formattedMaterials = materials.map(formatMaterialForSheet);
 
-      return {
-        id: m.id,
-        familyId: m.familyId || m.id,
-        title: m.title,
-        signalType: m.signalType,
-        division: m.division,
-        duration: formatDurationHHMMSS(m.duration),
-        creationDate: m.creationDate,
-        createdBy: m.createdBy,
-        createdByRole: m.creatorRole || m.createdByRole || '',
-        status: m.status,
-        isRequestTask: m.isRequestTask ? true : false,
-        assignedTo: assignedStr,
-        assignedToRole: m.assignedToRole || '',
-        assignedAt: m.assignedAt || '',
-        isIngested: m.isIngested !== undefined ? m.isIngested : true,
-        isCataloged: m.isCataloged !== undefined ? m.isCataloged : (m.status === 'Por Archivar' || m.status === 'Finalizado'),
-        catalogedBy: m.catalogedBy || 'N/A',
-        catalogedAt: m.catalogedAt || 'N/A',
-        isFinalized: m.isFinalized !== undefined ? m.isFinalized : (m.status === 'Finalizado'),
-        finalizedBy: m.finalizedBy || 'N/A',
-        finalizedAt: m.finalizedAt || 'N/A',
-        notes: m.notes || '',
-      };
-    });
+    const payload = {
+      action: 'createDailyBackupSheet',
+      date: dateStr,
+      materials: formattedMaterials,
+      user: userName,
+    };
 
-    const response = await fetch(url, {
-      method: 'POST',
-      mode: 'cors',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({
-        action: 'createDailyBackupSheet',
-        date: dateStr,
-        materials: formattedMaterials,
-        user: userName,
-      }),
-    });
-
-    const data = await response.json();
-    if (data && data.success) {
+    const result = await safeFetchAppsScript(url, payload, { timeoutMs: 60000, retries: 1 });
+    if (result.success) {
       return {
         success: true,
-        message: data.message || `Hoja de respaldo diario creada exitosamente en Google Drive.`,
-        sheetName: data.sheetName,
+        message: result.message || 'Hoja de respaldo diario creada exitosamente en Google Drive.',
+        sheetName: result.raw?.sheetName,
       };
     } else {
-      return { success: false, message: data?.message || 'Error al crear la hoja en Google Drive.' };
+      return {
+        success: false,
+        message: result.message || 'Error al crear la hoja en Google Drive.',
+      };
     }
   } catch (err: any) {
     console.error('Error creating daily backup sheet:', err);
-    return { success: false, message: `Error de conexión con Google Drive: ${err.message || err.toString()}` };
+    return { success: false, message: formatNetworkErrorMessage(err, 'Google Drive') };
   }
 }
 
@@ -1660,66 +1782,32 @@ export async function createMonthlyBackupInDrive(
   }
 
   try {
-    const formattedMaterials = materials.map((m) => {
-      let assignedStr = 'Sin asignar';
-      if (m.assignedPersons && m.assignedPersons.length > 0) {
-        assignedStr = m.assignedPersons.join(', ');
-      } else if (m.assignedTo) {
-        assignedStr = m.assignedTo;
-      }
+    const formattedMaterials = materials.map(formatMaterialForSheet);
 
-      return {
-        id: m.id,
-        familyId: m.familyId || m.id,
-        title: m.title,
-        signalType: m.signalType,
-        division: m.division,
-        duration: formatDurationHHMMSS(m.duration),
-        creationDate: m.creationDate,
-        createdBy: m.createdBy,
-        createdByRole: m.creatorRole || m.createdByRole || '',
-        status: m.status,
-        isRequestTask: m.isRequestTask ? true : false,
-        assignedTo: assignedStr,
-        assignedToRole: m.assignedToRole || '',
-        assignedAt: m.assignedAt || '',
-        isIngested: m.isIngested !== undefined ? m.isIngested : true,
-        isCataloged: m.isCataloged !== undefined ? m.isCataloged : (m.status === 'Por Archivar' || m.status === 'Finalizado'),
-        catalogedBy: m.catalogedBy || 'N/A',
-        catalogedAt: m.catalogedAt || 'N/A',
-        isFinalized: m.isFinalized !== undefined ? m.isFinalized : (m.status === 'Finalizado'),
-        finalizedBy: m.finalizedBy || 'N/A',
-        finalizedAt: m.finalizedAt || 'N/A',
-        notes: m.notes || '',
-      };
-    });
+    const payload = {
+      action: 'createMonthlyBackupSheet',
+      monthPeriod,
+      materials: formattedMaterials,
+      summary,
+      user: userName,
+    };
 
-    const response = await fetch(url, {
-      method: 'POST',
-      mode: 'cors',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({
-        action: 'createMonthlyBackupSheet',
-        monthPeriod,
-        materials: formattedMaterials,
-        summary,
-        user: userName,
-      }),
-    });
-
-    const data = await response.json();
-    if (data && data.success) {
+    const result = await safeFetchAppsScript(url, payload, { timeoutMs: 60000, retries: 1 });
+    if (result.success) {
       return {
         success: true,
-        message: data.message || `Hoja de respaldo mensual creada exitosamente en Google Drive.`,
-        sheetName: data.sheetName,
+        message: result.message || 'Hoja de respaldo mensual creada exitosamente en Google Drive.',
+        sheetName: result.raw?.sheetName,
       };
     } else {
-      return { success: false, message: data?.message || 'Error al crear la hoja mensual en Google Drive.' };
+      return {
+        success: false,
+        message: result.message || 'Error al crear la hoja mensual en Google Drive.',
+      };
     }
   } catch (err: any) {
     console.error('Error creating monthly backup sheet:', err);
-    return { success: false, message: `Error de conexión con Google Drive: ${err.message || err.toString()}` };
+    return { success: false, message: formatNetworkErrorMessage(err, 'Google Drive') };
   }
 }
 

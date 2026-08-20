@@ -42,9 +42,10 @@ import {
   apiClearAllGuardShifts,
   apiSaveMonthlyArchive,
   apiClearMonthlyArchives,
+  apiCleanAndDeduplicateSheet,
 } from './services/apiService';
 import { Navbar } from './components/Navbar';
-import { canUserFinalizeSignal } from './utils/permissions';
+import { canUserFinalizeSignal, canUserDeleteMaterial } from './utils/permissions';
 import { UserRoleSelectorModal } from './components/UserRoleSelectorModal';
 import { MaterialListModule } from './components/MaterialListModule';
 import { MaterialModal } from './components/MaterialModal';
@@ -97,6 +98,9 @@ export default function App() {
 
   // State reference for background async sync routines
   const stateRef = React.useRef(state);
+  const isSyncingRef = React.useRef(false);
+  const lastFocusSyncRef = React.useRef(0);
+
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
@@ -112,7 +116,8 @@ export default function App() {
       return;
     }
 
-    if (stateRef.current.isSyncing) return;
+    if (isSyncingRef.current) return;
+    isSyncingRef.current = true;
 
     setState((prev) => ({ ...prev, isSyncing: true, syncError: undefined }));
 
@@ -160,10 +165,12 @@ export default function App() {
         setState((prev) => ({
           ...prev,
           isSyncing: false,
-          syncError: result.message,
+          syncError: notify ? result.message : prev.syncError,
         }));
         if (notify) {
           showToast(result.message, 'error');
+        } else {
+          console.warn('Sincronización en segundo plano no completada:', result.message);
         }
       }
     } catch (err: any) {
@@ -171,11 +178,15 @@ export default function App() {
       setState((prev) => ({
         ...prev,
         isSyncing: false,
-        syncError: errorMsg,
+        syncError: notify ? errorMsg : prev.syncError,
       }));
       if (notify) {
         showToast(`Error al conectar con Google Sheets: ${errorMsg}`, 'error');
+      } else {
+        console.warn('Error en sincronización en segundo plano:', err);
       }
+    } finally {
+      isSyncingRef.current = false;
     }
   };
 
@@ -188,6 +199,26 @@ export default function App() {
     }));
   };
 
+  // Clean and deduplicate rows in Google Sheets
+  const handleCleanDuplicatesInSheet = async () => {
+    if (!state.appsScriptUrl) {
+      showToast('No hay URL de Google Apps Script configurada.', 'error');
+      return;
+    }
+    showToast('Depurando filas duplicadas y verificando formatos en Google Sheets...', 'success');
+    try {
+      const res = await apiCleanAndDeduplicateSheet(state.appsScriptUrl);
+      if (res.success) {
+        showToast(res.message || 'Depuración completada exitosamente en Google Sheets.', 'success');
+        await handleTriggerSync(false);
+      } else {
+        showToast(`Error al depurar en Sheets: ${res.message || 'Acción no completada'}`, 'error');
+      }
+    } catch (err: any) {
+      showToast(`Error al conectar con Google Sheets: ${err?.message || err}`, 'error');
+    }
+  };
+
   // Automatic sync on mount (reads fresh data from Sheets directly)
   useEffect(() => {
     if (state.appsScriptUrl) {
@@ -195,16 +226,21 @@ export default function App() {
     }
   }, []);
 
-  // Periodic background sync every 25 seconds + on window focus
+  // Periodic background sync every 45 seconds + on window focus (debounced)
   useEffect(() => {
     if (!state.appsScriptUrl) return;
 
     const intervalId = setInterval(() => {
       handleTriggerSync(false);
-    }, 25000);
+    }, 45000);
 
     const onWindowFocus = () => {
-      handleTriggerSync(false);
+      const now = Date.now();
+      // Debounce window focus events to at most once every 30 seconds
+      if (now - lastFocusSyncRef.current > 30000) {
+        lastFocusSyncRef.current = now;
+        handleTriggerSync(false);
+      }
     };
 
     window.addEventListener('focus', onWindowFocus);
@@ -384,8 +420,18 @@ export default function App() {
 
       if (prev.appsScriptUrl) {
         apiUpdateMaterial(prev.appsScriptUrl, updatedSignal.id, undefined, updatedSignal)
-          .then((res) => { if (res.success) markSyncSuccess(); })
-          .catch((err) => console.warn('Error updating material in Sheets:', err));
+          .then((res) => {
+            if (res.success) {
+              markSyncSuccess();
+              showToast(`Señal ${updatedSignal.id} sincronizada en Google Sheets.`, 'success');
+            } else {
+              showToast(`Aviso de Sheets: ${res.message || 'No se pudo actualizar en la hoja'}`, 'error');
+            }
+          })
+          .catch((err) => {
+            console.warn('Error updating material in Sheets:', err);
+            showToast(`Error al enviar modificación a Google Sheets: ${err?.message || err}`, 'error');
+          });
       }
 
       return { ...prev, materials: updatedMaterials };
@@ -407,15 +453,17 @@ export default function App() {
       let updatedTarget: MaterialSignal | undefined;
       const updatedMaterials = prev.materials.map((mat) => {
         if (mat.id === signalId) {
-          const isCataloged = newStatus === 'Por Archivar' || newStatus === 'Finalizado';
-          const isFinalized = newStatus === 'Finalizado';
+          const isDiscarded = newStatus === 'Descartado';
+          const isCataloged = !isDiscarded && (newStatus === 'Por Archivar' || newStatus === 'Finalizado');
+          const isFinalized = !isDiscarded && newStatus === 'Finalizado';
 
-          const updated = {
+          const updated: MaterialSignal = {
             ...mat,
             status: newStatus,
-            isIngested: true,
+            isIngested: true, // Continues counting for total ingested hours
             isCataloged,
             isFinalized,
+            isDiscarded,
           };
 
           if (isCataloged) {
@@ -448,7 +496,7 @@ export default function App() {
   };
 
   // Toggle single boolean field independently
-  const handleToggleSignalBoolean = (signalId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized') => {
+  const handleToggleSignalBoolean = (signalId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized' | 'isDiscarded') => {
     const timestampStr = getFormattedDateTime();
 
     const matTarget = state.materials.find((m) => m.id === signalId);
@@ -466,12 +514,22 @@ export default function App() {
       const updatedMaterials = prev.materials.map((mat) => {
         if (mat.id === signalId) {
           const newVal = !mat[flag];
-          const updated = { ...mat, [flag]: newVal };
+          const updated: MaterialSignal = { ...mat, [flag]: newVal };
 
           // Maintain audit metadata
+          if (flag === 'isDiscarded') {
+            if (newVal) {
+              updated.status = 'Descartado';
+              updated.isCataloged = false;
+              updated.isFinalized = false;
+            } else {
+              updated.status = 'Registrado';
+            }
+          }
           if (flag === 'isCataloged' && newVal) {
             updated.catalogedBy = prev.currentUser.name;
             updated.catalogedAt = timestampStr;
+            updated.isDiscarded = false;
             // Auto assign if not assigned
             if (!updated.assignedTo) {
               updated.assignedTo = prev.currentUser.name;
@@ -483,6 +541,7 @@ export default function App() {
             updated.finalizedBy = prev.currentUser.name;
             updated.finalizedAt = timestampStr;
             updated.isCataloged = true; // Auto mark cataloged if finalized
+            updated.isDiscarded = false;
             if (!updated.catalogedBy) {
               updated.catalogedBy = prev.currentUser.name;
               updated.catalogedAt = timestampStr;
@@ -490,7 +549,8 @@ export default function App() {
           }
 
           // Sync status text for consistency
-          if (updated.isFinalized) updated.status = 'Finalizado';
+          if (updated.isDiscarded) updated.status = 'Descartado';
+          else if (updated.isFinalized) updated.status = 'Finalizado';
           else if (updated.isCataloged) updated.status = 'Por Archivar';
           else updated.status = 'Registrado';
 
@@ -600,7 +660,7 @@ export default function App() {
   };
 
   // Batch Toggle Family Boolean
-  const handleBatchToggleFamilyBoolean = (familyId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized', value: boolean) => {
+  const handleBatchToggleFamilyBoolean = (familyId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized' | 'isDiscarded', value: boolean) => {
     const timestampStr = getFormattedDateTime();
 
     if (flag === 'isFinalized' && value) {
@@ -615,19 +675,31 @@ export default function App() {
       const auditUpdates: Partial<MaterialSignal> = { [flag]: value };
       const updatedMaterials = prev.materials.map((mat) => {
         if (mat.familyId === familyId) {
-          const updated = { ...mat, [flag]: value };
+          const updated: MaterialSignal = { ...mat, [flag]: value };
 
+          if (flag === 'isDiscarded') {
+            if (value) {
+              updated.status = 'Descartado';
+              updated.isCataloged = false;
+              updated.isFinalized = false;
+            } else {
+              updated.status = 'Registrado';
+            }
+          }
           if (flag === 'isCataloged' && value) {
             updated.catalogedBy = updated.catalogedBy || prev.currentUser.name;
             updated.catalogedAt = updated.catalogedAt || timestampStr;
+            updated.isDiscarded = false;
           }
           if (flag === 'isFinalized' && value) {
             updated.finalizedBy = updated.finalizedBy || prev.currentUser.name;
             updated.finalizedAt = updated.finalizedAt || timestampStr;
             updated.isCataloged = true;
+            updated.isDiscarded = false;
           }
 
-          if (updated.isFinalized) updated.status = 'Finalizado';
+          if (updated.isDiscarded) updated.status = 'Descartado';
+          else if (updated.isFinalized) updated.status = 'Finalizado';
           else if (updated.isCataloged) updated.status = 'Por Archivar';
           else updated.status = 'Registrado';
 
@@ -636,15 +708,20 @@ export default function App() {
         return mat;
       });
 
+      if (flag === 'isDiscarded') {
+        auditUpdates.status = value ? 'Descartado' : 'Registrado';
+      }
       if (flag === 'isCataloged' && value) {
         auditUpdates.catalogedBy = prev.currentUser.name;
         auditUpdates.catalogedAt = timestampStr;
+        auditUpdates.isDiscarded = false;
       }
       if (flag === 'isFinalized' && value) {
         auditUpdates.finalizedBy = prev.currentUser.name;
         auditUpdates.finalizedAt = timestampStr;
         auditUpdates.isCataloged = true;
         auditUpdates.status = 'Finalizado';
+        auditUpdates.isDiscarded = false;
       }
 
       saveLocalMaterials(updatedMaterials);
@@ -674,13 +751,15 @@ export default function App() {
     }
 
     setState((prev) => {
-      const isCataloged = newStatus === 'Por Archivar' || newStatus === 'Finalizado';
-      const isFinalized = newStatus === 'Finalizado';
+      const isDiscarded = newStatus === 'Descartado';
+      const isCataloged = !isDiscarded && (newStatus === 'Por Archivar' || newStatus === 'Finalizado');
+      const isFinalized = !isDiscarded && newStatus === 'Finalizado';
       const familyUpdates: Partial<MaterialSignal> = {
         status: newStatus,
         isIngested: true,
         isCataloged,
         isFinalized,
+        isDiscarded,
       };
 
       if (isCataloged) {
@@ -694,12 +773,13 @@ export default function App() {
 
       const updatedMaterials = prev.materials.map((mat) => {
         if (mat.familyId === familyId) {
-          const updated = {
+          const updated: MaterialSignal = {
             ...mat,
             status: newStatus,
             isIngested: true,
             isCataloged,
             isFinalized,
+            isDiscarded,
           };
 
           if (isCataloged) {
@@ -750,6 +830,11 @@ export default function App() {
 
   // Delete Signal
   const handleDeleteSignal = (signalId: string) => {
+    if (!canUserDeleteMaterial(state.currentUser)) {
+      showToast('Acceso Restringido: Solo Coordinadores, Jefes de División y Gerencia pueden eliminar material.', 'error');
+      return;
+    }
+
     setState((prev) => {
       const updatedMaterials = prev.materials.filter((m) => m.id !== signalId);
       saveLocalMaterials(updatedMaterials);
@@ -1252,6 +1337,7 @@ export default function App() {
             lastSyncTime={state.lastSyncTime}
             isSyncing={state.isSyncing}
             onTriggerSync={() => handleTriggerSync(true)}
+            onCleanDuplicates={handleCleanDuplicatesInSheet}
             syncError={state.syncError}
           />
         )}
@@ -1288,6 +1374,7 @@ export default function App() {
           }}
           signal={editingSignal}
           onSave={handleSaveEditSignal}
+          onDelete={handleDeleteSignal}
         />
       )}
 

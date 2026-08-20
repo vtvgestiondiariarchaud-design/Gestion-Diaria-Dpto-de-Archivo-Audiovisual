@@ -164,3 +164,29 @@ export const canUserAssignVacations = (user: UserProfile): boolean => {
   );
 };
 
+/**
+ * Permiso para eliminar material o señales:
+ * Permite a Coordinadores, Jefes de División, Gerente de Archivo, Adjunta de Gerencia,
+ * Documentalistas y personal de Ingesta (Ingestadores y Operadores) eliminar materiales.
+ */
+export const canUserDeleteMaterial = (user: UserProfile): boolean => {
+  if (!user) return false;
+  const role = (user.role || '').trim().toLowerCase();
+  const division = (user.division || '').trim().toLowerCase();
+  return (
+    role.includes('gerente') ||
+    role.includes('adjunt') ||
+    role.includes('jefe') ||
+    role.includes('coordinador') ||
+    role.includes('ingestad') ||
+    role.includes('operador') ||
+    role.includes('documental') ||
+    role.includes('asistent') ||
+    division === 'ingesta' ||
+    division === 'prensa' ||
+    division === 'programación' ||
+    division === 'programacion' ||
+    division === 'gerencia'
+  );
+};
+

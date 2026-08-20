@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { MaterialSignal, DivisionType, SignalType, UserProfile } from '../types';
-import { X, Film, Layers, Clock, Calendar, User, FileText, CheckCircle2, Copy } from 'lucide-react';
+import { MaterialSignal, DivisionType, SignalType, UserProfile, MaterialStatus } from '../types';
+import { X, Film, Layers, Clock, Calendar, User, FileText, CheckCircle2, Copy, Sparkles, Ban } from 'lucide-react';
 import { getFormattedDateTime, formatDurationHHMMSS, getLocalDateISOString } from '../services/apiService';
 
 interface MaterialModalProps {
@@ -26,6 +26,20 @@ const DEFAULT_ZERO_DURATION: SignalDuration = {
   seconds: '00',
 };
 
+const COMMON_SIGNAL_PRESETS = [
+  'Limpio',
+  'Insert',
+  'Master',
+  'Promo',
+  'Clip',
+  'Cápsula',
+  'Extra',
+  'Resumen',
+  'Audio',
+  'Crudo',
+  'Nota',
+];
+
 export const MaterialModal: React.FC<MaterialModalProps> = ({
   isOpen,
   onClose,
@@ -46,11 +60,13 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
   const [division, setDivision] = useState<DivisionType>(
     presetDivision || (currentUser.division && currentUser.division !== 'Gerencia' ? currentUser.division : 'Prensa')
   );
-  const [signalType, setSignalType] = useState<SignalType>('Limpio');
-  
+  const [signalPreset, setSignalPreset] = useState<string>('Limpio');
+  const [customSignalName, setCustomSignalName] = useState<string>('');
+  const [status, setStatus] = useState<MaterialStatus>('Registrado');
+
   // Durations default to 00:00:00
   const [singleDuration, setSingleDuration] = useState<SignalDuration>({ ...DEFAULT_ZERO_DURATION });
-  const [batchDurations, setBatchDurations] = useState<Record<SignalType, SignalDuration>>({
+  const [batchDurations, setBatchDurations] = useState<Record<string, SignalDuration>>({
     Limpio: { ...DEFAULT_ZERO_DURATION },
     Insert: { ...DEFAULT_ZERO_DURATION },
     Master: { ...DEFAULT_ZERO_DURATION },
@@ -68,7 +84,9 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
       setDivision(
         presetDivision || (currentUser.division && currentUser.division !== 'Gerencia' ? currentUser.division : 'Prensa')
       );
-      setSignalType('Limpio');
+      setSignalPreset('Limpio');
+      setCustomSignalName('');
+      setStatus('Registrado');
       setSingleDuration({ ...DEFAULT_ZERO_DURATION });
       setBatchDurations({
         Limpio: { ...DEFAULT_ZERO_DURATION },
@@ -92,7 +110,7 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
   };
 
   const handleBatchDurationChange = (
-    type: SignalType,
+    type: string,
     field: 'hours' | 'minutes' | 'seconds',
     val: string
   ) => {
@@ -136,18 +154,22 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
 
     const generatedSignals: MaterialSignal[] = [];
 
-    const signalCodeMap: Record<SignalType, string> = {
-      Limpio: 'LIM',
-      Insert: 'INS',
-      Master: 'MAS',
-    };
+    const isDiscarded = status === 'Descartado';
+    const computedStatus: MaterialStatus = isDiscarded
+      ? 'Descartado'
+      : isRequestTask
+      ? 'Por Archivar'
+      : status;
 
     if (mode === 'batch' && !presetFamilyId) {
       // Create 3 distinct signals with individual durations: Limpio, Insert, Master
-      const signalTypes: SignalType[] = ['Limpio', 'Insert', 'Master'];
+      const standardTypes = [
+        { type: 'Limpio', code: 'LIM' },
+        { type: 'Insert', code: 'INS' },
+        { type: 'Master', code: 'MAS' },
+      ];
 
-      signalTypes.forEach((stype, idx) => {
-        const code = signalCodeMap[stype] || `S${idx + 1}`;
+      standardTypes.forEach(({ type: stype, code }) => {
         const matId = `MAT-2026-${timestampSeed}${randomSeed}-${code}`;
         const d = batchDurations[stype] || DEFAULT_ZERO_DURATION;
         const formattedDuration = formatDurationHHMMSS(`${pad(d.hours)}:${pad(d.minutes)}:${pad(d.seconds)}`);
@@ -162,19 +184,32 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
           creationDate: fullCreationTimestamp,
           createdBy: currentUser.name,
           creatorRole: `${currentUser.role}${currentUser.division ? ` (${currentUser.division})` : ''}`,
-          status: isRequestTask ? 'Por Archivar' : 'Registrado',
+          status: computedStatus,
+          isDiscarded,
           isIngested: true,
-          isCataloged: isRequestTask ? true : false,
+          isCataloged: !isDiscarded && isRequestTask,
           isFinalized: false,
           isRequestTask,
-          catalogedBy: isRequestTask ? currentUser.name : undefined,
-          catalogedAt: isRequestTask ? fullCreationTimestamp : undefined,
+          catalogedBy: !isDiscarded && isRequestTask ? currentUser.name : undefined,
+          catalogedAt: !isDiscarded && isRequestTask ? fullCreationTimestamp : undefined,
           notes: notes.trim() || `Señal ${stype} registrada automáticamente en familia.`,
         });
       });
     } else {
-      // Create a single unique signal
-      const code = signalCodeMap[signalType] || 'SIG';
+      // Create a single unique signal (standard or custom)
+      const finalSignalType =
+        signalPreset === 'custom'
+          ? customSignalName.trim() || 'Personalizada'
+          : signalPreset;
+
+      let code = 'SIG';
+      if (finalSignalType === 'Limpio') code = 'LIM';
+      else if (finalSignalType === 'Insert') code = 'INS';
+      else if (finalSignalType === 'Master') code = 'MAS';
+      else if (finalSignalType.length >= 3) {
+        code = finalSignalType.slice(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, 'X');
+      }
+
       const matId = `MAT-2026-${timestampSeed}${randomSeed}-${code}`;
       const d = singleDuration;
       const formattedDuration = formatDurationHHMMSS(`${pad(d.hours)}:${pad(d.minutes)}:${pad(d.seconds)}`);
@@ -182,20 +217,21 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
       generatedSignals.push({
         id: matId,
         familyId,
-        signalType,
+        signalType: finalSignalType,
         title: title.trim(),
         division,
         duration: formattedDuration,
         creationDate: fullCreationTimestamp,
         createdBy: currentUser.name,
         creatorRole: `${currentUser.role}${currentUser.division ? ` (${currentUser.division})` : ''}`,
-        status: isRequestTask ? 'Por Archivar' : 'Registrado',
+        status: computedStatus,
+        isDiscarded,
         isIngested: true,
-        isCataloged: isRequestTask ? true : false,
+        isCataloged: !isDiscarded && isRequestTask,
         isFinalized: false,
         isRequestTask,
-        catalogedBy: isRequestTask ? currentUser.name : undefined,
-        catalogedAt: isRequestTask ? fullCreationTimestamp : undefined,
+        catalogedBy: !isDiscarded && isRequestTask ? currentUser.name : undefined,
+        catalogedAt: !isDiscarded && isRequestTask ? fullCreationTimestamp : undefined,
         notes: notes.trim(),
       });
     }
@@ -206,25 +242,33 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/80">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/90 shrink-0">
           <div className="flex items-center gap-3">
-            <div className={`p-2 rounded-lg border ${isRequestTask ? 'bg-purple-600/20 text-purple-400 border-purple-500/30' : 'bg-blue-600/20 text-blue-400 border-blue-500/30'}`}>
+            <div
+              className={`p-2.5 rounded-xl border ${
+                isRequestTask
+                  ? 'bg-purple-600/20 text-purple-400 border-purple-500/30'
+                  : 'bg-blue-600/20 text-blue-400 border-blue-500/30'
+              }`}
+            >
               {isRequestTask ? <FileText className="w-5 h-5" /> : <Film className="w-5 h-5" />}
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white">
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
                 {presetFamilyId
                   ? 'Añadir Señal a Familia Existente'
                   : isRequestTask
-                  ? 'Registrar Nueva Solicitud u Otra Tarea'
-                  : 'Registrar Nuevo Material Audiovisual (Ingesta)'}
+                  ? 'Registrar Solicitud / Otra Tarea'
+                  : 'Nuevo Registro de Ingesta'}
               </h2>
               <p className="text-xs text-slate-400">
-                {isRequestTask
-                  ? 'Archivo Audiovisual VTV • Bandeja de Solicitudes y Tareas Asignadas'
-                  : 'Departamento de Archivo Audiovisual VTV • Ingesta y Trabajo Activo'}
+                {presetFamilyId
+                  ? `Se asociará a la tarjeta "${presetTitle || presetFamilyId}"`
+                  : isRequestTask
+                  ? 'Genera una tarea directa para asignación y catalogación documental'
+                  : 'Registra materiales audiovisuales con duraciones y señales personalizadas'}
               </p>
             </div>
           </div>
@@ -237,117 +281,53 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-6 overflow-y-auto space-y-4">
-          {/* Category Selector (Material Audiovisual vs Solicitud / Otra Tarea) */}
-          {!presetFamilyId && (
-            <div>
-              <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
-                Categoría de Registro
-              </label>
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsRequestTask(false);
-                    setMode('batch');
-                  }}
-                  className={`p-2.5 rounded-xl border text-left flex items-center gap-2.5 transition-all ${
-                    !isRequestTask
-                      ? 'bg-blue-950/60 border-blue-500 text-white shadow-md ring-1 ring-blue-500/30'
-                      : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:bg-slate-800'
-                  }`}
-                >
-                  <Film className="w-4 h-4 text-blue-400 shrink-0" />
-                  <div>
-                    <p className="text-xs font-bold">Material de Ingesta</p>
-                    <p className="text-[10px] text-slate-400">Trabajo activo, noticieros, programas</p>
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsRequestTask(true);
-                    setMode('single');
-                  }}
-                  className={`p-2.5 rounded-xl border text-left flex items-center gap-2.5 transition-all ${
-                    isRequestTask
-                      ? 'bg-purple-950/60 border-purple-500 text-purple-200 shadow-md ring-1 ring-purple-500/30'
-                      : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:bg-slate-800'
-                  }`}
-                >
-                  <FileText className="w-4 h-4 text-purple-400 shrink-0" />
-                  <div>
-                    <p className="text-xs font-bold">Solicitud u Otra Tarea</p>
-                    <p className="text-[10px] text-purple-300/80">Equipo de trabajo (Por archivar)</p>
-                  </div>
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Mode Selector (Batch 3 Signals vs Single) */}
-          {!presetFamilyId && (
-            <div>
-              <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
-                Modo de Registro
-              </label>
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => setMode('batch')}
-                  className={`p-3 rounded-xl border text-left flex flex-col gap-1 transition-all ${
-                    mode === 'batch'
-                      ? 'bg-blue-950/50 border-blue-500 text-white shadow-md ring-1 ring-blue-500/50'
-                      : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:bg-slate-800'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 font-bold text-sm">
-                    <Layers className="w-4 h-4 text-blue-400" />
-                    <span>Familia Completa (3 Señales)</span>
-                  </div>
-                  <span className="text-[11px] text-slate-400 leading-tight">
-                    Crea automáticamente las 3 señales (Limpio, Insert y Master) agrupadas.
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setMode('single')}
-                  className={`p-3 rounded-xl border text-left flex flex-col gap-1 transition-all ${
-                    mode === 'single'
-                      ? 'bg-blue-950/50 border-blue-500 text-white shadow-md ring-1 ring-blue-500/50'
-                      : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:bg-slate-800'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 font-bold text-sm">
-                    <Film className="w-4 h-4 text-emerald-400" />
-                    <span>Señal Individual</span>
-                  </div>
-                  <span className="text-[11px] text-slate-400 leading-tight">
-                    Registra una única señal específica (ej. sólo Limpio).
-                  </span>
-                </button>
-              </div>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4 text-sm overflow-y-auto">
+          {/* Mode Selector (Only if not a preset family and not request task) */}
+          {!presetFamilyId && !isRequestTask && (
+            <div className="p-1.5 bg-slate-950 border border-slate-800 rounded-xl grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => setMode('batch')}
+                className={`py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ${
+                  mode === 'batch'
+                    ? 'bg-blue-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                Familia Completa (3 Señales Estándar)
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode('single')}
+                className={`py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ${
+                  mode === 'single'
+                    ? 'bg-blue-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                }`}
+              >
+                <Film className="w-3.5 h-3.5" />
+                Señal Individual / Personalizada
+              </button>
             </div>
           )}
 
           {/* Title */}
           <div>
             <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1">
-              Título / Descripción del Material *
+              Nombre de la Actividad / Programa *
             </label>
             <input
               type="text"
               required
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="Ej: Noticiero VTV Emisión Estelar - Avance Noticioso Especial"
-              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 text-sm"
+              placeholder="Ej. Rueda de Prensa Min. Comunicación, Reportaje Especial..."
+              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 text-sm font-medium"
             />
           </div>
 
-          {/* Division & Signal Type */}
+          {/* Division & Status Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1">
@@ -356,7 +336,7 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
               <select
                 value={division}
                 onChange={(e) => setDivision(e.target.value as DivisionType)}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-blue-500 text-sm"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-blue-500 text-sm font-medium"
               >
                 <option value="Prensa">División 1: Archivo de Prensa</option>
                 <option value="Programación">División 2: Archivo de Programación</option>
@@ -364,23 +344,96 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
               </select>
             </div>
 
-            {mode === 'single' && (
-              <div>
-                <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1">
-                  Tipo de Señal *
-                </label>
-                <select
-                  value={signalType}
-                  onChange={(e) => setSignalType(e.target.value as SignalType)}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-blue-500 text-sm font-semibold"
-                >
-                  <option value="Limpio">Limpio (Sin cintillos ni gráficos)</option>
-                  <option value="Insert">Insert (Con gráficos/subtítulos)</option>
-                  <option value="Master">Master (Señal final comprimida/aire)</option>
-                </select>
-              </div>
-            )}
+            <div>
+              <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1">
+                Estado Inicial
+              </label>
+              <select
+                value={status}
+                onChange={(e) => setStatus(e.target.value as MaterialStatus)}
+                className={`w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border text-sm font-bold focus:outline-none ${
+                  status === 'Descartado'
+                    ? 'border-rose-500 text-rose-300 bg-rose-950/30'
+                    : 'border-slate-800 text-white focus:border-blue-500'
+                }`}
+              >
+                <option value="Registrado">Registrado (Activo)</option>
+                <option value="Descartado">🚫 Descartado (Solo suma horas ingestadas)</option>
+              </select>
+            </div>
           </div>
+
+          {/* Discarded Notice */}
+          {status === 'Descartado' && (
+            <div className="p-2.5 rounded-xl bg-rose-950/40 border border-rose-800/60 text-xs text-rose-300 flex items-start gap-2">
+              <Ban className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold text-white block mb-0.5">Material Descartado:</span>
+                <span>Las horas ingestadas de este material se contabilizarán en el balance total, pero no aparecerá como tarea pendiente por archivar.</span>
+              </div>
+            </div>
+          )}
+
+          {/* Single Mode: Signal Type & Custom Signal Support */}
+          {mode === 'single' && (
+            <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl space-y-2">
+              <label className="block text-xs font-bold text-blue-300 uppercase tracking-wider flex items-center justify-between">
+                <span>Tipo de Señal para esta tarjeta</span>
+                <span className="text-[10px] font-normal text-slate-400">Personalizable</span>
+              </label>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <span className="text-[10px] text-slate-400 block mb-1">Elegir Tipo / Predefinido</span>
+                  <select
+                    value={signalPreset}
+                    onChange={(e) => {
+                      setSignalPreset(e.target.value);
+                      if (e.target.value !== 'custom') {
+                        setCustomSignalName('');
+                      }
+                    }}
+                    className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white focus:outline-none focus:border-blue-500 text-xs font-bold"
+                  >
+                    <optgroup label="Estándar">
+                      <option value="Limpio">Limpio (Clean Feed)</option>
+                      <option value="Insert">Insert (Con Gráficos)</option>
+                      <option value="Master">Master (Emisión/Aire)</option>
+                    </optgroup>
+                    <optgroup label="Señales Adicionales">
+                      <option value="Promo">Promo</option>
+                      <option value="Clip">Clip</option>
+                      <option value="Cápsula">Cápsula</option>
+                      <option value="Extra">Extra</option>
+                      <option value="Resumen">Resumen</option>
+                      <option value="Audio">Audio</option>
+                      <option value="Crudo">Crudo</option>
+                      <option value="Nota">Nota</option>
+                    </optgroup>
+                    <option value="custom">✏️ Nombre Personalizado...</option>
+                  </select>
+                </div>
+
+                {signalPreset === 'custom' ? (
+                  <div>
+                    <span className="text-[10px] text-purple-300 block mb-1 font-bold">Escribe el nombre de la señal</span>
+                    <input
+                      type="text"
+                      required
+                      value={customSignalName}
+                      onChange={(e) => setCustomSignalName(e.target.value)}
+                      placeholder="Ej: Cámara 2, Audio Ambiente, etc."
+                      className="w-full px-3 py-2 bg-slate-900 border border-purple-500 rounded-lg text-white font-bold text-xs focus:outline-none focus:ring-1 focus:ring-purple-500"
+                    />
+                  </div>
+                ) : (
+                  <div className="flex items-center text-[11px] text-slate-400 pt-5 italic">
+                    Señal: <strong className="text-blue-300 ml-1">{signalPreset}</strong>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Duration Section */}
           {mode === 'single' ? (
@@ -661,11 +714,13 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
             >
               <CheckCircle2 className="w-4 h-4" />
               <span>
-                {isRequestTask
-                  ? mode === 'batch' && !presetFamilyId
+                {presetFamilyId
+                  ? 'Añadir Señal a Tarjeta'
+                  : isRequestTask
+                  ? mode === 'batch'
                     ? 'Guardar Solicitud (3 Señales)'
                     : 'Guardar Solicitud / Tarea'
-                  : mode === 'batch' && !presetFamilyId
+                  : mode === 'batch'
                   ? 'Guardar Familia (3 Señales)'
                   : 'Guardar Señal de Ingesta'}
               </span>

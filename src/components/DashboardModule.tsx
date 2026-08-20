@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { MaterialSignal, DivisionType } from '../types';
-import { groupMaterialsByFamily, durationToSeconds, formatHoursVerbose, secondsToDuration, parseAnyDate } from '../services/apiService';
+import { groupMaterialsByFamily, durationToSeconds, formatHoursVerbose, parseAnyDate } from '../services/apiService';
 import { 
   BarChart, 
   Bar, 
@@ -29,7 +29,8 @@ import {
   ChevronRight,
   Filter,
   CheckSquare,
-  HardDrive
+  HardDrive,
+  Ban
 } from 'lucide-react';
 
 interface DashboardModuleProps {
@@ -85,7 +86,8 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ materials }) =
     });
   }, [divisionFilteredMaterials, period, selectedMonth, selectedYear]);
 
-  // Ingested Materials in Selected Period
+  // Ingested Materials in Selected Period (includes discarded materials as per requirement:
+  // "este material descartado sigue contando para el total de horas ingestadas")
   const ingestedMaterialsInPeriod = useMemo(() => {
     return periodFilteredMaterials.filter((m) => m.isIngested !== false);
   }, [periodFilteredMaterials]);
@@ -95,9 +97,18 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ materials }) =
     return ingestedMaterialsInPeriod.reduce((sum, mat) => sum + durationToSeconds(mat.duration), 0);
   }, [ingestedMaterialsInPeriod]);
 
-  // Cataloged Tasks ("Para Archivar") in Period
+  // Cataloged Tasks ("Para Archivar") in Period (strictly excludes discarded materials)
   const catalogedTasksInPeriod = useMemo(() => {
-    return periodFilteredMaterials.filter((m) => m.isCataloged === true);
+    return periodFilteredMaterials.filter(
+      (m) => m.isCataloged === true && m.status !== 'Descartado' && !m.isDiscarded
+    );
+  }, [periodFilteredMaterials]);
+
+  // Discarded Materials in Period
+  const discardedMaterialsInPeriod = useMemo(() => {
+    return periodFilteredMaterials.filter(
+      (m) => m.status === 'Descartado' || m.isDiscarded === true
+    );
   }, [periodFilteredMaterials]);
 
   // Grouped families in period
@@ -121,8 +132,12 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ materials }) =
       const divSecs = divMats.reduce((acc, m) => acc + durationToSeconds(m.duration), 0);
       const divHours = +(divSecs / 3600).toFixed(2);
 
-      const catalogedCount = divMats.filter((m) => m.isCataloged).length;
-      const finalizedCount = divMats.filter((m) => m.isFinalized).length;
+      const catalogedCount = divMats.filter(
+        (m) => m.isCataloged && m.status !== 'Descartado' && !m.isDiscarded
+      ).length;
+      const finalizedCount = divMats.filter(
+        (m) => m.isFinalized && m.status !== 'Descartado' && !m.isDiscarded
+      ).length;
 
       return {
         name: div,
@@ -135,20 +150,26 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ materials }) =
     });
   }, [periodFilteredMaterials]);
 
-  // Signal Type Hours Breakdown (Limpio vs Insert vs Master)
+  // Signal Type Hours Breakdown (Dynamic for Limpio, Insert, Master + Custom signals like Promo, Clip, etc.)
   const signalTypeHoursData = useMemo(() => {
-    const types: ('Limpio' | 'Insert' | 'Master')[] = ['Limpio', 'Insert', 'Master'];
+    const map = new Map<string, { totalSeconds: number; count: number }>();
 
-    return types.map((t) => {
-      const mats = periodFilteredMaterials.filter((m) => m.signalType === t);
-      const secs = mats.reduce((acc, m) => acc + durationToSeconds(m.duration), 0);
-      return {
-        name: `Señal ${t}`,
-        value: +(secs / 3600).toFixed(2),
-        totalSeconds: secs,
-        count: mats.length,
-      };
+    periodFilteredMaterials.forEach((m) => {
+      const type = m.signalType || 'General';
+      if (!map.has(type)) {
+        map.set(type, { totalSeconds: 0, count: 0 });
+      }
+      const item = map.get(type)!;
+      item.totalSeconds += durationToSeconds(m.duration);
+      item.count += 1;
     });
+
+    return Array.from(map.entries()).map(([type, data]) => ({
+      name: `Señal ${type}`,
+      value: +(data.totalSeconds / 3600).toFixed(2),
+      totalSeconds: data.totalSeconds,
+      count: data.count,
+    }));
   }, [periodFilteredMaterials]);
 
   // User Productivity Breakdown (Tasks Performed & Ingested Hours by User)
@@ -181,33 +202,33 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ materials }) =
         item.ingestedSeconds += durationToSeconds(m.duration);
       }
 
-      // Cataloger user tracking
-      const cataloger = m.catalogedBy || m.createdBy || 'Sistema';
-      if (!map.has(cataloger)) {
-        map.set(cataloger, {
-          name: cataloger,
-          createdCount: 0,
-          catalogedTasks: 0,
-          finalizedTasks: 0,
-          ingestedSeconds: 0,
-        });
-      }
-      if (m.isCataloged) {
+      // Cataloger user tracking (only non-discarded items count as tasks to be cataloged/archived)
+      if (m.isCataloged && m.status !== 'Descartado' && !m.isDiscarded) {
+        const cataloger = m.catalogedBy || m.createdBy || 'Sistema';
+        if (!map.has(cataloger)) {
+          map.set(cataloger, {
+            name: cataloger,
+            createdCount: 0,
+            catalogedTasks: 0,
+            finalizedTasks: 0,
+            ingestedSeconds: 0,
+          });
+        }
         map.get(cataloger)!.catalogedTasks += 1;
       }
 
       // Finalizer user tracking
-      const finalizer = m.finalizedBy || m.createdBy || 'Sistema';
-      if (!map.has(finalizer)) {
-        map.set(finalizer, {
-          name: finalizer,
-          createdCount: 0,
-          catalogedTasks: 0,
-          finalizedTasks: 0,
-          ingestedSeconds: 0,
-        });
-      }
-      if (m.isFinalized) {
+      if (m.isFinalized && m.status !== 'Descartado' && !m.isDiscarded) {
+        const finalizer = m.finalizedBy || m.createdBy || 'Sistema';
+        if (!map.has(finalizer)) {
+          map.set(finalizer, {
+            name: finalizer,
+            createdCount: 0,
+            catalogedTasks: 0,
+            finalizedTasks: 0,
+            ingestedSeconds: 0,
+          });
+        }
         map.get(finalizer)!.finalizedTasks += 1;
       }
     });
@@ -264,7 +285,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ materials }) =
     return cell ? cell.materials : [];
   }, [selectedDayDetail, calendarDaysData, period]);
 
-  const COLORS = ['#10b981', '#3b82f6', '#a855f7'];
+  const COLORS = ['#10b981', '#3b82f6', '#a855f7', '#f59e0b', '#ec4899', '#06b6d4', '#6366f1', '#14b8a6'];
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -286,7 +307,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ materials }) =
           </div>
         </div>
 
-        {/* Period Selector Controls (Requirement: Diario, Mensual, Anual) */}
+        {/* Period Selector Controls (Diario, Mensual, Anual, Todo) */}
         <div className="flex flex-wrap items-center gap-3">
           {/* Division Filter */}
           <select
@@ -348,7 +369,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ materials }) =
 
       {/* KPI Cards Row with Gradient Backdrop */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* KPI 1: Horas Totales Ingestadas (Requirement: Si esta ingestado se suma) */}
+        {/* KPI 1: Horas Totales Ingestadas (Includes discarded material) */}
         <div className="p-5 bg-gradient-to-br from-[#1E293B] via-[#1E293B]/90 to-[#0F172A] border border-blue-500/30 rounded-2xl shadow-xl relative overflow-hidden">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-blue-400 uppercase tracking-wider">
@@ -363,7 +384,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ materials }) =
               {formatHoursVerbose(totalIngestedSecondsInPeriod)}
             </span>
             <span className="text-[11px] text-slate-400 mt-1 block">
-              Suma de material ingestado ({ingestedMaterialsInPeriod.length} señales)
+              Suma de todo material ingestado ({ingestedMaterialsInPeriod.length} señales)
             </span>
           </div>
         </div>
@@ -383,7 +404,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ materials }) =
               {catalogedTasksInPeriod.length}
             </span>
             <span className="text-[11px] text-slate-400 mt-1 block">
-              Materiales marcados "Para Archivar"
+              Materiales marcados "Para Archivar" (excluye descartados)
             </span>
           </div>
         </div>
@@ -408,28 +429,39 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ materials }) =
           </div>
         </div>
 
-        {/* KPI 4: Materiales Finalizados */}
+        {/* KPI 4: Materiales Finalizados & Descartados */}
         <div className="p-5 bg-gradient-to-br from-[#1E293B] via-[#1E293B]/90 to-[#0F172A] border border-emerald-500/30 rounded-2xl shadow-xl relative overflow-hidden">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider">
-              4. Finalizados (Cerrados)
+              4. Finalizados / Descartados
             </span>
-            <div className="p-2 rounded-xl bg-emerald-600/20 text-emerald-400 border border-emerald-500/30">
-              <CheckCircle2 className="w-4 h-4" />
+            <div className="flex items-center gap-1">
+              <div className="p-1.5 rounded-lg bg-emerald-600/20 text-emerald-400 border border-emerald-500/30">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+              </div>
+              <div className="p-1.5 rounded-lg bg-rose-600/20 text-rose-400 border border-rose-500/30">
+                <Ban className="w-3.5 h-3.5" />
+              </div>
             </div>
           </div>
-          <div className="mt-3">
-            <span className="text-2xl lg:text-3xl font-extrabold text-emerald-300 font-mono block">
-              {periodFilteredMaterials.filter((m) => m.isFinalized).length}
-            </span>
-            <span className="text-[11px] text-slate-400 mt-1 block">
-              En carpeta histórica aislada
-            </span>
+          <div className="mt-3 flex items-baseline justify-between">
+            <div>
+              <span className="text-2xl font-extrabold text-emerald-300 font-mono block">
+                {periodFilteredMaterials.filter((m) => m.isFinalized && m.status !== 'Descartado' && !m.isDiscarded).length}
+              </span>
+              <span className="text-[11px] text-slate-400">Finalizados en Acervo</span>
+            </div>
+            <div className="text-right">
+              <span className="text-lg font-bold text-rose-400 font-mono block">
+                {discardedMaterialsInPeriod.length}
+              </span>
+              <span className="text-[10px] text-rose-400/80">Descartados</span>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* CALENDAR VISUALIZATION (Requirement: Si está seleccionado mensual que se vea un calendario con la cantidad de horas grabadas en cada día) */}
+      {/* CALENDAR VISUALIZATION */}
       {period === 'monthly' && (
         <div className="p-5 bg-gradient-to-br from-[#1E293B] via-[#1E293B] to-[#0F172A] border border-slate-700/80 rounded-2xl shadow-xl space-y-4">
           <div className="flex flex-col sm:flex-row items-center justify-between gap-3 border-b border-slate-800 pb-4">
@@ -579,6 +611,9 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ materials }) =
                         <p className="font-bold text-white">{mat.title}</p>
                         <p className="text-[10px] text-slate-400">
                           {mat.id} | {mat.division} | {mat.signalType}
+                          {(mat.status === 'Descartado' || mat.isDiscarded) && (
+                            <span className="text-rose-400 ml-1 font-bold">(Descartado)</span>
+                          )}
                         </p>
                       </div>
                       <span className="font-mono font-bold text-amber-300 bg-amber-950/60 px-2 py-0.5 rounded border border-amber-800">
@@ -593,7 +628,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ materials }) =
         </div>
       )}
 
-      {/* Operator Tasks Breakdown Table (Requirement: cantidad de tareas realizadas por usuario) */}
+      {/* Operator Tasks Breakdown Table */}
       <div className="bg-gradient-to-br from-[#1E293B] via-[#1E293B] to-[#0F172A] border border-slate-700/80 rounded-2xl p-5 shadow-xl space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-bold text-white flex items-center gap-2">
@@ -683,7 +718,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ materials }) =
             Horas por Tipo de Señal
           </h3>
           <p className="text-xs text-slate-400 mb-4">
-            Suma total de horas de señales Limpio, Insert y Master
+            Suma total de horas de señales registradas (estándar y personalizadas)
           </p>
 
           <div className="h-64 w-full">

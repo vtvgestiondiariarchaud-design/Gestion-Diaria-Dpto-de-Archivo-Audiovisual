@@ -20,6 +20,8 @@ interface GoogleAppsScriptModalProps {
   lastSyncTime?: string;
   isSyncing?: boolean;
   onTriggerSync?: () => void;
+  onCleanDuplicates?: () => Promise<void>;
+  syncError?: string;
 }
 
 export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
@@ -29,10 +31,13 @@ export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
   lastSyncTime,
   isSyncing,
   onTriggerSync,
+  onCleanDuplicates,
+  syncError,
 }) => {
   const [urlInput, setUrlInput] = useState(appsScriptUrl);
   const [copied, setCopied] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [isCleaning, setIsCleaning] = useState(false);
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,6 +50,16 @@ export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
     navigator.clipboard.writeText(GOOGLE_APPS_SCRIPT_CODE);
     setCopied(true);
     setTimeout(() => setCopied(false), 3000);
+  };
+
+  const handleClean = async () => {
+    if (!onCleanDuplicates) return;
+    setIsCleaning(true);
+    try {
+      await onCleanDuplicates();
+    } finally {
+      setIsCleaning(false);
+    }
   };
 
   return (
@@ -106,12 +121,25 @@ export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
               )}
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {onCleanDuplicates && appsScriptUrl && (
+                <button
+                  type="button"
+                  onClick={handleClean}
+                  disabled={isCleaning || isSyncing}
+                  className="px-3.5 py-2 bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/40 text-amber-300 disabled:opacity-50 font-bold text-xs rounded-xl shadow-md transition-all flex items-center gap-2"
+                  title="Elimina filas duplicadas en Google Sheets y asegura el formato de duración"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isCleaning ? 'animate-spin' : ''}`} />
+                  <span>{isCleaning ? 'Depurando...' : 'Depurar Duplicados en Sheets'}</span>
+                </button>
+              )}
+
               {onTriggerSync && appsScriptUrl && (
                 <button
                   type="button"
                   onClick={onTriggerSync}
-                  disabled={isSyncing}
+                  disabled={isSyncing || isCleaning}
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-md transition-all flex items-center gap-2"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
@@ -131,6 +159,12 @@ export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
               )}
             </div>
           </div>
+          {syncError && (
+            <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 text-xs flex items-center gap-2 mt-2">
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+              <span>{syncError}</span>
+            </div>
+          )}
         </form>
       </div>
 

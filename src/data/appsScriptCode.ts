@@ -183,10 +183,20 @@ function handleReadAllData() {
     };
 
     const values = sMat.getRange(2, 1, sMat.getLastRow() - 1, lastCol).getValues();
+    const displayValues = sMat.getRange(2, 1, sMat.getLastRow() - 1, lastCol).getDisplayValues();
     const validSignalTypes = ["limpio", "insert", "master"];
 
     for (let i = 0; i < values.length; i++) {
       const row = values[i];
+      const dispRow = displayValues[i] || [];
+      const getDispCol = function(displayRow, headerName, defaultIdx) {
+        const lower = headerName.toLowerCase();
+        if (colMap[lower] !== undefined && colMap[lower] < displayRow.length) {
+          return displayRow[colMap[lower]];
+        }
+        return displayRow[defaultIdx];
+      };
+
       const idVal = String(getCol(row, "ID Material", 0) || "").trim();
       let famVal = String(getCol(row, "ID Familia", 1) || idVal || "").trim();
       let titleVal = String(getCol(row, "Título / Descripción", 2) || "").trim();
@@ -217,31 +227,61 @@ function handleReadAllData() {
         assignedPersons = assignedStr.split(",").map(function(s) { return s.trim(); });
       }
 
-      materials.push({
-        id: idVal || ("MAT-REC-" + (i + 1)),
-        familyId: famVal || idVal,
-        title: titleVal || ("Material " + idVal),
+      const rawStatus = String(getCol(row, "Estado", 9) || "Registrado");
+      const isDiscarded = rawStatus.toLowerCase() === "descartado";
+      const isFinalized = !isDiscarded && (String(getCol(row, "Finalizado", 18)).toUpperCase() === "SI" || getCol(row, "Finalizado", 18) === true);
+      const isCataloged = !isDiscarded && (String(getCol(row, "Catalogado", 15)).toUpperCase() === "SI" || getCol(row, "Catalogado", 15) === true);
+      
+      const rawDur = getDispCol(dispRow, "Duración", 5) || getCol(row, "Duración", 5);
+      const formattedDuration = formatDurationString(rawDur);
+
+      const cleanMatId = idVal || ("MAT-REC-" + (i + 1));
+      const matObj = {
+        id: cleanMatId,
+        familyId: famVal || cleanMatId,
+        title: titleVal || ("Material " + cleanMatId),
         signalType: signalVal,
         division: String(getCol(row, "División", 4) || "Prensa"),
-        duration: formatDurationString(getCol(row, "Duración", 5)),
+        duration: formattedDuration,
         creationDate: formatDateString(getCol(row, "Fecha Creación", 6)),
         createdBy: String(getCol(row, "Creado Por", 7) || ""),
         creatorRole: String(getCol(row, "Rol Creador", 8) || ""),
-        status: String(getCol(row, "Estado", 9) || "Registrado"),
+        status: isDiscarded ? "Descartado" : rawStatus,
+        isDiscarded: isDiscarded,
         isRequestTask: String(getCol(row, "Es Solicitud / Tarea", 10)).toUpperCase() === "SI" || getCol(row, "Es Solicitud / Tarea", 10) === true,
         assignedTo: assignedStr && assignedStr !== "Sin asignar" ? assignedStr : undefined,
         assignedPersons: assignedPersons.length > 0 ? assignedPersons : undefined,
         assignedToRole: getCol(row, "Rol Asignado", 12) ? String(getCol(row, "Rol Asignado", 12)) : undefined,
         assignedAt: getCol(row, "Fecha Asignación", 13) ? formatDateString(getCol(row, "Fecha Asignación", 13)) : undefined,
         isIngested: String(getCol(row, "Ingestado", 14)).toUpperCase() === "SI" || getCol(row, "Ingestado", 14) === true,
-        isCataloged: String(getCol(row, "Catalogado", 15)).toUpperCase() === "SI" || getCol(row, "Catalogado", 15) === true,
-        catalogedBy: getCol(row, "Catalogado Por", 16) && getCol(row, "Catalogado Por", 16) !== "N/A" ? String(getCol(row, "Catalogado Por", 16)) : undefined,
-        catalogedAt: getCol(row, "Fecha Catalogación", 17) && getCol(row, "Fecha Catalogación", 17) !== "N/A" ? formatDateString(getCol(row, "Fecha Catalogación", 17)) : undefined,
-        isFinalized: String(getCol(row, "Finalizado", 18)).toUpperCase() === "SI" || getCol(row, "Finalizado", 18) === true,
-        finalizedBy: getCol(row, "Finalizado Por", 19) && getCol(row, "Finalizado Por", 19) !== "N/A" ? String(getCol(row, "Finalizado Por", 19)) : undefined,
-        finalizedAt: getCol(row, "Fecha Finalizado", 20) && getCol(row, "Fecha Finalizado", 20) !== "N/A" ? formatDateString(getCol(row, "Fecha Finalizado", 20)) : undefined,
+        isCataloged: isCataloged,
+        catalogedBy: !isDiscarded && getCol(row, "Catalogado Por", 16) && getCol(row, "Catalogado Por", 16) !== "N/A" ? String(getCol(row, "Catalogado Por", 16)) : undefined,
+        catalogedAt: !isDiscarded && getCol(row, "Fecha Catalogación", 17) && getCol(row, "Fecha Catalogación", 17) !== "N/A" ? formatDateString(getCol(row, "Fecha Catalogación", 17)) : undefined,
+        isFinalized: isFinalized,
+        finalizedBy: !isDiscarded && getCol(row, "Finalizado Por", 19) && getCol(row, "Finalizado Por", 19) !== "N/A" ? String(getCol(row, "Finalizado Por", 19)) : undefined,
+        finalizedAt: !isDiscarded && getCol(row, "Fecha Finalizado", 20) && getCol(row, "Fecha Finalizado", 20) !== "N/A" ? formatDateString(getCol(row, "Fecha Finalizado", 20)) : undefined,
         notes: getCol(row, "Notas / Observaciones", 21) ? String(getCol(row, "Notas / Observaciones", 21)) : ""
-      });
+      };
+
+      // Deduplicate in memory in case Google Sheets contains duplicate rows with the same ID
+      const dedupeKey = cleanMatId.toLowerCase();
+      const existingIdx = materials.findIndex(function(m) { return m.id.toLowerCase() === dedupeKey; });
+      if (existingIdx === -1) {
+        materials.push(matObj);
+      } else {
+        const existing = materials[existingIdx];
+        if (matObj.isDiscarded) {
+          existing.status = "Descartado";
+          existing.isDiscarded = true;
+          existing.isCataloged = false;
+          existing.isFinalized = false;
+        }
+        if (matObj.duration && matObj.duration !== "00:00:00") {
+          existing.duration = matObj.duration;
+        }
+        if (matObj.title && matObj.title !== existing.title) existing.title = matObj.title;
+        if (matObj.notes) existing.notes = matObj.notes;
+      }
     }
   }
 
@@ -331,6 +371,96 @@ function handleReadAllData() {
 /**
  * Funciones Auxiliares para Operaciones Atómicas en Sheets
  */
+function getMaterialColumnMapping(sMat) {
+  var lastCol = Math.max(sMat ? sMat.getLastColumn() : MATERIAL_HEADERS.length, MATERIAL_HEADERS.length);
+  var headerVals = (sMat && sMat.getLastRow() >= 1) ? sMat.getRange(1, 1, 1, lastCol).getValues()[0] : MATERIAL_HEADERS;
+  var map = {
+    id: 0,
+    familyId: 1,
+    title: 2,
+    signalType: 3,
+    division: 4,
+    duration: 5,
+    creationDate: 6,
+    createdBy: 7,
+    creatorRole: 8,
+    status: 9,
+    isRequestTask: 10,
+    assignedTo: 11,
+    assignedToRole: 12,
+    assignedAt: 13,
+    isIngested: 14,
+    isCataloged: 15,
+    catalogedBy: 16,
+    catalogedAt: 17,
+    isFinalized: 18,
+    finalizedBy: 19,
+    finalizedAt: 20,
+    notes: 21
+  };
+
+  for (var c = 0; c < headerVals.length; c++) {
+    var h = String(headerVals[c] || "").trim().toLowerCase();
+    if (!h) continue;
+    if (h.indexOf("id material") !== -1 || h === "id" || h === "codigo" || h === "código") map.id = c;
+    else if (h.indexOf("id familia") !== -1 || h.indexOf("familia") !== -1) map.familyId = c;
+    else if (h.indexOf("título") !== -1 || h.indexOf("titulo") !== -1 || h.indexOf("descripción") !== -1 || h.indexOf("descripcion") !== -1) map.title = c;
+    else if (h.indexOf("señal") !== -1 || h.indexOf("senal") !== -1 || h.indexOf("tipo") !== -1) map.signalType = c;
+    else if (h.indexOf("división") !== -1 || h.indexOf("division") !== -1) map.division = c;
+    else if (h.indexOf("duración") !== -1 || h.indexOf("duracion") !== -1 || h.indexOf("tiempo") !== -1) map.duration = c;
+    else if (h.indexOf("fecha creación") !== -1 || h.indexOf("creacion") !== -1) map.creationDate = c;
+    else if (h.indexOf("creado por") !== -1) map.createdBy = c;
+    else if (h.indexOf("rol creador") !== -1) map.creatorRole = c;
+    else if (h === "estado" || h.indexOf("status") !== -1) map.status = c;
+    else if (h.indexOf("solicitud") !== -1 || h.indexOf("tarea") !== -1) map.isRequestTask = c;
+    else if (h.indexOf("asignado a") !== -1) map.assignedTo = c;
+    else if (h.indexOf("rol asignado") !== -1) map.assignedToRole = c;
+    else if (h.indexOf("fecha asignación") !== -1 || h.indexOf("asignacion") !== -1) map.assignedAt = c;
+    else if (h.indexOf("ingestado") !== -1) map.isIngested = c;
+    else if (h === "catalogado") map.isCataloged = c;
+    else if (h.indexOf("catalogado por") !== -1) map.catalogedBy = c;
+    else if (h.indexOf("fecha catalogación") !== -1 || h.indexOf("fecha catalogacion") !== -1) map.catalogedAt = c;
+    else if (h === "finalizado") map.isFinalized = c;
+    else if (h.indexOf("finalizado por") !== -1) map.finalizedBy = c;
+    else if (h.indexOf("fecha finalizado") !== -1) map.finalizedAt = c;
+    else if (h.indexOf("notas") !== -1 || h.indexOf("observaciones") !== -1) map.notes = c;
+  }
+
+  return map;
+}
+
+function findMatchingMaterialRows(sMat, targetId, familyId, signalType) {
+  if (!sMat || sMat.getLastRow() <= 1) return [];
+  var colMap = getMaterialColumnMapping(sMat);
+  var numRows = sMat.getLastRow() - 1;
+  var maxCol = Math.max(sMat.getLastColumn(), MATERIAL_HEADERS.length);
+  var allValues = sMat.getRange(2, 1, numRows, maxCol).getValues();
+
+  var cleanTargetId = String(targetId || "").trim().toLowerCase();
+  var cleanFamilyId = String(familyId || "").trim().toLowerCase();
+  var cleanSignal = String(signalType || "").trim().toLowerCase();
+
+  var matches = [];
+
+  for (var i = 0; i < allValues.length; i++) {
+    var row = allValues[i];
+    var rowId = String(row[colMap.id] || "").trim().toLowerCase();
+    var rowFam = String(row[colMap.familyId] || "").trim().toLowerCase();
+    var rowSig = String(row[colMap.signalType] || "").trim().toLowerCase();
+
+    // 1. Coincidencia exacta o parcial de ID de material
+    if (cleanTargetId && (rowId === cleanTargetId || (rowId && cleanTargetId && (rowId.indexOf(cleanTargetId) !== -1 || cleanTargetId.indexOf(rowId) !== -1 && rowId.length > 5)))) {
+      matches.push(i + 2); // 1-based row index in Sheets
+    }
+    // 2. Coincidencia por Familia y Tipo de Señal
+    else if (cleanFamilyId && cleanSignal && rowFam === cleanFamilyId && (rowSig === cleanSignal || rowSig.indexOf(cleanSignal) !== -1 || cleanSignal.indexOf(rowSig) !== -1)) {
+      matches.push(i + 2);
+    }
+  }
+
+  return matches;
+}
+
 function findRowIndexById(sheet, colIndex, targetId) {
   if (!sheet || sheet.getLastRow() <= 1) return -1;
   const numRows = sheet.getLastRow() - 1;
@@ -350,28 +480,34 @@ function materialToRowArray(m) {
     assignedStr = m.assignedPersons.join(", ");
   }
 
+  const isDiscarded = m.status === "Descartado" || m.isDiscarded === true;
+  const status = isDiscarded ? "Descartado" : (m.status || "Registrado");
+  const isFinalized = !isDiscarded && (m.isFinalized === true || status === "Finalizado");
+  const isCataloged = !isDiscarded && (m.isCataloged === true || status === "Por Archivar" || isFinalized);
+  const cleanDuration = formatDurationString(m.duration);
+
   return [
     m.id || "",
     m.familyId || m.id || "",
     m.title || "",
     m.signalType || "Limpio",
     m.division || "Prensa",
-    m.duration || "00:00:00",
+    cleanDuration,
     m.creationDate || "",
     m.createdBy || "",
     m.creatorRole || m.createdByRole || "",
-    m.status || "Registrado",
+    status,
     (m.isRequestTask === true) ? "SI" : "NO",
     assignedStr || "Sin asignar",
     m.assignedToRole || "",
     m.assignedAt || "",
-    (m.isIngested === true) ? "SI" : "NO",
-    (m.isCataloged === true) ? "SI" : "NO",
-    m.catalogedBy || "N/A",
-    m.catalogedAt || "N/A",
-    (m.isFinalized === true) ? "SI" : "NO",
-    m.finalizedBy || "N/A",
-    m.finalizedAt || "N/A",
+    (m.isIngested === true || m.isIngested === undefined) ? "SI" : "NO",
+    (isCataloged) ? "SI" : "NO",
+    isDiscarded ? "N/A" : (m.catalogedBy || "N/A"),
+    isDiscarded ? "N/A" : (m.catalogedAt || "N/A"),
+    (isFinalized) ? "SI" : "NO",
+    isDiscarded ? "N/A" : (m.finalizedBy || "N/A"),
+    isDiscarded ? "N/A" : (m.finalizedAt || "N/A"),
     m.notes || ""
   ];
 }
@@ -426,18 +562,31 @@ function doPost(e) {
     if (action === "createMaterials" || action === "saveMaterialsBatch") {
       const materials = body.materials || (body.material ? [body.material] : []);
       const sMat = ss.getSheetByName(SHEET_MATERIALES);
+      if (!sMat) return responseJSON({ success: false, message: "Hoja MATERIALES no encontrada." });
+
+      const colMap = getMaterialColumnMapping(sMat);
       let insertedCount = 0;
       let updatedCount = 0;
 
       materials.forEach(function(m) {
         if (!m || !m.id) return;
-        const rowIndex = findRowIndexById(sMat, 1, m.id);
+        const matchingRows = findMatchingMaterialRows(sMat, m.id, m.familyId, m.signalType);
         const rowData = materialToRowArray(m);
-        if (rowIndex > 0) {
-          sMat.getRange(rowIndex, 1, 1, MATERIAL_HEADERS.length).setValues([rowData]);
+        if (matchingRows.length > 0) {
+          const targetRow = matchingRows[0];
+          sMat.getRange(targetRow, 1, 1, MATERIAL_HEADERS.length).setValues([rowData]);
+          sMat.getRange(targetRow, colMap.duration + 1).setNumberFormat("@").setValue(String(m.duration || "00:00:00"));
+          // Eliminar duplicados si existieran
+          if (matchingRows.length > 1) {
+            for (let d = matchingRows.length - 1; d >= 1; d--) {
+              sMat.deleteRow(matchingRows[d]);
+            }
+          }
           updatedCount++;
         } else {
           sMat.appendRow(rowData);
+          const lastRow = sMat.getLastRow();
+          sMat.getRange(lastRow, colMap.duration + 1).setNumberFormat("@").setValue(String(m.duration || "00:00:00"));
           insertedCount++;
         }
       });
@@ -458,46 +607,142 @@ function doPost(e) {
       }
 
       const sMat = ss.getSheetByName(SHEET_MATERIALES);
-      const rowIndex = findRowIndexById(sMat, 1, materialId);
+      if (!sMat) {
+        return responseJSON({ success: false, message: "Hoja MATERIALES no encontrada." });
+      }
 
-      if (rowIndex <= 0) {
-        // Si no existe, lo insertamos
+      const famId = (body.material && body.material.familyId) || (body.updates && body.updates.familyId) || "";
+      const sigType = (body.material && body.material.signalType) || (body.updates && body.updates.signalType) || "";
+      const colMap = getMaterialColumnMapping(sMat);
+      const matchingRows = findMatchingMaterialRows(sMat, materialId, famId, sigType);
+
+      let primaryRow = matchingRows.length > 0 ? matchingRows[0] : -1;
+
+      if (primaryRow <= 0) {
+        // Si no existe en la hoja, lo insertamos
         if (body.material) {
           sMat.appendRow(materialToRowArray(body.material));
-          return responseJSON({ success: true, message: "Material no existía en Sheets; fue creado.", row: sMat.getLastRow() });
+          const newRow = sMat.getLastRow();
+          sMat.getRange(newRow, colMap.duration + 1).setNumberFormat("@").setValue(String(body.material.duration || "00:00:00"));
+          return responseJSON({ success: true, message: "Material registrado en Sheets.", row: newRow });
         }
         return responseJSON({ success: false, message: "Material con ID '" + materialId + "' no encontrado en Google Sheets." });
       }
 
       // Si viene el objeto completo de material, actualizamos la fila entera
       if (body.material) {
-        sMat.getRange(rowIndex, 1, 1, MATERIAL_HEADERS.length).setValues([materialToRowArray(body.material)]);
+        const rowArr = materialToRowArray(body.material);
+        sMat.getRange(primaryRow, 1, 1, MATERIAL_HEADERS.length).setValues([rowArr]);
+        sMat.getRange(primaryRow, colMap.duration + 1).setNumberFormat("@").setValue(String(body.material.duration || "00:00:00"));
       } else if (body.updates) {
         // Actualizaciones específicas de columnas
         const u = body.updates;
-        if (u.title !== undefined) sMat.getRange(rowIndex, 3).setValue(u.title);
-        if (u.signalType !== undefined) sMat.getRange(rowIndex, 4).setValue(u.signalType);
-        if (u.division !== undefined) sMat.getRange(rowIndex, 5).setValue(u.division);
-        if (u.duration !== undefined) sMat.getRange(rowIndex, 6).setValue(u.duration);
-        if (u.status !== undefined) sMat.getRange(rowIndex, 10).setValue(u.status);
-        if (u.isRequestTask !== undefined) sMat.getRange(rowIndex, 11).setValue(u.isRequestTask ? "SI" : "NO");
-        if (u.assignedTo !== undefined) sMat.getRange(rowIndex, 12).setValue(u.assignedTo || "Sin asignar");
-        if (u.assignedToRole !== undefined) sMat.getRange(rowIndex, 13).setValue(u.assignedToRole || "");
-        if (u.assignedAt !== undefined) sMat.getRange(rowIndex, 14).setValue(u.assignedAt || "");
-        if (u.isIngested !== undefined) sMat.getRange(rowIndex, 15).setValue(u.isIngested ? "SI" : "NO");
-        if (u.isCataloged !== undefined) sMat.getRange(rowIndex, 16).setValue(u.isCataloged ? "SI" : "NO");
-        if (u.catalogedBy !== undefined) sMat.getRange(rowIndex, 17).setValue(u.catalogedBy || "N/A");
-        if (u.catalogedAt !== undefined) sMat.getRange(rowIndex, 18).setValue(u.catalogedAt || "N/A");
-        if (u.isFinalized !== undefined) sMat.getRange(rowIndex, 19).setValue(u.isFinalized ? "SI" : "NO");
-        if (u.finalizedBy !== undefined) sMat.getRange(rowIndex, 20).setValue(u.finalizedBy || "N/A");
-        if (u.finalizedAt !== undefined) sMat.getRange(rowIndex, 21).setValue(u.finalizedAt || "N/A");
-        if (u.notes !== undefined) sMat.getRange(rowIndex, 22).setValue(u.notes || "");
+        const isDiscarding = u.status === "Descartado" || u.isDiscarded === true;
+
+        if (u.familyId !== undefined) sMat.getRange(primaryRow, colMap.familyId + 1).setValue(u.familyId);
+        if (u.title !== undefined) sMat.getRange(primaryRow, colMap.title + 1).setValue(u.title);
+        if (u.signalType !== undefined) sMat.getRange(primaryRow, colMap.signalType + 1).setValue(u.signalType);
+        if (u.division !== undefined) sMat.getRange(primaryRow, colMap.division + 1).setValue(u.division);
+        if (u.duration !== undefined) {
+          sMat.getRange(primaryRow, colMap.duration + 1).setNumberFormat("@").setValue(formatDurationString(u.duration));
+        }
+        if (u.creationDate !== undefined) sMat.getRange(primaryRow, colMap.creationDate + 1).setValue(u.creationDate);
+        if (u.createdBy !== undefined) sMat.getRange(primaryRow, colMap.createdBy + 1).setValue(u.createdBy);
+        if (u.creatorRole !== undefined || u.createdByRole !== undefined) sMat.getRange(primaryRow, colMap.creatorRole + 1).setValue(u.creatorRole || u.createdByRole || "");
+        if (u.status !== undefined) sMat.getRange(primaryRow, colMap.status + 1).setValue(isDiscarding ? "Descartado" : u.status);
+        if (u.isRequestTask !== undefined) sMat.getRange(primaryRow, colMap.isRequestTask + 1).setValue(u.isRequestTask ? "SI" : "NO");
+        if (u.assignedTo !== undefined) sMat.getRange(primaryRow, colMap.assignedTo + 1).setValue(u.assignedTo || "Sin asignar");
+        if (u.assignedToRole !== undefined) sMat.getRange(primaryRow, colMap.assignedToRole + 1).setValue(u.assignedToRole || "");
+        if (u.assignedAt !== undefined) sMat.getRange(primaryRow, colMap.assignedAt + 1).setValue(u.assignedAt || "");
+        if (u.isIngested !== undefined) sMat.getRange(primaryRow, colMap.isIngested + 1).setValue(u.isIngested ? "SI" : "NO");
+
+        if (isDiscarding) {
+          sMat.getRange(primaryRow, colMap.status + 1).setValue("Descartado");
+          sMat.getRange(primaryRow, colMap.isCataloged + 1).setValue("NO");
+          sMat.getRange(primaryRow, colMap.catalogedBy + 1).setValue("N/A");
+          sMat.getRange(primaryRow, colMap.catalogedAt + 1).setValue("N/A");
+          sMat.getRange(primaryRow, colMap.isFinalized + 1).setValue("NO");
+          sMat.getRange(primaryRow, colMap.finalizedBy + 1).setValue("N/A");
+          sMat.getRange(primaryRow, colMap.finalizedAt + 1).setValue("N/A");
+        } else {
+          if (u.isCataloged !== undefined) sMat.getRange(primaryRow, colMap.isCataloged + 1).setValue(u.isCataloged ? "SI" : "NO");
+          if (u.catalogedBy !== undefined) sMat.getRange(primaryRow, colMap.catalogedBy + 1).setValue(u.catalogedBy || "N/A");
+          if (u.catalogedAt !== undefined) sMat.getRange(primaryRow, colMap.catalogedAt + 1).setValue(u.catalogedAt || "N/A");
+          if (u.isFinalized !== undefined) sMat.getRange(primaryRow, colMap.isFinalized + 1).setValue(u.isFinalized ? "SI" : "NO");
+          if (u.finalizedBy !== undefined) sMat.getRange(primaryRow, colMap.finalizedBy + 1).setValue(u.finalizedBy || "N/A");
+          if (u.finalizedAt !== undefined) sMat.getRange(primaryRow, colMap.finalizedAt + 1).setValue(u.finalizedAt || "N/A");
+        }
+        if (u.notes !== undefined) sMat.getRange(primaryRow, colMap.notes + 1).setValue(u.notes || "");
+      }
+
+      // CRÍTICO: Si existían 2 o más filas duplicadas con el mismo ID en Sheets, eliminarlas de abajo hacia arriba
+      if (matchingRows.length > 1) {
+        for (let m = matchingRows.length - 1; m >= 1; m--) {
+          sMat.deleteRow(matchingRows[m]);
+        }
       }
 
       return responseJSON({
         success: true,
-        message: "Tarjeta de material '" + materialId + "' actualizada exitosamente en Google Sheets.",
-        rowIndex: rowIndex
+        message: "Tarjeta de material '" + materialId + "' actualizada exitosamente en Google Sheets" + (matchingRows.length > 1 ? " (se depuraron " + (matchingRows.length - 1) + " fila(s) duplicada(s))." : "."),
+        rowIndex: primaryRow
+      });
+    }
+
+    // Acción para Depurar Duplicados en Sheets y Reparar Formato de Duración
+    if (action === "cleanAndDeduplicateSheet") {
+      const sMat = ss.getSheetByName(SHEET_MATERIALES);
+      if (!sMat || sMat.getLastRow() <= 1) {
+        return responseJSON({ success: true, message: "Hoja de materiales vacía o sin duplicados.", deletedCount: 0 });
+      }
+
+      const colMap = getMaterialColumnMapping(sMat);
+      const numRows = sMat.getLastRow() - 1;
+      const maxCol = Math.max(sMat.getLastColumn(), MATERIAL_HEADERS.length);
+      const values = sMat.getRange(2, 1, numRows, maxCol).getValues();
+      const displayValues = sMat.getRange(2, 1, numRows, maxCol).getDisplayValues();
+      const seenMap = {};
+      const rowsToDelete = [];
+      let deletedCount = 0;
+      let fixedDurationCount = 0;
+
+      for (let i = 0; i < values.length; i++) {
+        const row = values[i];
+        const dispRow = displayValues[i] || [];
+        const rowIdx = i + 2;
+        const idVal = String(row[colMap.id] || "").trim().toLowerCase();
+        const famVal = String(row[colMap.familyId] || "").trim().toLowerCase();
+        const sigVal = String(row[colMap.signalType] || "").trim().toLowerCase();
+        const key = idVal || (famVal + "_" + sigVal);
+
+        if (!key) continue;
+
+        if (seenMap[key] === undefined) {
+          seenMap[key] = rowIdx;
+          // Ensure duration column format and repair any 20h+ timezone offset distortion
+          const currentDurRaw = (dispRow[colMap.duration] !== undefined ? dispRow[colMap.duration] : row[colMap.duration]);
+          const cleanDur = formatDurationString(currentDurRaw);
+          sMat.getRange(rowIdx, colMap.duration + 1).setNumberFormat("@").setValue(String(cleanDur));
+          if (String(currentDurRaw) !== cleanDur) {
+            fixedDurationCount++;
+          }
+        } else {
+          // Duplicate found! Mark for deletion
+          rowsToDelete.push(rowIdx);
+        }
+      }
+
+      // Delete duplicate rows from bottom to top
+      for (let d = rowsToDelete.length - 1; d >= 0; d--) {
+        sMat.deleteRow(rowsToDelete[d]);
+        deletedCount++;
+      }
+
+      return responseJSON({
+        success: true,
+        deletedCount: deletedCount,
+        fixedDurationCount: fixedDurationCount,
+        message: "Depuración completada en Sheets: se eliminaron " + deletedCount + " fila(s) duplicada(s) y se normalizaron las duraciones."
       });
     }
 
@@ -521,14 +766,26 @@ function doPost(e) {
         const rowId = String(idValues[i][0]).trim().toLowerCase();
         if (rowFam === searchFam || rowId === searchFam) {
           const r = i + 2;
-          if (u.status !== undefined) sMat.getRange(r, 10).setValue(u.status);
-          if (u.isIngested !== undefined) sMat.getRange(r, 15).setValue(u.isIngested ? "SI" : "NO");
-          if (u.isCataloged !== undefined) sMat.getRange(r, 16).setValue(u.isCataloged ? "SI" : "NO");
-          if (u.catalogedBy !== undefined) sMat.getRange(r, 17).setValue(u.catalogedBy || "N/A");
-          if (u.catalogedAt !== undefined) sMat.getRange(r, 18).setValue(u.catalogedAt || "N/A");
-          if (u.isFinalized !== undefined) sMat.getRange(r, 19).setValue(u.isFinalized ? "SI" : "NO");
-          if (u.finalizedBy !== undefined) sMat.getRange(r, 20).setValue(u.finalizedBy || "N/A");
-          if (u.finalizedAt !== undefined) sMat.getRange(r, 21).setValue(u.finalizedAt || "N/A");
+          const isDiscarding = u.status === "Descartado" || u.isDiscarded === true;
+
+          if (isDiscarding) {
+            sMat.getRange(r, 10).setValue("Descartado");
+            sMat.getRange(r, 16).setValue("NO");
+            sMat.getRange(r, 17).setValue("N/A");
+            sMat.getRange(r, 18).setValue("N/A");
+            sMat.getRange(r, 19).setValue("NO");
+            sMat.getRange(r, 20).setValue("N/A");
+            sMat.getRange(r, 21).setValue("N/A");
+          } else {
+            if (u.status !== undefined) sMat.getRange(r, 10).setValue(u.status);
+            if (u.isIngested !== undefined) sMat.getRange(r, 15).setValue(u.isIngested ? "SI" : "NO");
+            if (u.isCataloged !== undefined) sMat.getRange(r, 16).setValue(u.isCataloged ? "SI" : "NO");
+            if (u.catalogedBy !== undefined) sMat.getRange(r, 17).setValue(u.catalogedBy || "N/A");
+            if (u.catalogedAt !== undefined) sMat.getRange(r, 18).setValue(u.catalogedAt || "N/A");
+            if (u.isFinalized !== undefined) sMat.getRange(r, 19).setValue(u.isFinalized ? "SI" : "NO");
+            if (u.finalizedBy !== undefined) sMat.getRange(r, 20).setValue(u.finalizedBy || "N/A");
+            if (u.finalizedAt !== undefined) sMat.getRange(r, 21).setValue(u.finalizedAt || "N/A");
+          }
           updatedCount++;
         }
       }
@@ -546,11 +803,29 @@ function doPost(e) {
       if (!materialId) return responseJSON({ success: false, message: "ID de material no especificado." });
 
       const sMat = ss.getSheetByName(SHEET_MATERIALES);
+      if (!sMat || sMat.getLastRow() <= 1) {
+        return responseJSON({ success: true, message: "Hoja de materiales vacía." });
+      }
+
+      const matchingRows = findMatchingMaterialRows(sMat, materialId);
+      if (matchingRows.length > 0) {
+        for (let d = matchingRows.length - 1; d >= 0; d--) {
+          sMat.deleteRow(matchingRows[d]);
+        }
+        return responseJSON({
+          success: true,
+          message: "Material '" + materialId + "' eliminado de Google Sheets (" + matchingRows.length + " fila(s)).",
+          deletedCount: matchingRows.length
+        });
+      }
+
+      // Fallback: búsqueda directa por ID en columna 1
       const rowIndex = findRowIndexById(sMat, 1, materialId);
       if (rowIndex > 0) {
         sMat.deleteRow(rowIndex);
         return responseJSON({ success: true, message: "Material '" + materialId + "' eliminado de Google Sheets." });
       }
+
       return responseJSON({ success: true, message: "El material no existía en Sheets." });
     }
 
@@ -949,11 +1224,67 @@ function formatDateString(val) {
 }
 
 function formatDurationString(val) {
-  if (!val) return "00:00:00";
+  if (val === null || val === undefined || val === "") return "00:00:00";
+  var pad = function(n) { return (n < 10 ? "0" : "") + n; };
   if (val instanceof Date) {
-    return Utilities.formatDate(val, "GMT", "HH:mm:ss");
+    var ssTz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || "GMT-4";
+    var timeStr = Utilities.formatDate(val, ssTz, "HH:mm:ss");
+    var parts = timeStr.split(":");
+    var h = parseInt(parts[0], 10) || 0;
+    var m = parseInt(parts[1], 10) || 0;
+    var s = parseInt(parts[2], 10) || 0;
+    if (h >= 19 && h <= 23) {
+      h = (h + 4) % 24;
+    }
+    return pad(h) + ":" + pad(m) + ":" + pad(s);
   }
-  const str = String(val).trim();
+  if (typeof val === "number") {
+    if (val > 0 && val < 1) {
+      var totalSecs = Math.round(val * 86400);
+      var h = Math.floor(totalSecs / 3600);
+      var m = Math.floor((totalSecs % 3600) / 60);
+      var s = totalSecs % 60;
+      if (h >= 19 && h <= 23) {
+        h = (h + 4) % 24;
+      }
+      return pad(h) + ":" + pad(m) + ":" + pad(s);
+    }
+    if (val >= 1 && val <= 86400 * 30) {
+      var totalSecs = Math.floor(val);
+      var h = Math.floor(totalSecs / 3600);
+      var m = Math.floor((totalSecs % 3600) / 60);
+      var s = totalSecs % 60;
+      if (h >= 19 && h <= 23) {
+        h = (h + 4) % 24;
+      }
+      return pad(h) + ":" + pad(m) + ":" + pad(s);
+    }
+  }
+  var str = String(val).trim();
+  var match = str.match(/(?:[T\s]|^)(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (match && (str.indexOf('-') !== -1 || str.indexOf('/') !== -1 || str.toLowerCase().indexOf('t') !== -1 || str.toLowerCase().indexOf('gmt') !== -1)) {
+    var h = parseInt(match[1], 10) || 0;
+    var m = parseInt(match[2], 10) || 0;
+    var s = parseInt(match[3], 10) || 0;
+    if (h >= 19 && h <= 23) {
+      h = (h + 4) % 24;
+    }
+    return pad(h) + ":" + pad(m) + ":" + pad(s);
+  }
+  var parts = str.split(':');
+  if (parts.length === 3) {
+    var h = parseInt(parts[0], 10) || 0;
+    var m = parseInt(parts[1], 10) || 0;
+    var s = parseInt(parts[2], 10) || 0;
+    if (h >= 19 && h <= 23) {
+      h = (h + 4) % 24;
+    }
+    return pad(h) + ":" + pad(m) + ":" + pad(s);
+  } else if (parts.length === 2) {
+    var m = parseInt(parts[0], 10) || 0;
+    var s = parseInt(parts[1], 10) || 0;
+    return "00:" + pad(m) + ":" + pad(s);
+  }
   return str || "00:00:00";
 }
 

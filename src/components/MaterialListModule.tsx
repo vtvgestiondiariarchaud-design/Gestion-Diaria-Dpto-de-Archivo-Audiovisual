@@ -3,7 +3,6 @@ import {
   MaterialSignal, 
   MaterialStatus, 
   DivisionType, 
-  SignalType, 
   UserProfile, 
   Personnel,
   MonthlyArchiveLog 
@@ -21,7 +20,8 @@ import {
   canUserAssignSignal,
   canUserUnassignSignal,
   canUserCatalogSignal,
-  canUserFinalizeSignal
+  canUserFinalizeSignal,
+  canUserDeleteMaterial
 } from '../utils/permissions';
 import { MaterialContainerCard } from './MaterialContainerCard';
 import { ExportConfirmModal } from './ExportConfirmModal';
@@ -38,20 +38,20 @@ import {
   FolderOpen, 
   FolderCheck, 
   Edit3,
+  Trash2,
   Download,
   HardDrive,
   ChevronLeft,
   ChevronRight,
   Clock,
-  Sparkles,
   UserCheck,
   UserX,
-  Lock,
   Calendar,
   Filter,
-  FileText,
   ClipboardList,
-  Users,
+  Eye,
+  EyeOff,
+  Ban,
   X
 } from 'lucide-react';
 
@@ -62,8 +62,8 @@ interface MaterialListModuleProps {
   monthlyArchives?: MonthlyArchiveLog[];
   onUpdateSignalStatus: (signalId: string, newStatus: MaterialStatus) => void;
   onBatchUpdateFamilyStatus: (familyId: string, newStatus: MaterialStatus) => void;
-  onToggleSignalBoolean?: (signalId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized') => void;
-  onBatchToggleFamilyBoolean?: (familyId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized', value: boolean) => void;
+  onToggleSignalBoolean?: (signalId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized' | 'isDiscarded') => void;
+  onBatchToggleFamilyBoolean?: (familyId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized' | 'isDiscarded', value: boolean) => void;
   onAssignSignal?: (signalId: string, assignToUser: string | null) => void;
   onAssignMultiplePersons?: (signalId: string, assignedPersons: string[]) => void;
   onOpenNewMaterialModal: (familyId?: string, title?: string, division?: DivisionType, isRequestTask?: boolean) => void;
@@ -95,15 +95,21 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
   onClearMonthlyArchives,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  const [folderTab, setFolderTab] = useState<'active' | 'requests' | 'finalized' | 'all'>('active');
+  const [folderTab, setFolderTab] = useState<'active' | 'requests' | 'finalized' | 'discarded' | 'all'>('active');
   const [selectedDivision, setSelectedDivision] = useState<DivisionType | 'Todas'>('Todas');
   const [selectedStatus, setSelectedStatus] = useState<MaterialStatus | 'Todos'>('Todos');
-  const [selectedSignalType, setSelectedSignalType] = useState<SignalType | 'Todos'>('Todos');
+  const [selectedSignalType, setSelectedSignalType] = useState<string | 'Todos'>('Todos');
   const [selectedDate, setSelectedDate] = useState<string>(''); // YYYY-MM-DD
   const [viewMode, setViewMode] = useState<'families' | 'flat'>('families');
+  
+  // Toggle to hide discarded materials (defaults to true as requested: "permite ocultar archivos, que tenga un valor de descartado")
+  const [hideDiscarded, setHideDiscarded] = useState<boolean>(true);
 
   // Multi-person assign modal
   const [multiAssignSignal, setMultiAssignSignal] = useState<MaterialSignal | null>(null);
+
+  // Direct Delete Confirmation modal
+  const [deleteConfirmSignal, setDeleteConfirmSignal] = useState<MaterialSignal | null>(null);
 
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
@@ -118,6 +124,15 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
   // Permission check to add material
   const canCreate = canUserCreateMaterial(currentUser);
 
+  // Dynamically collect unique signal types across materials
+  const availableSignalTypes = useMemo(() => {
+    const set = new Set<string>(['Limpio', 'Insert', 'Master']);
+    materials.forEach((m) => {
+      if (m.signalType) set.add(m.signalType);
+    });
+    return Array.from(set);
+  }, [materials]);
+
   // Check if any filter is active
   const hasActiveFilters = Boolean(
     searchTerm.trim() ||
@@ -130,13 +145,22 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
   // Filtered materials
   const filteredMaterials = useMemo(() => {
     return materials.filter((mat) => {
+      const isMatDiscarded = mat.status === 'Descartado' || mat.isDiscarded;
+
       // Folder Separation logic
       if (folderTab === 'active') {
         if (mat.isFinalized || mat.isRequestTask) return false;
+        if (hideDiscarded && isMatDiscarded) return false;
       } else if (folderTab === 'requests') {
         if (!mat.isRequestTask) return false;
+        if (hideDiscarded && isMatDiscarded) return false;
       } else if (folderTab === 'finalized') {
         if (!mat.isFinalized) return false;
+        if (isMatDiscarded) return false;
+      } else if (folderTab === 'discarded') {
+        if (!isMatDiscarded) return false;
+      } else if (folderTab === 'all') {
+        if (hideDiscarded && isMatDiscarded && selectedStatus !== 'Descartado') return false;
       }
 
       // Search
@@ -189,7 +213,7 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
 
       return matchesSearch && matchesDivision && matchesStatus && matchesSignalType && matchesDate;
     }).sort((a, b) => parseAnyDate(b.creationDate).getTime() - parseAnyDate(a.creationDate).getTime());
-  }, [materials, folderTab, searchTerm, selectedDivision, selectedStatus, selectedSignalType, selectedDate]);
+  }, [materials, folderTab, hideDiscarded, searchTerm, selectedDivision, selectedStatus, selectedSignalType, selectedDate]);
 
   // Grouped into families
   const familyGroups = useMemo(() => {
@@ -199,7 +223,7 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
   // Whenever filters change, reset pagination to page 1
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, selectedDivision, selectedStatus, selectedSignalType, selectedDate, folderTab, viewMode]);
+  }, [searchTerm, selectedDivision, selectedStatus, selectedSignalType, selectedDate, folderTab, viewMode, hideDiscarded]);
 
   // Pagination Calculations
   const totalItems = viewMode === 'families' ? familyGroups.length : filteredMaterials.length;
@@ -218,14 +242,16 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
   // Metrics summary
   const totalCount = materials.length;
   const uniqueFamilyCount = groupMaterialsByFamily(materials).length;
-  const activeCount = materials.filter((m) => !m.isFinalized && !m.isRequestTask).length;
-  const requestsCount = materials.filter((m) => m.isRequestTask).length;
-  const porArchivarCount = materials.filter((m) => (m.isCataloged || m.isRequestTask) && !m.isFinalized).length;
-  const finalizadoCount = materials.filter((m) => m.isFinalized).length;
+  const activeCount = materials.filter((m) => !m.isFinalized && !m.isRequestTask && m.status !== 'Descartado' && !m.isDiscarded).length;
+  const requestsCount = materials.filter((m) => m.isRequestTask && m.status !== 'Descartado' && !m.isDiscarded).length;
+  // Discarded materials do not count towards tasks to be archived
+  const porArchivarCount = materials.filter((m) => (m.isCataloged || m.isRequestTask) && !m.isFinalized && m.status !== 'Descartado' && !m.isDiscarded).length;
+  const finalizadoCount = materials.filter((m) => m.isFinalized && m.status !== 'Descartado' && !m.isDiscarded).length;
+  const discardedCount = materials.filter((m) => m.status === 'Descartado' || m.isDiscarded).length;
 
   // Handle Export Finalized Materials
   const handleTriggerExport = () => {
-    const finalizedList = materials.filter((m) => m.isFinalized || m.status === 'Finalizado');
+    const finalizedList = materials.filter((m) => (m.isFinalized || m.status === 'Finalizado') && m.status !== 'Descartado' && !m.isDiscarded);
     if (finalizedList.length === 0) {
       alert('No hay materiales con estatus "Finalizado" en la base de datos para exportar.');
       return;
@@ -379,7 +405,7 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
               {porArchivarCount}
             </span>
             <span className="text-[11px] text-slate-400">
-              Tareas de catalogación
+              Tareas activas (excluye descartados)
             </span>
           </div>
           <div className="p-3 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30">
@@ -496,6 +522,20 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
             <span>Carpeta Histórica Finalizados ({finalizadoCount})</span>
           </button>
 
+          {/* Descartados Tab */}
+          <button
+            onClick={() => setFolderTab('discarded')}
+            className={`px-4 py-2.5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all ${
+              folderTab === 'discarded'
+                ? 'bg-rose-700 text-white shadow-lg ring-1 ring-rose-400/50'
+                : 'bg-slate-950/60 text-rose-300 hover:text-white hover:bg-rose-950/60 border border-rose-900/60'
+            }`}
+            title="Materiales descartados (cuentan en horas totales de ingesta pero no para archivar)"
+          >
+            <Ban className="w-4 h-4 text-rose-400" />
+            <span>Descartados ({discardedCount})</span>
+          </button>
+
           <button
             onClick={() => setFolderTab('all')}
             className={`px-3.5 py-2.5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all ${
@@ -530,7 +570,7 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
         </div>
       </div>
 
-      {/* Control Bar: Search, Filters, View Mode */}
+      {/* Control Bar: Search, Filters, Hide Discarded Toggle, View Mode */}
       <div className="p-4 bg-gradient-to-r from-slate-900 via-slate-850 to-slate-900 border border-slate-800 rounded-2xl shadow-md space-y-3">
         <div className="flex flex-col md:flex-row items-center justify-between gap-3">
           {/* Search Input */}
@@ -547,6 +587,21 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
 
           {/* Filters Row */}
           <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+            {/* Toggle Hide/Show Discarded */}
+            <button
+              type="button"
+              onClick={() => setHideDiscarded(!hideDiscarded)}
+              className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all border ${
+                hideDiscarded
+                  ? 'bg-slate-950 text-slate-400 hover:text-slate-200 border-slate-800 hover:border-slate-700'
+                  : 'bg-rose-950/70 text-rose-300 border-rose-800/80 ring-1 ring-rose-500/40'
+              }`}
+              title={hideDiscarded ? 'Haga clic para mostrar materiales descartados' : 'Haga clic para ocultar materiales descartados'}
+            >
+              {hideDiscarded ? <EyeOff className="w-3.5 h-3.5 text-slate-400" /> : <Eye className="w-3.5 h-3.5 text-rose-400" />}
+              <span>{hideDiscarded ? 'Ocultar Descartados' : 'Mostrando Descartados'}</span>
+            </button>
+
             {/* Status Filter */}
             <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5">
               <Filter className="w-3.5 h-3.5 text-purple-400 mr-1.5 shrink-0" />
@@ -561,6 +616,7 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                 <option value="En Catalogación" className="bg-slate-900 text-white">En Catalogación</option>
                 <option value="Por Archivar" className="bg-slate-900 text-white">Por Archivar</option>
                 <option value="Finalizado" className="bg-slate-900 text-white">Finalizado</option>
+                <option value="Descartado" className="bg-slate-900 text-white">Descartado</option>
               </select>
             </div>
 
@@ -597,16 +653,16 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
               <option value="Ingesta">División 3: Ingesta</option>
             </select>
 
-            {/* Signal Type Filter */}
+            {/* Signal Type Filter (Includes custom signals) */}
             <select
               value={selectedSignalType}
-              onChange={(e) => setSelectedSignalType(e.target.value as any)}
+              onChange={(e) => setSelectedSignalType(e.target.value)}
               className="px-3 py-2 bg-slate-950 border border-slate-800 text-slate-300 rounded-xl text-xs focus:outline-none focus:border-blue-500"
             >
               <option value="Todos">Todos los Tipos de Señal</option>
-              <option value="Limpio">Limpio</option>
-              <option value="Insert">Insert</option>
-              <option value="Master">Master</option>
+              {availableSignalTypes.map((st) => (
+                <option key={st} value={st} className="bg-slate-900 text-white">{st}</option>
+              ))}
             </select>
 
             {/* Reset All Filters button */}
@@ -672,6 +728,7 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
               {folderTab === 'active' && 'Bandeja de Ingesta y Trabajo Activo'}
               {folderTab === 'requests' && 'Solicitudes y Otras Tareas (Contabilizan por archivar)'}
               {folderTab === 'finalized' && 'Carpeta Histórica (Acervo de Materiales Finalizados)'}
+              {folderTab === 'discarded' && 'Bandeja de Materiales Descartados (Solo suman horas ingestadas)'}
               {folderTab === 'all' && 'Repositorio General de Materiales'}
             </h3>
           </div>
@@ -696,7 +753,7 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
               </button>
             )}
 
-            {(folderTab === 'all' || folderTab === 'finalized') && canCreate && (
+            {(folderTab === 'all' || folderTab === 'finalized' || folderTab === 'discarded') && canCreate && (
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={() => onOpenNewMaterialModal(undefined, undefined, undefined, false)}
@@ -773,151 +830,242 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
-                  {paginatedFilteredMaterials.map((mat, mIdx) => (
-                    <tr key={`${mat.id}-${mat.signalType || 'sig'}-${mIdx}`} className="hover:bg-slate-800/40 transition-colors">
-                      <td className="p-3.5 font-mono font-bold text-white">
-                        <div>{mat.id}</div>
-                        <div className="text-[10px] text-slate-400">FAM: {mat.familyId}</div>
-                      </td>
-                      <td className="p-3.5">
-                        <span className="font-bold text-blue-400 bg-blue-950/60 px-2 py-0.5 rounded border border-blue-800">
-                          {mat.signalType}
-                        </span>
-                      </td>
-                      <td className="p-3.5 font-semibold text-white max-w-xs truncate">
-                        {mat.title}
-                      </td>
-                      <td className="p-3.5">{mat.division}</td>
-                      <td className="p-3.5 font-mono font-bold text-amber-300">
-                        {formatDurationHHMMSS(mat.duration)}
-                      </td>
-                      <td className="p-3.5">
-                        {mat.assignedTo ? (
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-bold text-blue-300 bg-blue-950/80 px-2 py-0.5 rounded border border-blue-800/60 text-[11px]">
-                              {mat.assignedTo}
+                  {paginatedFilteredMaterials.map((mat, mIdx) => {
+                    const isDiscarded = mat.status === 'Descartado' || mat.isDiscarded;
+
+                    return (
+                      <tr key={`${mat.id}-${mat.signalType || 'sig'}-${mIdx}`} className={`hover:bg-slate-800/40 transition-colors ${isDiscarded ? 'opacity-80 bg-rose-950/10' : ''}`}>
+                        <td className="p-3.5 font-mono font-bold text-white">
+                          <div>{mat.id}</div>
+                          <div className="text-[10px] text-slate-400">FAM: {mat.familyId}</div>
+                        </td>
+                        <td className="p-3.5">
+                          <span className={`font-bold px-2 py-0.5 rounded border text-[11px] ${
+                            isDiscarded 
+                              ? 'bg-rose-950/60 text-rose-300 border-rose-800'
+                              : 'bg-blue-950/60 text-blue-300 border-blue-800'
+                          }`}>
+                            {mat.signalType}
+                          </span>
+                        </td>
+                        <td className="p-3.5 font-semibold text-white max-w-xs truncate">
+                          <span className={isDiscarded ? 'line-through decoration-rose-400/60' : ''}>
+                            {mat.title}
+                          </span>
+                          {isDiscarded && (
+                            <span className="ml-2 text-[10px] font-bold text-rose-400 bg-rose-950/60 px-1.5 py-0.5 rounded border border-rose-900">
+                              Descartado
                             </span>
-                            {canUserUnassignSignal(currentUser, mat) && (
+                          )}
+                        </td>
+                        <td className="p-3.5">{mat.division}</td>
+                        <td className="p-3.5 font-mono font-bold text-amber-300">
+                          {formatDurationHHMMSS(mat.duration)}
+                        </td>
+                        <td className="p-3.5">
+                          {mat.assignedTo ? (
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-bold text-blue-300 bg-blue-950/80 px-2 py-0.5 rounded border border-blue-800/60 text-[11px]">
+                                {mat.assignedTo}
+                              </span>
+                              {canUserUnassignSignal(currentUser, mat) && (
+                                <button
+                                  onClick={() => onAssignSignal && onAssignSignal(mat.id, null)}
+                                  className="p-1 rounded bg-slate-800 hover:bg-red-950 text-red-300 hover:text-white border border-slate-700"
+                                  title="Liberar Tarjeta"
+                                >
+                                  <UserX className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => onAssignSignal && onAssignSignal(mat.id, currentUser.name)}
+                              className="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-extrabold text-[10px] flex items-center gap-1"
+                            >
+                              <UserCheck className="w-3 h-3" />
+                              <span>Asignármela</span>
+                            </button>
+                          )}
+                        </td>
+                        <td className="p-3.5">
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => onToggleSignalBoolean && onToggleSignalBoolean(mat.id, 'isIngested')}
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                mat.isIngested !== false ? 'bg-blue-600/30 text-blue-300 border-blue-500' : 'bg-slate-900 text-slate-600 border-slate-800'
+                              }`}
+                              title="Ingestado (Suma horas)"
+                            >
+                              ING
+                            </button>
+                            <button
+                              onClick={() => {
+                                const check = canUserCatalogSignal(currentUser, mat);
+                                if (!check.allowed) {
+                                  alert(check.reason);
+                                  return;
+                                }
+                                if (onToggleSignalBoolean) {
+                                  onToggleSignalBoolean(mat.id, 'isCataloged');
+                                }
+                              }}
+                              disabled={isDiscarded}
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                isDiscarded
+                                  ? 'opacity-30 cursor-not-allowed bg-slate-900 border-slate-800 text-slate-600'
+                                  : mat.isCataloged ? 'bg-amber-600/30 text-amber-300 border-amber-500' : 'bg-slate-900 text-slate-600 border-slate-800'
+                              }`}
+                              title="Catalogado / Para Archivar"
+                            >
+                              CAT
+                            </button>
+                            <button
+                              onClick={() => {
+                                const check = canUserFinalizeSignal(currentUser);
+                                if (!check.allowed) {
+                                  alert(check.reason);
+                                  return;
+                                }
+                                if (onToggleSignalBoolean) {
+                                  onToggleSignalBoolean(mat.id, 'isFinalized');
+                                }
+                              }}
+                              disabled={isDiscarded}
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                isDiscarded
+                                  ? 'opacity-30 cursor-not-allowed bg-slate-900 border-slate-800 text-slate-600'
+                                  : mat.isFinalized ? 'bg-emerald-600/30 text-emerald-300 border-emerald-500' : 'bg-slate-900 text-slate-600 border-slate-800'
+                              }`}
+                              title="Finalizado"
+                            >
+                              FIN
+                            </button>
+                            <button
+                              onClick={() => {
+                                const newStatus = isDiscarded ? 'Registrado' : 'Descartado';
+                                onUpdateSignalStatus(mat.id, newStatus);
+                              }}
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                isDiscarded ? 'bg-rose-600/30 text-rose-300 border-rose-500' : 'bg-slate-900 text-slate-600 border-slate-800 hover:text-rose-300'
+                              }`}
+                              title={isDiscarded ? 'Restaurar material' : 'Descartar material'}
+                            >
+                              DESC
+                            </button>
+                          </div>
+                        </td>
+                        <td className="p-3.5 text-slate-400">
+                          <div>{mat.createdBy}</div>
+                          <div className="text-[10px] font-mono">{getFormattedDateTime(mat.creationDate)}</div>
+                        </td>
+                        <td className="p-3.5 text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            {onEditSignal && (
                               <button
-                                onClick={() => onAssignSignal && onAssignSignal(mat.id, null)}
-                                className="p-1 rounded bg-slate-800 hover:bg-red-950 text-red-300 hover:text-white border border-slate-700"
-                                title="Liberar Tarjeta"
+                                onClick={() => onEditSignal(mat)}
+                                className="p-1.5 rounded bg-purple-950 hover:bg-purple-600 text-purple-300 hover:text-white border border-purple-800 transition-all font-bold text-[10px]"
+                                title="Modificar material"
                               >
-                                <UserX className="w-3 h-3" />
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            <button
+                              onClick={() => {
+                                const check = canUserCatalogSignal(currentUser, mat);
+                                if (!check.allowed) {
+                                  alert(check.reason);
+                                  return;
+                                }
+                                if (onToggleSignalBoolean) {
+                                  onToggleSignalBoolean(mat.id, 'isCataloged');
+                                }
+                              }}
+                              disabled={isDiscarded}
+                              className="px-2 py-1 rounded bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white font-bold text-[10px]"
+                            >
+                              {mat.isCataloged ? 'Catalogado' : 'Para Archivar'}
+                            </button>
+                            <button
+                              onClick={() => {
+                                const check = canUserFinalizeSignal(currentUser);
+                                if (!check.allowed) {
+                                  alert(check.reason);
+                                  return;
+                                }
+                                if (onToggleSignalBoolean) {
+                                  onToggleSignalBoolean(mat.id, 'isFinalized');
+                                }
+                              }}
+                              disabled={isDiscarded}
+                              className="px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold text-[10px]"
+                            >
+                              {mat.isFinalized ? 'Cerrado' : 'Finalizar'}
+                            </button>
+                            {canUserDeleteMaterial(currentUser) && (
+                              <button
+                                type="button"
+                                onClick={() => setDeleteConfirmSignal(mat)}
+                                className="p-1.5 rounded bg-slate-900 hover:bg-red-950 text-red-400 hover:text-red-200 border border-slate-800 hover:border-red-800 transition-all font-bold text-[10px]"
+                                title="Eliminar señal"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             )}
                           </div>
-                        ) : (
-                          <button
-                            onClick={() => onAssignSignal && onAssignSignal(mat.id, currentUser.name)}
-                            className="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-extrabold text-[10px] flex items-center gap-1"
-                          >
-                            <UserCheck className="w-3 h-3" />
-                            <span>Asignármela</span>
-                          </button>
-                        )}
-                      </td>
-                      <td className="p-3.5">
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => onToggleSignalBoolean && onToggleSignalBoolean(mat.id, 'isIngested')}
-                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
-                              mat.isIngested !== false ? 'bg-blue-600/30 text-blue-300 border-blue-500' : 'bg-slate-900 text-slate-600 border-slate-800'
-                            }`}
-                          >
-                            ING
-                          </button>
-                          <button
-                            onClick={() => {
-                              const check = canUserCatalogSignal(currentUser, mat);
-                              if (!check.allowed) {
-                                alert(check.reason);
-                                return;
-                              }
-                              if (onToggleSignalBoolean) {
-                                onToggleSignalBoolean(mat.id, 'isCataloged');
-                              }
-                            }}
-                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
-                              mat.isCataloged ? 'bg-amber-600/30 text-amber-300 border-amber-500' : 'bg-slate-900 text-slate-600 border-slate-800'
-                            }`}
-                          >
-                            CAT
-                          </button>
-                          <button
-                            onClick={() => {
-                              const check = canUserFinalizeSignal(currentUser);
-                              if (!check.allowed) {
-                                alert(check.reason);
-                                return;
-                              }
-                              if (onToggleSignalBoolean) {
-                                onToggleSignalBoolean(mat.id, 'isFinalized');
-                              }
-                            }}
-                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
-                              mat.isFinalized ? 'bg-emerald-600/30 text-emerald-300 border-emerald-500' : 'bg-slate-900 text-slate-600 border-slate-800'
-                            }`}
-                          >
-                            FIN
-                          </button>
-                        </div>
-                      </td>
-                      <td className="p-3.5 text-slate-400">
-                        <div>{mat.createdBy}</div>
-                        <div className="text-[10px] font-mono">{getFormattedDateTime(mat.creationDate)}</div>
-                      </td>
-                      <td className="p-3.5 text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          {onEditSignal && (
-                            <button
-                              onClick={() => onEditSignal(mat)}
-                              className="p-1.5 rounded bg-purple-950 hover:bg-purple-600 text-purple-300 hover:text-white border border-purple-800 transition-all font-bold text-[10px]"
-                              title="Modificar material"
-                            >
-                              <Edit3 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                          <button
-                            onClick={() => {
-                              const check = canUserCatalogSignal(currentUser, mat);
-                              if (!check.allowed) {
-                                alert(check.reason);
-                                return;
-                              }
-                              if (onToggleSignalBoolean) {
-                                onToggleSignalBoolean(mat.id, 'isCataloged');
-                              }
-                            }}
-                            className="px-2 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white font-bold text-[10px]"
-                          >
-                            {mat.isCataloged ? 'Catalogado' : 'Para Archivar'}
-                          </button>
-                          <button
-                            onClick={() => {
-                              const check = canUserFinalizeSignal(currentUser);
-                              if (!check.allowed) {
-                                alert(check.reason);
-                                return;
-                              }
-                              if (onToggleSignalBoolean) {
-                                onToggleSignalBoolean(mat.id, 'isFinalized');
-                              }
-                            }}
-                            className="px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px]"
-                          >
-                            {mat.isFinalized ? 'Cerrado' : 'Finalizar'}
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           </div>
         )}
       </div>
+
+      {/* Delete Confirmation Modal for Flat View */}
+      {deleteConfirmSignal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-rose-900/60 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3 text-rose-400">
+              <div className="p-3 bg-rose-950/60 rounded-xl border border-rose-800/60">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Eliminar Señal</h3>
+                <p className="text-xs text-rose-300 font-mono">ID: {deleteConfirmSignal.id} • {deleteConfirmSignal.signalType}</p>
+              </div>
+            </div>
+            
+            <p className="text-xs text-slate-300 leading-relaxed">
+              ¿Está seguro de que desea eliminar la señal <strong>"{deleteConfirmSignal.title}"</strong> ({deleteConfirmSignal.signalType})? Esta acción se sincronizará con Google Sheets y no se puede deshacer.
+            </p>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmSignal(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition-all"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const idToDelete = deleteConfirmSignal.id;
+                  setDeleteConfirmSignal(null);
+                  onDeleteSignal(idToDelete);
+                }}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-rose-950/50 transition-all"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Sí, Eliminar Definitivamente</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Bottom Pagination Bar */}
       {renderPaginationBar()}

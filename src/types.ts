@@ -1,8 +1,8 @@
 export type DivisionType = 'Prensa' | 'Programación' | 'Ingesta' | 'Gerencia';
 
-export type SignalType = 'Limpio' | 'Insert' | 'Master';
+export type SignalType = 'Limpio' | 'Insert' | 'Master' | string;
 
-export type MaterialStatus = 'Registrado' | 'Por Archivar' | 'Finalizado';
+export type MaterialStatus = 'Registrado' | 'Por Archivar' | 'Finalizado' | 'Descartado';
 
 export type RoleType = 
   | 'Gerente de Archivo'
@@ -45,9 +45,10 @@ export interface MaterialSignal {
   isRequestTask?: boolean;   // True if item belongs to "Solicitudes y otras tareas"
 
   // Independent Booleans
-  isIngested: boolean;   // Ingestado
+  isIngested: boolean;   // Ingestado (sigue sumando horas ingestadas aunque esté descartado)
   isCataloged: boolean;  // Para Archivar / Catalogado
   isFinalized: boolean;  // Finalizado
+  isDiscarded?: boolean; // Descartado (no cuenta como tarea para archivar pero sí suma horas ingestadas)
 
   notes?: string;
   
@@ -75,6 +76,7 @@ export interface MaterialFamilyGroup {
   hasCataloged: boolean;
   isAllFinalized: boolean;
   hasFinalizedSignal: boolean;
+  isAllDiscarded?: boolean;
 }
 
 export type ShiftType = 'Guardia (Fin de semana/Feriado)' | 'Día Libre' | 'Vacaciones';

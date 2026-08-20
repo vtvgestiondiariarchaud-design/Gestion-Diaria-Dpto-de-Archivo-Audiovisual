@@ -519,5 +519,5 @@ export const INITIAL_MATERIALS: MaterialSignal[] = [
 
 export const INITIAL_GUARD_SHIFTS: GuardShiftRecord[] = [];
 
-export const DEFAULT_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbx14c_iwM0YESVMAQ-ipcDt7cpaD163YMRIjmVt-nqc_pVjuzB6YZHoAK6_2gw0cXjmbA/exec';
+export const DEFAULT_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzVRrthjogYhh98mcQWeK52F6mYXzI8W5ipdBiw3y_q9TwIHesBkDixO2AEQa5sMOkcxw/exec';
 

@@ -6,7 +6,8 @@ import {
   canUserAssignSignal,
   canUserUnassignSignal,
   canUserCatalogSignal,
-  canUserFinalizeSignal
+  canUserFinalizeSignal,
+  canUserDeleteMaterial
 } from '../utils/permissions';
 import { 
   Film, 
@@ -24,7 +25,9 @@ import {
   Edit3,
   UserCheck,
   UserX,
-  Lock
+  Lock,
+  Ban,
+  Tag
 } from 'lucide-react';
 
 interface MaterialContainerCardProps {
@@ -32,8 +35,8 @@ interface MaterialContainerCardProps {
   currentUser: UserProfile;
   onUpdateSignalStatus: (signalId: string, newStatus: MaterialSignal['status']) => void;
   onBatchUpdateFamilyStatus: (familyId: string, newStatus: MaterialSignal['status']) => void;
-  onToggleSignalBoolean?: (signalId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized') => void;
-  onBatchToggleFamilyBoolean?: (familyId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized', value: boolean) => void;
+  onToggleSignalBoolean?: (signalId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized' | 'isDiscarded') => void;
+  onBatchToggleFamilyBoolean?: (familyId: string, flag: 'isIngested' | 'isCataloged' | 'isFinalized' | 'isDiscarded', value: boolean) => void;
   onAssignSignal?: (signalId: string, assignToUser: string | null) => void;
   onOpenMultiAssign?: (signal: MaterialSignal) => void;
   onAddSignalToFamily: (familyId: string, title: string, division: MaterialSignal['division']) => void;
@@ -56,6 +59,7 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
 }) => {
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
   const [activeSignalIndex, setActiveSignalIndex] = useState<number>(0);
+  const [isConfirmingDelete, setIsConfirmingDelete] = useState<boolean>(false);
 
   // Permission checks from permissions utility
   const canCreate = canUserCreateMaterial(currentUser);
@@ -67,14 +71,19 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
     currentUser.role === 'Coordinador' ||
     currentUser.role === 'Documentalista';
 
-  const canDelete =
-    currentUser.role === 'Gerente de Archivo' ||
-    currentUser.role === 'Adjunta de Gerencia';
+  const canDelete = canUserDeleteMaterial(currentUser);
 
   const currentSignal = group.signals[activeSignalIndex] || group.signals[0];
 
   const getStatusBadge = (status: MaterialSignal['status']) => {
     switch (status) {
+      case 'Descartado':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-extrabold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+            <Ban className="w-3 h-3 text-rose-400" />
+            Descartado
+          </span>
+        );
       case 'Finalizado':
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-extrabold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
@@ -113,7 +122,17 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
     }
   };
 
-  const getSignalPillStyle = (type: MaterialSignal['signalType'], isActive: boolean) => {
+  const getSignalPillStyle = (sig: MaterialSignal, isActive: boolean) => {
+    const isDiscarded = sig.status === 'Descartado' || sig.isDiscarded;
+
+    if (isDiscarded) {
+      if (isActive) {
+        return 'bg-rose-900/90 text-rose-200 shadow-md ring-2 ring-rose-400 border border-rose-500';
+      }
+      return 'bg-rose-950/40 text-rose-400 hover:bg-rose-900/50 hover:text-white border border-rose-800/50';
+    }
+
+    const type = sig.signalType;
     if (isActive) {
       switch (type) {
         case 'Limpio':
@@ -122,28 +141,37 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
           return 'bg-blue-600 text-white shadow-md ring-2 ring-blue-400';
         case 'Master':
           return 'bg-purple-600 text-white shadow-md ring-2 ring-purple-400';
+        default:
+          return 'bg-indigo-600 text-white shadow-md ring-2 ring-indigo-400';
       }
     } else {
-      return 'bg-slate-800/90 text-slate-300 hover:bg-slate-700 hover:text-white border border-slate-700';
+      switch (type) {
+        case 'Limpio':
+        case 'Insert':
+        case 'Master':
+          return 'bg-slate-800/90 text-slate-300 hover:bg-slate-700 hover:text-white border border-slate-700';
+        default:
+          return 'bg-indigo-950/60 text-indigo-300 hover:bg-indigo-900/60 hover:text-white border border-indigo-800/60';
+      }
     }
   };
-
-  // Check which signals exist in family
-  const existingTypes = group.signals.map((s) => s.signalType);
-  const missingTypes: MaterialSignal['signalType'][] = (['Limpio', 'Insert', 'Master'] as MaterialSignal['signalType'][]).filter(
-    (t) => !existingTypes.includes(t)
-  );
 
   // Latest timestamp among signals for display
   const latestCreationDate = getFormattedDateTime(group.signals[0]?.creationDate || group.creationDate);
 
   return (
-    <div className="bg-gradient-to-br from-[#1A2333] via-[#161F2E] to-[#0D131F] border border-slate-700/70 rounded-2xl shadow-xl hover:border-purple-800/60 transition-all overflow-hidden flex flex-col">
+    <div className={`bg-gradient-to-br from-[#1A2333] via-[#161F2E] to-[#0D131F] border rounded-2xl shadow-xl transition-all overflow-hidden flex flex-col ${
+      group.isAllDiscarded ? 'border-rose-900/40 opacity-85' : 'border-slate-700/70 hover:border-purple-800/60'
+    }`}>
       {/* Compact Header */}
       <div className="p-3.5 sm:p-4 bg-gradient-to-r from-slate-900/95 via-slate-900 to-slate-950/95 border-b border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
         <div className="flex items-start gap-2.5 min-w-0">
-          <div className="p-2 rounded-xl bg-purple-600/20 text-purple-400 border border-purple-500/30 shrink-0 mt-0.5">
-            <Layers className="w-4 h-4" />
+          <div className={`p-2 rounded-xl border shrink-0 mt-0.5 ${
+            group.isAllDiscarded
+              ? 'bg-rose-600/20 text-rose-400 border-rose-500/30'
+              : 'bg-purple-600/20 text-purple-400 border-purple-500/30'
+          }`}>
+            {group.isAllDiscarded ? <Ban className="w-4 h-4" /> : <Layers className="w-4 h-4" />}
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-1.5 mb-1">
@@ -204,26 +232,33 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
         <div className="flex items-center gap-1.5 flex-wrap">
           <span className="text-[11px] text-slate-400 font-semibold mr-1 flex items-center gap-1 shrink-0">
             <Film className="w-3 h-3 text-purple-400" />
-            Señales ({group.signals.length}/3):
+            Señales ({group.signals.length}):
           </span>
           {group.signals.map((sig, idx) => {
             const isActive = idx === activeSignalIndex;
+            const isDiscarded = sig.status === 'Descartado' || sig.isDiscarded;
+
             return (
               <button
                 key={`sig-pill-${sig.id || group.familyId}-${sig.signalType || 'sig'}-${idx}`}
                 onClick={() => {
                   setActiveSignalIndex(idx);
+                  setIsConfirmingDelete(false);
                   if (!isExpanded) setIsExpanded(true);
                 }}
                 className={`px-2 py-0.5 rounded-md text-[11px] font-bold flex items-center gap-1 transition-all ${getSignalPillStyle(
-                  sig.signalType,
+                  sig,
                   isActive
                 )}`}
-                title={`Haz clic para seleccionar ${sig.signalType}`}
+                title={`Haz clic para seleccionar ${sig.signalType}${isDiscarded ? ' (Descartado)' : ''}`}
               >
                 <span>{sig.signalType}</span>
                 <span className="font-mono text-[9px] opacity-80">({formatDurationHHMMSS(sig.duration)})</span>
-                {sig.isFinalized && <CheckCircle2 className="w-3 h-3 text-emerald-300" />}
+                {isDiscarded ? (
+                  <Ban className="w-3 h-3 text-rose-400" />
+                ) : sig.isFinalized ? (
+                  <CheckCircle2 className="w-3 h-3 text-emerald-300" />
+                ) : null}
               </button>
             );
           })}
@@ -283,33 +318,40 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
       {/* Expanded Detailed View Section */}
       {isExpanded && currentSignal && (
         <div className="p-4 bg-slate-950/80 border-t border-slate-800/80 space-y-3.5 animate-fade-in">
-          {/* Signal Switcher + Add Signal */}
-          <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800/60">
-            <div className="flex items-center gap-2">
+          {/* Signal Switcher + Add Custom/Standard Signal */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800/60">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs font-bold text-slate-300">Seleccionar Señal:</span>
-              <div className="flex gap-1.5">
+              <div className="flex gap-1.5 flex-wrap">
                 {group.signals.map((sig, idx) => (
                   <button
                     key={`sig-btn-${sig.id || group.familyId}-${sig.signalType || 'sig'}-${idx}`}
-                    onClick={() => setActiveSignalIndex(idx)}
+                    onClick={() => {
+                      setActiveSignalIndex(idx);
+                      setIsConfirmingDelete(false);
+                    }}
                     className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all ${getSignalPillStyle(
-                      sig.signalType,
+                      sig,
                       idx === activeSignalIndex
                     )}`}
                   >
                     {sig.signalType}
+                    {(sig.status === 'Descartado' || sig.isDiscarded) && (
+                      <span className="ml-1 text-[10px] text-rose-300 font-normal">(Descartado)</span>
+                    )}
                   </button>
                 ))}
               </div>
             </div>
 
-            {missingTypes.length > 0 && canCreate && (
+            {canCreate && (
               <button
                 onClick={() => onAddSignalToFamily(group.familyId, group.title, group.division)}
-                className="px-2.5 py-1 rounded-lg bg-purple-950/80 hover:bg-purple-600 hover:text-white border border-purple-800 text-purple-200 text-xs font-bold flex items-center gap-1 transition-all shrink-0"
+                className="px-2.5 py-1 rounded-lg bg-purple-950/80 hover:bg-purple-600 hover:text-white border border-purple-800 text-purple-200 text-xs font-bold flex items-center gap-1 transition-all shrink-0 shadow-sm"
+                title="Añadir otra señal estándar o personalizada (Promo, Clip, Cápsula, etc.) a esta tarjeta"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span>Añadir Señal</span>
+                <span>+ Añadir Señal Personalizada</span>
               </button>
             )}
           </div>
@@ -403,9 +445,11 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
               <span className="font-mono text-xs font-extrabold text-blue-400 bg-blue-950/80 px-2 py-0.5 rounded border border-blue-800/60">
                 ID: {currentSignal.id}
               </span>
-              <span className="text-xs font-bold text-purple-300 bg-purple-950/60 px-2 py-0.5 rounded border border-purple-800/40">
+              <span className="text-xs font-bold text-purple-300 bg-purple-950/60 px-2 py-0.5 rounded border border-purple-800/40 flex items-center gap-1">
+                <Tag className="w-3 h-3 text-purple-400" />
                 {currentSignal.signalType}
               </span>
+              {getStatusBadge(currentSignal.status)}
             </div>
 
             <div className="flex items-center gap-1 font-mono text-xs font-bold text-amber-300 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
@@ -414,12 +458,23 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
             </div>
           </div>
 
+          {/* Discarded Banner */}
+          {(currentSignal.status === 'Descartado' || currentSignal.isDiscarded) && (
+            <div className="p-2.5 rounded-xl bg-rose-950/40 border border-rose-800/60 text-xs text-rose-300 flex items-start gap-2">
+              <Ban className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold text-white block mb-0.5">Señal Descartada</span>
+                <span>Esta señal continúa sumando a las horas totales de ingesta, pero está excluida de las tareas pendientes de archivo.</span>
+              </div>
+            </div>
+          )}
+
           {/* Independent Booleans Controls Row */}
           <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800">
             <span className="text-[10px] font-extrabold uppercase text-purple-300 tracking-wider block mb-2">
               Estados e Indicadores de la Señal Activa:
             </span>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {/* Boolean 1: Ingestado */}
               <button
                 type="button"
@@ -429,6 +484,7 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
                     ? 'bg-blue-600/20 border-blue-500/50 text-blue-300 ring-1 ring-blue-500/30'
                     : 'bg-slate-900 border-slate-800 text-slate-500 hover:text-slate-300'
                 }`}
+                title="Suma al balance de horas ingestadas"
               >
                 <CheckCircle2 className={`w-3.5 h-3.5 ${currentSignal.isIngested !== false ? 'text-blue-400' : 'text-slate-600'}`} />
                 <span>Ingestado</span>
@@ -447,13 +503,18 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
                     onToggleSignalBoolean(currentSignal.id, 'isCataloged');
                   }
                 }}
+                disabled={currentSignal.status === 'Descartado' || currentSignal.isDiscarded}
                 className={`px-2.5 py-1.5 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
-                  currentSignal.isCataloged
+                  currentSignal.status === 'Descartado' || currentSignal.isDiscarded
+                    ? 'opacity-40 cursor-not-allowed bg-slate-900 border-slate-800 text-slate-600'
+                    : currentSignal.isCataloged
                     ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 ring-1 ring-amber-500/30'
                     : 'bg-slate-900 border-slate-800 text-slate-500 hover:text-slate-300'
                 }`}
                 title={
-                  currentSignal.assignedTo && currentSignal.assignedTo !== currentUser.name
+                  currentSignal.status === 'Descartado' || currentSignal.isDiscarded
+                    ? 'Material descartado no requiere archivar'
+                    : currentSignal.assignedTo && currentSignal.assignedTo !== currentUser.name
                     ? `Asignado a ${currentSignal.assignedTo}`
                     : 'Marcar como documentado / Para Archivar'
                 }
@@ -475,14 +536,41 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
                     onToggleSignalBoolean(currentSignal.id, 'isFinalized');
                   }
                 }}
+                disabled={currentSignal.status === 'Descartado' || currentSignal.isDiscarded}
                 className={`px-2.5 py-1.5 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
-                  currentSignal.isFinalized
+                  currentSignal.status === 'Descartado' || currentSignal.isDiscarded
+                    ? 'opacity-40 cursor-not-allowed bg-slate-900 border-slate-800 text-slate-600'
+                    : currentSignal.isFinalized
                     ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 ring-1 ring-emerald-500/30'
                     : 'bg-slate-900 border-slate-800 text-slate-500 hover:text-slate-300'
                 }`}
+                title={
+                  currentSignal.status === 'Descartado' || currentSignal.isDiscarded
+                    ? 'Material descartado'
+                    : 'Marcar como finalizado'
+                }
               >
                 <CheckCircle2 className={`w-3.5 h-3.5 ${currentSignal.isFinalized ? 'text-emerald-400' : 'text-slate-600'}`} />
                 <span>Finalizado</span>
+              </button>
+
+              {/* Boolean 4: Descartado */}
+              <button
+                type="button"
+                onClick={() => {
+                  const isCurrentlyDiscarded = currentSignal.status === 'Descartado' || currentSignal.isDiscarded;
+                  const newStatus = isCurrentlyDiscarded ? 'Registrado' : 'Descartado';
+                  onUpdateSignalStatus(currentSignal.id, newStatus);
+                }}
+                className={`px-2.5 py-1.5 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                  currentSignal.status === 'Descartado' || currentSignal.isDiscarded
+                    ? 'bg-rose-600/30 border-rose-500/60 text-rose-300 ring-1 ring-rose-500/40'
+                    : 'bg-slate-900 border-slate-800 text-slate-500 hover:text-rose-300'
+                }`}
+                title="Descartar material (sigue contando en total de horas ingestadas, pero no cuenta para archivar)"
+              >
+                <Ban className={`w-3.5 h-3.5 ${currentSignal.status === 'Descartado' || currentSignal.isDiscarded ? 'text-rose-400' : 'text-slate-600'}`} />
+                <span>{currentSignal.status === 'Descartado' || currentSignal.isDiscarded ? 'Descartado' : 'Descartar'}</span>
               </button>
             </div>
           </div>
@@ -524,7 +612,9 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
                     <p className="text-[10px] font-mono text-amber-400/80 mt-0.5">{getFormattedDateTime(currentSignal.catalogedAt)}</p>
                   </>
                 ) : (
-                  <p className="text-[11px] text-slate-500 italic">Pendiente de catalogar</p>
+                  <p className="text-[11px] text-slate-500 italic">
+                    {currentSignal.status === 'Descartado' ? 'Excluido (Descartado)' : 'Pendiente de catalogar'}
+                  </p>
                 )}
               </div>
 
@@ -539,34 +629,75 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
                     <p className="text-[10px] font-mono text-emerald-400/80 mt-0.5">{getFormattedDateTime(currentSignal.finalizedAt)}</p>
                   </>
                 ) : (
-                  <p className="text-[11px] text-slate-500 italic">Pendiente de finalizar</p>
+                  <p className="text-[11px] text-slate-500 italic">
+                    {currentSignal.status === 'Descartado' ? 'Excluido (Descartado)' : 'Pendiente de finalizar'}
+                  </p>
                 )}
               </div>
             </div>
           </div>
 
           {/* Action Row */}
-          <div className="flex items-center justify-between pt-1 border-t border-slate-800/60">
-            {onEditSignal && (
-              <button
-                onClick={() => onEditSignal(currentSignal)}
-                className="px-3.5 py-1.5 rounded-xl bg-purple-950/80 hover:bg-purple-600 text-purple-200 hover:text-white border border-purple-800 transition-all text-xs font-bold flex items-center gap-1.5 shadow-sm"
-              >
-                <Edit3 className="w-3.5 h-3.5" />
-                <span>Modificar Señal</span>
-              </button>
-            )}
+          {isConfirmingDelete ? (
+            <div className="p-3 rounded-xl bg-rose-950/80 border border-rose-600 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fade-in shadow-lg">
+              <div className="flex items-center gap-2.5 text-xs text-rose-200">
+                <div className="p-2 rounded-lg bg-rose-900/80 text-rose-300 shrink-0">
+                  <Trash2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <span className="font-extrabold text-white block">¿Eliminar esta señal activa?</span>
+                  <span className="text-[11px] text-rose-300 font-mono">
+                    ID: {currentSignal.id} • {currentSignal.title} ({currentSignal.signalType})
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setIsConfirmingDelete(false)}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition-all"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsConfirmingDelete(false);
+                    onDeleteSignal(currentSignal.id);
+                  }}
+                  className="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-extrabold flex items-center gap-1.5 shadow-md shadow-rose-950 transition-all"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Sí, Eliminar Señal</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between pt-1 border-t border-slate-800/60">
+              {onEditSignal && (
+                <button
+                  type="button"
+                  onClick={() => onEditSignal(currentSignal)}
+                  className="px-3.5 py-1.5 rounded-xl bg-purple-950/80 hover:bg-purple-600 text-purple-200 hover:text-white border border-purple-800 transition-all text-xs font-bold flex items-center gap-1.5 shadow-sm"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  <span>Modificar Señal</span>
+                </button>
+              )}
 
-            {canDelete && (
-              <button
-                onClick={() => onDeleteSignal(currentSignal.id)}
-                className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-red-950/80 text-red-400 border border-slate-800 hover:border-red-800 transition-all text-xs font-bold flex items-center gap-1.5 ml-auto"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Eliminar Señal Activa</span>
-              </button>
-            )}
-          </div>
+              {canDelete && (
+                <button
+                  type="button"
+                  onClick={() => setIsConfirmingDelete(true)}
+                  className="px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-red-950/90 text-red-400 hover:text-red-200 border border-slate-800 hover:border-red-800 transition-all text-xs font-bold flex items-center gap-1.5 ml-auto shadow-sm"
+                  title="Eliminar señal activa"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Eliminar Señal Activa</span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
