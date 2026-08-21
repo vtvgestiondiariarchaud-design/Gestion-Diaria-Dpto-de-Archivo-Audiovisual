@@ -10,7 +10,8 @@ import {
   CheckCircle2, 
   AlertCircle,
   HelpCircle,
-  Layers
+  Layers,
+  Wrench
 } from 'lucide-react';
 
 interface GoogleAppsScriptModalProps {
@@ -21,6 +22,7 @@ interface GoogleAppsScriptModalProps {
   isSyncing?: boolean;
   onTriggerSync?: () => void;
   onCleanDuplicates?: () => Promise<void>;
+  onReorganizeSheets?: () => Promise<void>;
   syncError?: string;
 }
 
@@ -32,12 +34,18 @@ export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
   isSyncing,
   onTriggerSync,
   onCleanDuplicates,
+  onReorganizeSheets,
   syncError,
 }) => {
   const [urlInput, setUrlInput] = useState(appsScriptUrl);
   const [copied, setCopied] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [isCleaning, setIsCleaning] = useState(false);
+  const [isReorganizing, setIsReorganizing] = useState(false);
+
+  React.useEffect(() => {
+    setUrlInput(appsScriptUrl);
+  }, [appsScriptUrl]);
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
@@ -59,6 +67,16 @@ export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
       await onCleanDuplicates();
     } finally {
       setIsCleaning(false);
+    }
+  };
+
+  const handleReorganize = async () => {
+    if (!onReorganizeSheets) return;
+    setIsReorganizing(true);
+    try {
+      await onReorganizeSheets();
+    } finally {
+      setIsReorganizing(false);
     }
   };
 
@@ -122,16 +140,29 @@ export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              {onReorganizeSheets && appsScriptUrl && (
+                <button
+                  type="button"
+                  onClick={handleReorganize}
+                  disabled={isReorganizing || isSyncing || isCleaning}
+                  className="px-3.5 py-2 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 disabled:opacity-50 font-bold text-xs rounded-xl shadow-md transition-all flex items-center gap-2"
+                  title="Reestructura y alinea todas las columnas en Google Sheets exactamente en el orden oficial de 23 columnas (A a W)"
+                >
+                  <Wrench className={`w-3.5 h-3.5 ${isReorganizing ? 'animate-spin text-emerald-400' : 'text-emerald-400'}`} />
+                  <span>{isReorganizing ? 'Reestructurando...' : '⚡ Reestructurar y Alinear Hojas'}</span>
+                </button>
+              )}
+
               {onCleanDuplicates && appsScriptUrl && (
                 <button
                   type="button"
                   onClick={handleClean}
-                  disabled={isCleaning || isSyncing}
+                  disabled={isCleaning || isSyncing || isReorganizing}
                   className="px-3.5 py-2 bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/40 text-amber-300 disabled:opacity-50 font-bold text-xs rounded-xl shadow-md transition-all flex items-center gap-2"
                   title="Elimina filas duplicadas en Google Sheets y asegura el formato de duración"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isCleaning ? 'animate-spin' : ''}`} />
-                  <span>{isCleaning ? 'Depurando...' : 'Depurar Duplicados en Sheets'}</span>
+                  <span>{isCleaning ? 'Depurando...' : 'Depurar Duplicados'}</span>
                 </button>
               )}
 
@@ -139,11 +170,11 @@ export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
                 <button
                   type="button"
                   onClick={onTriggerSync}
-                  disabled={isSyncing || isCleaning}
+                  disabled={isSyncing || isCleaning || isReorganizing}
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-md transition-all flex items-center gap-2"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-                  <span>{isSyncing ? 'Sincronizando...' : 'Sincronizar con Google Sheets Ahora'}</span>
+                  <span>{isSyncing ? 'Sincronizando...' : 'Sincronizar Ahora'}</span>
                 </button>
               )}
 
@@ -207,11 +238,42 @@ export const GoogleAppsScriptModal: React.FC<GoogleAppsScriptModalProps> = ({
           <div className="mt-3 p-3 rounded-lg bg-emerald-950/40 border border-emerald-800/60 text-emerald-200">
             <p className="font-bold flex items-center gap-1.5">
               <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-              Sincronización Automática Bidireccional
+              Sincronización Automática Bidireccional & Menú Integrado en Sheets
             </p>
             <p className="text-[11px] text-emerald-300/80 mt-1">
-              Al guardar la URL, cada dispositivo leerá y escribirá en la misma hoja de cálculo maestra (hojas <em>MATERIALES</em>, <em>PERSONAL</em>, <em>GUARDIAS</em> y <em>CIERRES_MENSUALES</em>), garantizando que todos los operadores y coordinadores visualicen los mismos datos en tiempo real.
+              Al guardar la URL, cada dispositivo leerá y escribirá en la misma hoja de cálculo maestra (hojas <em>MATERIALES</em>, <em>PERSONAL</em>, <em>GUARDIAS</em> y <em>CIERRES_MENSUALES</em>). Además, al abrir la hoja en Google Sheets verá el menú <strong>🎬 VTV Archivo → ⚡ Reestructurar y Alinear Todas las Hojas</strong> para alinear y reparar columnas automáticamente en cualquier momento.
             </p>
+          </div>
+
+          <div className="mt-3 p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
+            <h5 className="font-bold text-sky-400 text-xs flex items-center gap-1.5">
+              <span>📋 Estructura Oficial de Columnas (Hoja MATERIALES - 23 Columnas A a W):</span>
+            </h5>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5 text-[11px] font-mono text-slate-300 pt-1">
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">A (1):</span> ID Material</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">B (2):</span> ID Familia</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">C (3):</span> Tipo de Señal</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">D (4):</span> Título / Descripción</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">E (5):</span> División</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">F (6):</span> Duración</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">G (7):</span> Fecha Creación</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">H (8):</span> Creado Por</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">I (9):</span> Rol Creador</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">J (10):</span> Estado</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">K (11):</span> Es Solicitud / Tarea</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">L (12):</span> Asignado A</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">M (13):</span> Rol Asignado</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">N (14):</span> Fecha Asignación</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">O (15):</span> Ingestado</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">P (16):</span> Ingestado Por</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">Q (17):</span> Catalogado</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">R (18):</span> Catalogado Por</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">S (19):</span> Fecha Catalogación</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">T (20):</span> Finalizado</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">U (21):</span> Finalizado Por</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80"><span className="text-emerald-400 font-bold">V (22):</span> Fecha Finalizado</div>
+              <div className="bg-slate-950 px-2 py-1 rounded border border-slate-800/80 col-span-2 sm:col-span-1"><span className="text-emerald-400 font-bold">W (23):</span> Notas / Observaciones</div>
+            </div>
           </div>
         </div>
 

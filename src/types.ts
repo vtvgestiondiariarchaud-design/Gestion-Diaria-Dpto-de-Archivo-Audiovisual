@@ -46,6 +46,8 @@ export interface MaterialSignal {
 
   // Independent Booleans
   isIngested: boolean;   // Ingestado (sigue sumando horas ingestadas aunque esté descartado)
+  ingestedBy?: string;   // Operador de Ingesta
+  ingestedAt?: string;   // Fecha y hora de Ingesta
   isCataloged: boolean;  // Para Archivar / Catalogado
   isFinalized: boolean;  // Finalizado
   isDiscarded?: boolean; // Descartado (no cuenta como tarea para archivar pero sí suma horas ingestadas)

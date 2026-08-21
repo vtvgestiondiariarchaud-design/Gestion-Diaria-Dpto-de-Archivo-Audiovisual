@@ -459,6 +459,7 @@ export function groupMaterialsByFamily(materials: MaterialSignal[]): MaterialFam
 export function deduplicateMaterials(list: MaterialSignal[]): MaterialSignal[] {
   if (!Array.isArray(list)) return [];
   const map = new Map<string, MaterialSignal>();
+  const familySignalToId = new Map<string, string>();
 
   for (const rawMat of list) {
     if (!rawMat) continue;
@@ -466,11 +467,21 @@ export function deduplicateMaterials(list: MaterialSignal[]): MaterialSignal[] {
     let cleanId = String(mat.id || '').trim();
     if (!cleanId) continue;
 
-    if (!map.has(cleanId)) {
+    const famKey = (mat.familyId && mat.signalType)
+      ? (String(mat.familyId).trim().toLowerCase() + '___' + String(mat.signalType).trim().toLowerCase())
+      : null;
+
+    let targetKey = cleanId;
+    if (!map.has(cleanId) && famKey && familySignalToId.has(famKey)) {
+      targetKey = familySignalToId.get(famKey)!;
+    }
+
+    if (!map.has(targetKey)) {
       map.set(cleanId, mat);
+      if (famKey) familySignalToId.set(famKey, cleanId);
     } else {
-      // If we already have this ID, merge preserving the most complete/advanced state
-      const existing = map.get(cleanId)!;
+      // If we already have this ID or Family+SignalType, merge preserving the most complete/advanced state
+      const existing = map.get(targetKey)!;
       const isDiscarded = mat.status === 'Descartado' || mat.isDiscarded === true || existing.status === 'Descartado' || existing.isDiscarded === true;
       const isFinalized = !isDiscarded && Boolean(mat.isFinalized || existing.isFinalized || mat.status === 'Finalizado' || existing.status === 'Finalizado');
       const isCataloged = !isDiscarded && Boolean(mat.isCataloged || existing.isCataloged || isFinalized || mat.status === 'Por Archivar' || existing.status === 'Por Archivar');
@@ -503,11 +514,11 @@ export function deduplicateMaterials(list: MaterialSignal[]): MaterialSignal[] {
       const isExtTitleAuto = !existing.title || /^material\s+(mat|fam)-/i.test(existing.title) || /^(mat|fam)-/i.test(existing.title) || existing.title === 'Sin título' || existing.title === 'Material sin título' || existing.title.toLowerCase().includes('registrada autom');
       const effectiveTitle = (!isMatTitleAuto ? mat.title : (!isExtTitleAuto ? existing.title : (mat.title || existing.title || 'Material sin título')));
 
-      map.set(cleanId, {
+      map.set(targetKey, {
         ...existing,
         ...mat,
-        id: cleanId,
-        familyId: mat.familyId || existing.familyId || cleanId,
+        id: targetKey,
+        familyId: mat.familyId || existing.familyId || targetKey,
         title: effectiveTitle,
         signalType: mat.signalType || existing.signalType,
         duration: effectiveDuration,
@@ -516,6 +527,8 @@ export function deduplicateMaterials(list: MaterialSignal[]): MaterialSignal[] {
         isFinalized,
         isCataloged,
         isIngested,
+        ingestedBy: mat.ingestedBy || existing.ingestedBy,
+        ingestedAt: mat.ingestedAt || existing.ingestedAt,
         status,
         catalogedBy,
         catalogedAt: isDiscarded ? undefined : (mat.catalogedAt || existing.catalogedAt),
@@ -816,7 +829,12 @@ export function loadInitialState(): AppState {
     }
 
     const localUrl = localStorage.getItem(LOCAL_STORAGE_KEY_APPS_SCRIPT_URL);
-    const oldUrlSigs = ['AKfycby2Vn7FENScbW6HQpNcyQ8SIeOl', 'AKfycbx14c_iwM0YESVMAQ-ipcDt7cpaD163YMRIjmVt-nqc_pVjuzB6YZHoAK6_2gw0cXjmbA'];
+    const oldUrlSigs = [
+      'AKfycby2Vn7FENScbW6HQpNcyQ8SIeOl',
+      'AKfycbx14c_iwM0YESVMAQ-ipcDt7cpaD163YMRIjmVt-nqc_pVjuzB6YZHoAK6_2gw0cXjmbA',
+      'AKfycbzVRrthjogYhh98mcQWeK52F6mYXzI8W5ipdBiw3y_q9TwIHesBkDixO2AEQa5sMOkcxw',
+      'AKfycbwOKSB9wqnLqch4KSldRlZG6WiiZjqA4CCAbcPx7UHhpWseKtMXiYVirLbRX2bwTCOLNg'
+    ];
     if (localUrl && localUrl.trim() && !oldUrlSigs.some(sig => localUrl.includes(sig))) {
       appsScriptUrl = localUrl.trim();
     } else {
@@ -931,51 +949,81 @@ export function generateMonthlyArchiveLog(materials: MaterialSignal[], user: Use
 
 export function exportMaterialsToCSV(materials: MaterialSignal[], customFilename?: string): void {
   const dateStr = getLocalDateISOString();
-  const filename = customFilename || `VTV_Materiales_Finalizados_Export_${dateStr}.csv`;
+  const filename = customFilename || `VTV_Materiales_Export_${dateStr}.csv`;
 
   const headers = [
-    'ID Señal',
+    'ID Material',
     'ID Familia',
-    'Tipo Señal',
+    'Tipo de Señal',
     'Título / Descripción',
     'División',
     'Duración',
-    'Estado',
     'Fecha Creación',
     'Creado Por',
     'Rol Creador',
+    'Estado',
+    'Es Solicitud / Tarea',
+    'Asignado A',
+    'Rol Asignado',
+    'Fecha Asignación',
+    'Ingestado',
+    'Ingestado Por',
+    'Catalogado',
     'Catalogado Por',
     'Fecha Catalogación',
+    'Finalizado',
     'Finalizado Por',
-    'Fecha Finalización',
-    'Notas'
+    'Fecha Finalizado',
+    'Notas / Observaciones'
   ];
 
   const escapeCSV = (val: string | undefined | null) => {
-    if (!val) return '""';
+    if (val === null || val === undefined) return '""';
     const clean = String(val).replace(/"/g, '""');
     return `"${clean}"`;
   };
 
-  const rows = materials.map((m) => [
-    escapeCSV(m.id),
-    escapeCSV(m.familyId),
-    escapeCSV(m.signalType),
-    escapeCSV(m.title),
-    escapeCSV(m.division),
-    escapeCSV(m.duration),
-    escapeCSV(m.status),
-    escapeCSV(m.creationDate),
-    escapeCSV(m.createdBy),
-    escapeCSV(m.creatorRole),
-    escapeCSV(m.catalogedBy || 'N/A'),
-    escapeCSV(m.catalogedAt || 'N/A'),
-    escapeCSV(m.finalizedBy || 'N/A'),
-    escapeCSV(m.finalizedAt || 'N/A'),
-    escapeCSV(m.notes || ''),
-  ]);
+  const rows = materials.map((m) => {
+    let assignedStr = 'Sin asignar';
+    if (m.assignedPersons && m.assignedPersons.length > 0) {
+      assignedStr = m.assignedPersons.join(', ');
+    } else if (m.assignedTo) {
+      assignedStr = m.assignedTo;
+    }
 
-  const csvContent = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const isDiscarded = m.status === 'Descartado' || Boolean(m.isDiscarded);
+    const status = isDiscarded ? 'Descartado' : (m.status || 'Registrado');
+    const isFinalized = !isDiscarded && Boolean(m.isFinalized || status === 'Finalizado');
+    const isCataloged = !isDiscarded && Boolean(m.isCataloged || status === 'Por Archivar' || isFinalized);
+
+    return [
+      escapeCSV(m.id),
+      escapeCSV(m.familyId || m.id),
+      escapeCSV(m.signalType),
+      escapeCSV(m.title),
+      escapeCSV(m.division),
+      escapeCSV(formatDurationHHMMSS(m.duration)),
+      escapeCSV(m.creationDate),
+      escapeCSV(m.createdBy),
+      escapeCSV(m.creatorRole || m.createdByRole || ''),
+      escapeCSV(status),
+      escapeCSV(m.isRequestTask ? 'SI' : 'NO'),
+      escapeCSV(assignedStr),
+      escapeCSV(m.assignedToRole || ''),
+      escapeCSV(m.assignedAt || ''),
+      escapeCSV(m.isIngested !== false ? 'SI' : 'NO'),
+      escapeCSV(m.ingestedBy || ''),
+      escapeCSV(isCataloged ? 'SI' : 'NO'),
+      escapeCSV(isDiscarded ? 'N/A' : (m.catalogedBy || 'N/A')),
+      escapeCSV(isDiscarded ? 'N/A' : (m.catalogedAt || 'N/A')),
+      escapeCSV(isFinalized ? 'SI' : 'NO'),
+      escapeCSV(isDiscarded ? 'N/A' : (m.finalizedBy || 'N/A')),
+      escapeCSV(isDiscarded ? 'N/A' : (m.finalizedAt || 'N/A')),
+      escapeCSV(m.notes || ''),
+    ];
+  });
+
+  const csvContent = '\uFEFF' + [headers.join(';'), ...rows.map((r) => r.join(';'))].join('\r\n');
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   
@@ -1206,6 +1254,8 @@ export function formatMaterialForSheet(m: MaterialSignal) {
     assignedToRole: m.assignedToRole || '',
     assignedAt: m.assignedAt || '',
     isIngested: m.isIngested !== undefined ? m.isIngested : true,
+    ingestedBy: m.ingestedBy || '',
+    ingestedAt: m.ingestedAt || '',
     isCataloged: isCataloged,
     catalogedBy: isDiscarded ? 'N/A' : (m.catalogedBy || 'N/A'),
     catalogedAt: isDiscarded ? 'N/A' : (m.catalogedAt || 'N/A'),
@@ -1495,9 +1545,10 @@ export async function fetchRemoteSheetData(url: string): Promise<{
  */
 export async function apiSendAction(
   url: string,
-  payload: any
+  payload: any,
+  options?: { timeoutMs?: number; retries?: number }
 ): Promise<{ success: boolean; message?: string; data?: any; counts?: any }> {
-  const result = await safeFetchAppsScript(url, payload, { timeoutMs: 35000, retries: 1 });
+  const result = await safeFetchAppsScript(url, payload, { timeoutMs: options?.timeoutMs || 35000, retries: options?.retries !== undefined ? options.retries : 1 });
   if (!result.success) {
     return {
       success: false,
@@ -1555,6 +1606,12 @@ export async function apiCleanAndDeduplicateSheet(url: string) {
   return apiSendAction(url, {
     action: 'cleanAndDeduplicateSheet',
   });
+}
+
+export async function apiReorganizeAllSheets(url: string) {
+  return apiSendAction(url, {
+    action: 'reorganizeAllSheets',
+  }, { timeoutMs: 60000, retries: 1 });
 }
 
 // 2. Acciones Atómicas sobre Personal
@@ -1907,19 +1964,20 @@ export function exportDailyBackupToCSV(dateStr: string, materials: MaterialSigna
   const headers = [
     'ID Material',
     'ID Familia',
-    'Título / Descripción',
     'Tipo de Señal',
+    'Título / Descripción',
     'División',
     'Duración',
     'Fecha Creación',
     'Creado Por',
     'Rol Creador',
     'Estado',
-    'Es Solicitud',
+    'Es Solicitud / Tarea',
     'Asignado A',
     'Rol Asignado',
     'Fecha Asignación',
     'Ingestado',
+    'Ingestado Por',
     'Catalogado',
     'Catalogado Por',
     'Fecha Catalogación',
@@ -1946,8 +2004,8 @@ export function exportDailyBackupToCSV(dateStr: string, materials: MaterialSigna
     return [
       escapeCSV(m.id),
       escapeCSV(m.familyId || m.id),
-      escapeCSV(m.title),
       escapeCSV(m.signalType),
+      escapeCSV(m.title),
       escapeCSV(m.division),
       escapeCSV(formatDurationHHMMSS(m.duration)),
       escapeCSV(m.creationDate),
@@ -1958,7 +2016,8 @@ export function exportDailyBackupToCSV(dateStr: string, materials: MaterialSigna
       escapeCSV(assignedStr),
       escapeCSV(m.assignedToRole || ''),
       escapeCSV(m.assignedAt || ''),
-      escapeCSV(m.isIngested ? 'SI' : 'NO'),
+      escapeCSV(m.isIngested !== false ? 'SI' : 'NO'),
+      escapeCSV(m.ingestedBy || ''),
       escapeCSV(m.isCataloged ? 'SI' : 'NO'),
       escapeCSV(m.catalogedBy || 'N/A'),
       escapeCSV(m.catalogedAt || 'N/A'),
@@ -1989,19 +2048,20 @@ export function exportMonthlyBackupToCSV(
   const headers = [
     'ID Material',
     'ID Familia',
-    'Título / Descripción',
     'Tipo de Señal',
+    'Título / Descripción',
     'División',
     'Duración',
     'Fecha Creación',
     'Creado Por',
     'Rol Creador',
     'Estado',
-    'Es Solicitud',
+    'Es Solicitud / Tarea',
     'Asignado A',
     'Rol Asignado',
     'Fecha Asignación',
     'Ingestado',
+    'Ingestado Por',
     'Catalogado',
     'Catalogado Por',
     'Fecha Catalogación',
@@ -2028,8 +2088,8 @@ export function exportMonthlyBackupToCSV(
     return [
       escapeCSV(m.id),
       escapeCSV(m.familyId || m.id),
-      escapeCSV(m.title),
       escapeCSV(m.signalType),
+      escapeCSV(m.title),
       escapeCSV(m.division),
       escapeCSV(formatDurationHHMMSS(m.duration)),
       escapeCSV(m.creationDate),
@@ -2040,7 +2100,8 @@ export function exportMonthlyBackupToCSV(
       escapeCSV(assignedStr),
       escapeCSV(m.assignedToRole || ''),
       escapeCSV(m.assignedAt || ''),
-      escapeCSV(m.isIngested ? 'SI' : 'NO'),
+      escapeCSV(m.isIngested !== false ? 'SI' : 'NO'),
+      escapeCSV(m.ingestedBy || ''),
       escapeCSV(m.isCataloged ? 'SI' : 'NO'),
       escapeCSV(m.catalogedBy || 'N/A'),
       escapeCSV(m.catalogedAt || 'N/A'),

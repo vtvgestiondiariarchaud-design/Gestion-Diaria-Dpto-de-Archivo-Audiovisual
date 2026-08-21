@@ -74,6 +74,7 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
 
   const [creationDate, setCreationDate] = useState(todayStr);
   const [notes, setNotes] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Reset form when modal opens or presets change
   useEffect(() => {
@@ -137,7 +138,8 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim()) return;
+    if (!title.trim() || isSubmitting) return;
+    setIsSubmitting(true);
 
     const pad = (v: string) => (v || '0').padStart(2, '0');
 
@@ -706,7 +708,10 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
             </button>
             <button
               type="submit"
+              disabled={isSubmitting}
               className={`px-5 py-2.5 rounded-xl text-white text-sm font-bold shadow-lg transition-all flex items-center gap-2 ${
+                isSubmitting ? 'opacity-60 cursor-not-allowed' : ''
+              } ${
                 isRequestTask
                   ? 'bg-purple-600 hover:bg-purple-500 shadow-purple-950/60'
                   : 'bg-blue-600 hover:bg-blue-500 shadow-blue-900/40'
