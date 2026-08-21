@@ -1191,23 +1191,42 @@ function doPost(e) {
       let insertedCount = 0;
       let updatedCount = 0;
 
+      // Track newly inserted or updated rows to avoid duplicates within same batch
+      const liveKeyToRow = {};
+      if (sMat.getLastRow() > 1) {
+        const numRows = sMat.getLastRow() - 1;
+        const maxCol = Math.max(sMat.getLastColumn(), MATERIAL_HEADERS.length);
+        const existingValues = sMat.getRange(2, 1, numRows, maxCol).getValues();
+        for (let i = 0; i < existingValues.length; i++) {
+          const row = existingValues[i];
+          const rowIdx = i + 2;
+          const rId = String(row[colMap.id] || "").trim().toLowerCase();
+          const rFam = String(row[colMap.familyId] || "").trim().toLowerCase();
+          const rSig = String(row[colMap.signalType] || "").trim().toLowerCase();
+          if (rId) liveKeyToRow[rId] = rowIdx;
+          if (rFam && rSig) liveKeyToRow[rFam + "___" + rSig] = rowIdx;
+        }
+      }
+
       uniquePayload.forEach(function(m) {
-        const matchingRows = findMatchingMaterialRows(sMat, m.id, m.familyId, m.signalType);
+        const cleanId = String(m.id || "").trim().toLowerCase();
+        const cleanFam = String(m.familyId || "").trim().toLowerCase();
+        const cleanSig = String(m.signalType || "").trim().toLowerCase();
+        const comboKey = (cleanFam && cleanSig) ? (cleanFam + "___" + cleanSig) : cleanId;
+
         const rowData = materialToRowArray(m, colMap);
-        if (matchingRows.length > 0) {
-          const targetRow = matchingRows[0];
-          sMat.getRange(targetRow, 1, 1, rowData.length).setValues([rowData]);
-          sMat.getRange(targetRow, colMap.duration + 1).setNumberFormat("@").setValue(String(m.duration || "00:00:00"));
-          if (matchingRows.length > 1) {
-            for (let d = matchingRows.length - 1; d >= 1; d--) {
-              sMat.deleteRow(matchingRows[d]);
-            }
-          }
+        const existingRow = (comboKey && liveKeyToRow[comboKey]) || (cleanId && liveKeyToRow[cleanId]);
+
+        if (existingRow && existingRow >= 2 && existingRow <= sMat.getLastRow()) {
+          sMat.getRange(existingRow, 1, 1, rowData.length).setValues([rowData]);
+          sMat.getRange(existingRow, colMap.duration + 1).setNumberFormat("@").setValue(String(m.duration || "00:00:00"));
           updatedCount++;
         } else {
           sMat.appendRow(rowData);
-          const lastRow = sMat.getLastRow();
-          sMat.getRange(lastRow, colMap.duration + 1).setNumberFormat("@").setValue(String(m.duration || "00:00:00"));
+          const newRow = sMat.getLastRow();
+          sMat.getRange(newRow, colMap.duration + 1).setNumberFormat("@").setValue(String(m.duration || "00:00:00"));
+          if (cleanId) liveKeyToRow[cleanId] = newRow;
+          if (comboKey) liveKeyToRow[comboKey] = newRow;
           insertedCount++;
         }
       });

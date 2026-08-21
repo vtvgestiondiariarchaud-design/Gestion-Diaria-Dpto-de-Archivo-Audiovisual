@@ -1,5 +1,6 @@
 import React from 'react';
 import { UserProfile, RoleType } from '../types';
+import { isGuestUser } from '../utils/permissions';
 import { 
   Film, 
   Users, 
@@ -8,12 +9,15 @@ import {
   UserCheck, 
   ShieldAlert, 
   RefreshCw, 
-  Database,
-  CheckCircle2,
-  Tv,
-  KeyRound,
-  Lock,
-  ShieldCheck
+  Database, 
+  CheckCircle2, 
+  Tv, 
+  KeyRound, 
+  Lock, 
+  ShieldCheck, 
+  LogOut, 
+  LogIn, 
+  Eye 
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -23,6 +27,7 @@ interface NavbarProps {
   onOpenUserSelector: () => void;
   onOpenPinModal?: () => void;
   onOpenBackupModal?: () => void;
+  onLogout?: () => void;
   userHasPin?: boolean;
   appsScriptUrl?: string;
   isSyncing?: boolean;
@@ -38,6 +43,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenUserSelector,
   onOpenPinModal,
   onOpenBackupModal,
+  onLogout,
   userHasPin,
   appsScriptUrl,
   isSyncing,
@@ -45,6 +51,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onTriggerSync,
   syncError,
 }) => {
+  const isGuest = isGuestUser(currentUser);
+
   const getRoleBadgeColor = (role: RoleType) => {
     switch (role) {
       case 'Gerente de Archivo':
@@ -56,6 +64,13 @@ export const Navbar: React.FC<NavbarProps> = ({
         return 'bg-blue-500/20 text-blue-300 border-blue-500/40';
       case 'Coordinador':
         return 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40';
+      case 'Documentalista':
+        return 'bg-teal-500/20 text-teal-300 border-teal-500/40';
+      case 'Ingestador':
+      case 'Operador de Ingesta':
+        return 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40';
+      case 'Invitado (Solo Lectura)':
+        return 'bg-amber-600/30 text-amber-300 border-amber-500/50';
       default:
         return 'bg-slate-700 text-slate-300';
     }
@@ -84,7 +99,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
           </div>
 
-          {/* User Profile Pill & Backup Centre */}
+          {/* User Profile Pill & Actions */}
           <div className="flex items-center flex-wrap gap-2 sm:gap-3">
             {/* Google Sheets Multi-Device Sync Button */}
             {onTriggerSync && (
@@ -118,7 +133,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             )}
 
-            {/* Backup & Recovery Button (Diario y Mensual) */}
+            {/* Backup & Recovery Button */}
             {onOpenBackupModal && (
               <button
                 onClick={onOpenBackupModal}
@@ -130,8 +145,8 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             )}
 
-            {/* Security PIN Button */}
-            {onOpenPinModal && (
+            {/* Security PIN Button (Only for logged-in users) */}
+            {!isGuest && onOpenPinModal && (
               <button
                 onClick={onOpenPinModal}
                 className={`px-3 py-1.5 rounded-xl border transition-all flex items-center gap-1.5 text-xs font-bold ${
@@ -153,33 +168,83 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             )}
 
-            {/* Current Active User Switcher */}
-            <button
-              onClick={onOpenUserSelector}
-              className="flex items-center gap-2.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700/90 border border-slate-700 rounded-xl transition-all shadow-sm group text-left"
-            >
-              <div className="w-7 h-7 rounded-lg bg-blue-600/30 border border-blue-500/40 text-blue-300 flex items-center justify-center font-bold text-xs">
-                {currentUser.name.charAt(0)}
-              </div>
-              <div className="text-xs">
-                <div className="flex items-center gap-1.5 font-semibold text-slate-100 group-hover:text-blue-300 transition-colors">
-                  <span>{currentUser.name}</span>
-                  <UserCheck className="w-3.5 h-3.5 text-blue-400" />
+            {/* User Profile Switcher & Session State */}
+            {isGuest ? (
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-300 text-xs font-bold">
+                  <Eye className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+                  <span className="hidden sm:inline">Modo Consulta</span>
+                  <span className="text-[10px] font-normal text-amber-400/80">(Solo Lectura)</span>
                 </div>
-                <div className="flex items-center gap-1 mt-0.5">
-                  <span className={`px-1.5 py-0.2 text-[9px] rounded font-semibold border ${getRoleBadgeColor(currentUser.role)}`}>
-                    {currentUser.role}
-                  </span>
-                  {currentUser.division && (
-                    <span className="text-[10px] text-slate-400">
-                      • {currentUser.division}
-                    </span>
-                  )}
-                </div>
+                <button
+                  onClick={onOpenUserSelector}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 border border-blue-400 rounded-xl text-white font-bold text-xs transition-all shadow-md shadow-blue-950/50 group"
+                  title="Iniciar sesión con un usuario para realizar acciones y modificaciones"
+                >
+                  <LogIn className="w-3.5 h-3.5 text-white" />
+                  <span>Iniciar Sesión</span>
+                </button>
               </div>
-            </button>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={onOpenUserSelector}
+                  className="flex items-center gap-2.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700/90 border border-slate-700 rounded-xl transition-all shadow-sm group text-left"
+                  title="Cambiar perfil de usuario"
+                >
+                  <div className="w-7 h-7 rounded-lg bg-blue-600/30 border border-blue-500/40 text-blue-300 flex items-center justify-center font-bold text-xs">
+                    {currentUser.name.charAt(0)}
+                  </div>
+                  <div className="text-xs">
+                    <div className="flex items-center gap-1.5 font-semibold text-slate-100 group-hover:text-blue-300 transition-colors">
+                      <span className="truncate max-w-[130px]">{currentUser.name}</span>
+                      <UserCheck className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                    </div>
+                    <div className="flex items-center gap-1 mt-0.5">
+                      <span className={`px-1.5 py-0.2 text-[9px] rounded font-semibold border ${getRoleBadgeColor(currentUser.role)}`}>
+                        {currentUser.role}
+                      </span>
+                      {currentUser.division && (
+                        <span className="text-[10px] text-slate-400">
+                          • {currentUser.division}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </button>
+
+                {/* Logout Button */}
+                {onLogout && (
+                  <button
+                    onClick={onLogout}
+                    className="p-2 rounded-xl bg-slate-800/90 hover:bg-amber-950/80 text-slate-400 hover:text-amber-300 border border-slate-700 hover:border-amber-600 transition-all shadow-sm flex items-center justify-center"
+                    title="Cerrar sesión (Cambiar a Modo Consulta / Solo Lectura)"
+                  >
+                    <LogOut className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
+
+        {/* Read-Only Notice Bar if in Guest Mode */}
+        {isGuest && (
+          <div className="bg-amber-950/50 border-b border-amber-800/40 px-3 py-1.5 flex items-center justify-between text-xs text-amber-200">
+            <div className="flex items-center gap-2">
+              <Eye className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span>
+                <strong>Modo Consulta (Solo Lectura):</strong> Puedes explorar todos los materiales, guardias y métricas. Para registrar, archivar o modificar, inicia sesión.
+              </span>
+            </div>
+            <button
+              onClick={onOpenUserSelector}
+              className="text-xs font-bold text-amber-300 hover:text-white underline ml-2 shrink-0"
+            >
+              Iniciar Sesión
+            </button>
+          </div>
+        )}
 
         {/* Navigation Tabs */}
         <nav className="flex items-center overflow-x-auto no-scrollbar gap-1 pt-2 pb-2 text-sm font-medium">

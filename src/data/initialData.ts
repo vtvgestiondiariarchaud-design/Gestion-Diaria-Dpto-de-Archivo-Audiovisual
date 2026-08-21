@@ -1,5 +1,13 @@
 import { UserProfile, MaterialSignal, Personnel, GuardShiftRecord } from '../types';
 
+export const GUEST_USER: UserProfile = {
+  id: 'guest',
+  name: 'Invitado',
+  role: 'Invitado (Solo Lectura)',
+  division: undefined,
+  isGuest: true,
+};
+
 export const DEFAULT_USERS: UserProfile[] = [
   {
     id: 'usr-1',

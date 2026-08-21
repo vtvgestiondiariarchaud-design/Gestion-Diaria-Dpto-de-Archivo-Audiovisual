@@ -7,7 +7,9 @@ import {
   canUserUnassignSignal,
   canUserCatalogSignal,
   canUserFinalizeSignal,
-  canUserDeleteMaterial
+  canUserDeleteMaterial,
+  isGuestUser,
+  canUserPerformActions
 } from '../utils/permissions';
 import { 
   Film, 
@@ -64,12 +66,8 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
   // Permission checks from permissions utility
   const canCreate = canUserCreateMaterial(currentUser);
 
-  const canCatalogOrFinalize =
-    currentUser.role === 'Gerente de Archivo' ||
-    currentUser.role === 'Adjunta de Gerencia' ||
-    currentUser.role === 'Jefe de División' ||
-    currentUser.role === 'Coordinador' ||
-    currentUser.role === 'Documentalista';
+  // All logged-in common users can archive / catalog materials
+  const canCatalogOrFinalize = canUserPerformActions(currentUser);
 
   const canDelete = canUserDeleteMaterial(currentUser);
 
@@ -203,7 +201,13 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
           {/* Quick Edit Button */}
           {onEditSignal && (
             <button
-              onClick={() => onEditSignal(currentSignal)}
+              onClick={() => {
+                if (isGuestUser(currentUser)) {
+                  alert('Debes iniciar sesión con un usuario para editar materiales.');
+                  return;
+                }
+                onEditSignal(currentSignal);
+              }}
               className="p-1.5 rounded-xl bg-slate-800/90 hover:bg-purple-950/80 text-purple-300 hover:text-white border border-slate-700/80 hover:border-purple-600 transition-all shadow-sm"
               title="Modificar/Editar detalles del material"
             >
@@ -478,7 +482,15 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
               {/* Boolean 1: Ingestado */}
               <button
                 type="button"
-                onClick={() => onToggleSignalBoolean && onToggleSignalBoolean(currentSignal.id, 'isIngested')}
+                onClick={() => {
+                  if (isGuestUser(currentUser)) {
+                    alert('Debes iniciar sesión con un usuario para modificar materiales.');
+                    return;
+                  }
+                  if (onToggleSignalBoolean) {
+                    onToggleSignalBoolean(currentSignal.id, 'isIngested');
+                  }
+                }}
                 className={`px-2.5 py-1.5 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
                   currentSignal.isIngested !== false
                     ? 'bg-blue-600/20 border-blue-500/50 text-blue-300 ring-1 ring-blue-500/30'
@@ -558,6 +570,10 @@ export const MaterialContainerCard: React.FC<MaterialContainerCardProps> = ({
               <button
                 type="button"
                 onClick={() => {
+                  if (isGuestUser(currentUser)) {
+                    alert('Debes iniciar sesión con un usuario para modificar materiales.');
+                    return;
+                  }
                   const isCurrentlyDiscarded = currentSignal.status === 'Descartado' || currentSignal.isDiscarded;
                   const newStatus = isCurrentlyDiscarded ? 'Registrado' : 'Descartado';
                   onUpdateSignalStatus(currentSignal.id, newStatus);

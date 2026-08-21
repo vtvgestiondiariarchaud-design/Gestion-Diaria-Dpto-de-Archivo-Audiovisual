@@ -1,13 +1,27 @@
 import { UserProfile, MaterialSignal } from '../types';
 
 /**
- * Permiso de creación de tarjetas de material y tareas:
- * Permite a TODOS los Coordinadores, Jefes de División, Gerente de Archivo, Adjunta de Gerencia
- * y a todo el personal de la división de Ingesta (Ingestadores y Operadores de Ingesta)
- * crear tarjetas tanto en "Ingesta y Trabajo Activo" como en "Solicitudes y Otras Tareas".
+ * Verifica si el usuario actual está en modo Invitado / Solo Lectura (Sesión Cerrada).
  */
-export const canUserCreateMaterial = (user: UserProfile): boolean => {
-  if (!user) return false;
+export const isGuestUser = (user?: UserProfile | null): boolean => {
+  if (!user) return true;
+  return Boolean(user.isGuest || user.role === 'Invitado (Solo Lectura)' || user.id === 'guest');
+};
+
+/**
+ * Verifica si el usuario tiene una sesión activa con permisos para realizar acciones y mutaciones en la app.
+ */
+export const canUserPerformActions = (user?: UserProfile | null): boolean => {
+  return !isGuestUser(user);
+};
+
+/**
+ * Permiso de creación de tarjetas de material y tareas:
+ * Permite a todos los usuarios autenticados (Coordinadores, Jefes de División, Gerente de Archivo, Adjunta de Gerencia,
+ * Documentalistas e Ingesta). Bloqueado en Modo Consulta / Invitado.
+ */
+export const canUserCreateMaterial = (user?: UserProfile | null): boolean => {
+  if (!user || isGuestUser(user)) return false;
   const role = (user.role || '').trim().toLowerCase();
   const division = (user.division || '').trim().toLowerCase();
 
@@ -18,15 +32,21 @@ export const canUserCreateMaterial = (user: UserProfile): boolean => {
     role.includes('coordinador') ||
     role.includes('ingestad') ||
     role.includes('operador') ||
-    division === 'ingesta'
+    role.includes('documental') ||
+    role.includes('asistent') ||
+    division === 'ingesta' ||
+    division === 'prensa' ||
+    division === 'programación' ||
+    division === 'programacion' ||
+    division === 'gerencia'
   );
 };
 
 /**
  * Verifica si el usuario pertenece al personal documentalista o jefaturas de archivo.
  */
-export const isUserDocumentalistaOrManager = (user: UserProfile): boolean => {
-  if (!user) return false;
+export const isUserDocumentalistaOrManager = (user?: UserProfile | null): boolean => {
+  if (!user || isGuestUser(user)) return false;
   return (
     user.role === 'Documentalista' ||
     user.role === 'Coordinador' ||
@@ -44,12 +64,14 @@ export const isUserDocumentalistaOrManager = (user: UserProfile): boolean => {
  * Si ya está asignada a otra persona, solo esa persona o sus jefes/coordinadores pueden cambiarla.
  */
 export const canUserAssignSignal = (
-  user: UserProfile,
-  signal: MaterialSignal
+  user?: UserProfile | null,
+  signal?: MaterialSignal
 ): { allowed: boolean; reason?: string } => {
-  if (!user) return { allowed: false, reason: 'Usuario no autenticado.' };
+  if (!user || isGuestUser(user)) {
+    return { allowed: false, reason: 'Debes iniciar sesión con un usuario para asignarte o gestionar materiales.' };
+  }
 
-  if (signal.assignedTo && signal.assignedTo !== user.name) {
+  if (signal?.assignedTo && signal.assignedTo !== user.name) {
     const isManager =
       user.role === 'Coordinador' ||
       user.role === 'Jefe de División' ||
@@ -71,8 +93,8 @@ export const canUserAssignSignal = (
  * Verifica si el usuario puede desasignar/liberar una tarjeta.
  * Solo el propio usuario asignado o sus coordinadores y jefes pueden hacerlo.
  */
-export const canUserUnassignSignal = (user: UserProfile, signal: MaterialSignal): boolean => {
-  if (!user || !signal.assignedTo) return false;
+export const canUserUnassignSignal = (user?: UserProfile | null, signal?: MaterialSignal): boolean => {
+  if (!user || isGuestUser(user) || !signal || !signal.assignedTo) return false;
   if (signal.assignedTo === user.name) return true;
   return (
     user.role === 'Coordinador' ||
@@ -83,17 +105,20 @@ export const canUserUnassignSignal = (user: UserProfile, signal: MaterialSignal)
 };
 
 /**
- * Verifica si el usuario puede marcar el material "Para Archivar" (catalogarlo).
- * Una vez asignado, solo el usuario asignado (o jefes/coordinadores) puede marcarlo Para Archivar.
+ * Permiso para marcar material "Para Archivar" / "Archivar" (catalogarlo):
+ * Habilitado para TODOS los usuarios comunes autenticados (Documentalistas, Ingestadores, Operadores de Ingesta,
+ * Coordinadores, Jefes de División y Gerencia). Bloqueado únicamente en Modo Consulta / Invitado.
  */
 export const canUserCatalogSignal = (
-  user: UserProfile,
-  signal: MaterialSignal
+  user?: UserProfile | null,
+  signal?: MaterialSignal
 ): { allowed: boolean; reason?: string } => {
-  if (!user) return { allowed: false, reason: 'Usuario no autenticado.' };
+  if (!user || isGuestUser(user)) {
+    return { allowed: false, reason: 'Debes iniciar sesión con un usuario para archivar o catalogar materiales.' };
+  }
 
-  // Si está asignado a otra persona y el usuario actual no es un jefe/coordinador
-  if (signal.assignedTo && signal.assignedTo !== user.name) {
+  // Si está asignado a otra persona y el usuario no es jefe/coordinador ni el asignado
+  if (signal?.assignedTo && signal.assignedTo !== user.name) {
     const isManager =
       user.role === 'Coordinador' ||
       user.role === 'Jefe de División' ||
@@ -103,7 +128,7 @@ export const canUserCatalogSignal = (
     if (!isManager) {
       return {
         allowed: false,
-        reason: `Este material está asignado a ${signal.assignedTo}. Solo ${signal.assignedTo} puede documentarlo y marcarlo Para Archivar.`,
+        reason: `Este material está asignado a ${signal.assignedTo}. Solo ${signal.assignedTo} o su jefatura pueden marcarlo como Para Archivar.`,
       };
     }
   }
@@ -113,23 +138,26 @@ export const canUserCatalogSignal = (
 
 /**
  * Verifica si el usuario puede marcar el material como "Finalizado".
- * Únicamente los Jefes de División, Coordinadores, Gerente de Archivo y Adjunta de Gerencia pueden hacerlo.
+ * Permitido a Coordinadores, Jefes de División, Gerente de Archivo, Adjunta de Gerencia y Documentalistas.
  */
 export const canUserFinalizeSignal = (
-  user: UserProfile
+  user?: UserProfile | null
 ): { allowed: boolean; reason?: string } => {
-  if (!user) return { allowed: false, reason: 'Usuario no autenticado.' };
+  if (!user || isGuestUser(user)) {
+    return { allowed: false, reason: 'Debes iniciar sesión con un usuario para finalizar materiales.' };
+  }
 
-  const isManagerOrCoordinator =
+  const isAuthorized =
     user.role === 'Gerente de Archivo' ||
     user.role === 'Adjunta de Gerencia' ||
     user.role === 'Jefe de División' ||
-    user.role === 'Coordinador';
+    user.role === 'Coordinador' ||
+    user.role === 'Documentalista';
 
-  if (!isManagerOrCoordinator) {
+  if (!isAuthorized) {
     return {
       allowed: false,
-      reason: 'Acceso Restringido: Solo los Coordinadores, Jefes de División y Gerencia pueden marcar tareas como Finalizadas.',
+      reason: 'Acceso Restringido: Inicia sesión como Documentalista, Coordinador o Jefe para finalizar tareas.',
     };
   }
 
@@ -140,8 +168,8 @@ export const canUserFinalizeSignal = (
  * Permiso para gestionar personal, asignar guardias y días libres:
  * Jefes de División, Coordinadores, Gerente de Archivo, Adjunta de Gerencia y Asistente Administrativa.
  */
-export const canUserManagePersonnel = (user: UserProfile): boolean => {
-  if (!user) return false;
+export const canUserManagePersonnel = (user?: UserProfile | null): boolean => {
+  if (!user || isGuestUser(user)) return false;
   return (
     user.role === 'Asistente Administrativa' ||
     user.role === 'Gerente de Archivo' ||
@@ -155,8 +183,8 @@ export const canUserManagePersonnel = (user: UserProfile): boolean => {
  * Permiso exclusivo para asignar vacaciones:
  * Únicamente Asistente Administrativa, Gerente de Archivo y Adjunta de Gerencia.
  */
-export const canUserAssignVacations = (user: UserProfile): boolean => {
-  if (!user) return false;
+export const canUserAssignVacations = (user?: UserProfile | null): boolean => {
+  if (!user || isGuestUser(user)) return false;
   return (
     user.role === 'Asistente Administrativa' ||
     user.role === 'Gerente de Archivo' ||
@@ -167,10 +195,10 @@ export const canUserAssignVacations = (user: UserProfile): boolean => {
 /**
  * Permiso para eliminar material o señales:
  * Permite a Coordinadores, Jefes de División, Gerente de Archivo, Adjunta de Gerencia,
- * Documentalistas y personal de Ingesta (Ingestadores y Operadores) eliminar materiales.
+ * Documentalistas y personal de Ingesta (Ingestadores y Operadores).
  */
-export const canUserDeleteMaterial = (user: UserProfile): boolean => {
-  if (!user) return false;
+export const canUserDeleteMaterial = (user?: UserProfile | null): boolean => {
+  if (!user || isGuestUser(user)) return false;
   const role = (user.role || '').trim().toLowerCase();
   const division = (user.division || '').trim().toLowerCase();
   return (

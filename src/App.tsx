@@ -46,7 +46,8 @@ import {
   apiReorganizeAllSheets,
 } from './services/apiService';
 import { Navbar } from './components/Navbar';
-import { canUserFinalizeSignal, canUserDeleteMaterial } from './utils/permissions';
+import { GUEST_USER } from './data/initialData';
+import { canUserFinalizeSignal, canUserDeleteMaterial, isGuestUser, canUserPerformActions } from './utils/permissions';
 import { UserRoleSelectorModal } from './components/UserRoleSelectorModal';
 import { MaterialListModule } from './components/MaterialListModule';
 import { MaterialModal } from './components/MaterialModal';
@@ -367,10 +368,28 @@ export default function App() {
   const handleSelectUser = (user: UserProfile) => {
     setState((prev) => ({ ...prev, currentUser: user }));
     saveLocalActiveUser(user);
-    showToast(`Perfil cambiado a: ${user.name} (${user.role})`);
+    if (isGuestUser(user)) {
+      showToast('Modo Consulta (Solo Lectura) activado.');
+    } else {
+      showToast(`Perfil cambiado a: ${user.name} (${user.role})`);
+    }
+  };
+
+  // Logout / Switch to Read-Only Guest Mode
+  const handleLogout = () => {
+    setState((prev) => {
+      saveLocalActiveUser(GUEST_USER);
+      return { ...prev, currentUser: GUEST_USER };
+    });
+    showToast('Sesión cerrada. Ahora estás en Modo Consulta (Solo Lectura).');
   };
 
   const handleRequestUserSwitch = (targetUser: UserProfile) => {
+    if (isGuestUser(targetUser)) {
+      handleSelectUser(targetUser);
+      return;
+    }
+
     const targetPin =
       effectiveUserPins[targetUser.id] ||
       effectiveUserPins[targetUser.name] ||
@@ -1456,6 +1475,7 @@ export default function App() {
         onOpenUserSelector={() => setIsUserSelectorOpen(true)}
         onOpenPinModal={() => setIsPinModalOpen(true)}
         onOpenBackupModal={() => setIsBackupModalOpen(true)}
+        onLogout={handleLogout}
         userHasPin={currentUserHasPin}
         appsScriptUrl={state.appsScriptUrl}
         isSyncing={state.isSyncing}
@@ -1562,6 +1582,7 @@ export default function App() {
         userPins={effectiveUserPins}
         onSelectUser={handleRequestUserSwitch}
         onOpenPinConfig={() => setIsPinModalOpen(true)}
+        onLogout={handleLogout}
       />
 
       <MaterialModal

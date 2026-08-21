@@ -96,6 +96,9 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
       });
       setCreationDate(getLocalDateISOString());
       setNotes('');
+      setIsSubmitting(false);
+    } else {
+      setIsSubmitting(false);
     }
   }, [isOpen, presetFamilyId, presetTitle, presetDivision, presetIsRequestTask, currentUser]);
 

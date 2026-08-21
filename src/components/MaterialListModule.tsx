@@ -21,7 +21,9 @@ import {
   canUserUnassignSignal,
   canUserCatalogSignal,
   canUserFinalizeSignal,
-  canUserDeleteMaterial
+  canUserDeleteMaterial,
+  isGuestUser,
+  canUserPerformActions,
 } from '../utils/permissions';
 import { MaterialContainerCard } from './MaterialContainerCard';
 import { ExportConfirmModal } from './ExportConfirmModal';
@@ -870,7 +872,13 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                               </span>
                               {canUserUnassignSignal(currentUser, mat) && (
                                 <button
-                                  onClick={() => onAssignSignal && onAssignSignal(mat.id, null)}
+                                  onClick={() => {
+                                    if (!canUserPerformActions(currentUser)) {
+                                      alert('Debes iniciar sesión con un usuario para realizar cambios. Actualmente estás en Modo Consulta.');
+                                      return;
+                                    }
+                                    onAssignSignal && onAssignSignal(mat.id, null);
+                                  }}
                                   className="p-1 rounded bg-slate-800 hover:bg-red-950 text-red-300 hover:text-white border border-slate-700"
                                   title="Liberar Tarjeta"
                                 >
@@ -880,7 +888,13 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                             </div>
                           ) : (
                             <button
-                              onClick={() => onAssignSignal && onAssignSignal(mat.id, currentUser.name)}
+                              onClick={() => {
+                                if (!canUserPerformActions(currentUser)) {
+                                  alert('Debes iniciar sesión con un usuario para realizar cambios. Actualmente estás en Modo Consulta.');
+                                  return;
+                                }
+                                onAssignSignal && onAssignSignal(mat.id, currentUser.name);
+                              }}
                               className="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-extrabold text-[10px] flex items-center gap-1"
                             >
                               <UserCheck className="w-3 h-3" />
@@ -891,7 +905,13 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                         <td className="p-3.5">
                           <div className="flex items-center gap-1">
                             <button
-                              onClick={() => onToggleSignalBoolean && onToggleSignalBoolean(mat.id, 'isIngested')}
+                              onClick={() => {
+                                if (!canUserPerformActions(currentUser)) {
+                                  alert('Debes iniciar sesión con un usuario para realizar cambios. Actualmente estás en Modo Consulta.');
+                                  return;
+                                }
+                                onToggleSignalBoolean && onToggleSignalBoolean(mat.id, 'isIngested');
+                              }}
                               className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
                                 mat.isIngested !== false ? 'bg-blue-600/30 text-blue-300 border-blue-500' : 'bg-slate-900 text-slate-600 border-slate-800'
                               }`}
@@ -943,6 +963,10 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                             </button>
                             <button
                               onClick={() => {
+                                if (!canUserPerformActions(currentUser)) {
+                                  alert('Debes iniciar sesión con un usuario para realizar cambios. Actualmente estás en Modo Consulta.');
+                                  return;
+                                }
                                 const newStatus = isDiscarded ? 'Registrado' : 'Descartado';
                                 onUpdateSignalStatus(mat.id, newStatus);
                               }}
@@ -963,7 +987,13 @@ export const MaterialListModule: React.FC<MaterialListModuleProps> = ({
                           <div className="flex items-center justify-end gap-1">
                             {onEditSignal && (
                               <button
-                                onClick={() => onEditSignal(mat)}
+                                onClick={() => {
+                                  if (!canUserPerformActions(currentUser)) {
+                                    alert('Debes iniciar sesión con un usuario para realizar cambios. Actualmente estás en Modo Consulta.');
+                                    return;
+                                  }
+                                  onEditSignal(mat);
+                                }}
                                 className="p-1.5 rounded bg-purple-950 hover:bg-purple-600 text-purple-300 hover:text-white border border-purple-800 transition-all font-bold text-[10px]"
                                 title="Modificar material"
                               >

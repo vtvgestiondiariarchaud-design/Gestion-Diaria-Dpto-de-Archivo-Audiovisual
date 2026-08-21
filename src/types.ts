@@ -12,7 +12,8 @@ export type RoleType =
   | 'Coordinador'
   | 'Documentalista'
   | 'Ingestador'
-  | 'Operador de Ingesta';
+  | 'Operador de Ingesta'
+  | 'Invitado (Solo Lectura)';
 
 export interface UserProfile {
   id: string;
@@ -20,6 +21,7 @@ export interface UserProfile {
   role: RoleType;
   division?: DivisionType;
   avatar?: string;
+  isGuest?: boolean;
 }
 
 export interface MaterialSignal {
